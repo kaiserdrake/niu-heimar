@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.3.0...niu-heimar-v0.4.0) (2026-11-06)
+
+
+### Features
+
+* **dashboard:** Claude 5-hour and weekly limits in an "LLMs" panel ([#18](https://github.com/kaiserdrake/niu-heimar/issues/18)) ([ec52b16](https://github.com/kaiserdrake/niu-heimar/commit/ec52b164f976dfbc7d6f42e485fa41b5662018fa))
+
 ## [0.3.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.2.0...niu-heimar-v0.3.0) (2026-11-06)
 
 
