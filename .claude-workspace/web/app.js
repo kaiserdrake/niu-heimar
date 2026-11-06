@@ -131,7 +131,7 @@ function renderCounters() {
   const waiting = live.filter((s) => s.state === "waiting").length;
   const green = (PRS?.repos || []).reduce((n, r) => n + r.prs.filter((p) => p.green).length, 0);
   $("counters").innerHTML = `<span><b>${live.length}</b> sessions</span><span class="${subs ? "hot" : ""}"><b>${subs}</b> agents running</span>` +
-    `<span class="${waiting ? "wait" : ""}"><b>${waiting}</b> waiting for you</span><span><b>${green}</b> PRs ready</span>`;
+    `<span class="${waiting ? "wait" : ""}"><b>${waiting}</b> waiting for you</span><span><b>${green}</b> PR${green === 1 ? "" : "s"} ready</span>`;
 }
 
 function renderSessions() {
@@ -180,7 +180,9 @@ function graphInit() {
     defs.append(m);
   }
   root.append(defs);
-  for (const k of ["edges", "packets", "nodes", "fx"]) { G.layers[k] = svg("g", { class: `layer-${k}` }); root.append(G.layers[k]); }
+  G.zoom = svg("g", { class: "zoom" });
+  root.append(G.zoom);
+  for (const k of ["edges", "packets", "nodes", "fx"]) { G.layers[k] = svg("g", { class: `layer-${k}` }); G.zoom.append(G.layers[k]); }
   $("graph").textContent = "";
   $("graph").append(root);
   G.root = root;
@@ -197,10 +199,11 @@ function localKids() {
   return out;
 }
 
-function graphLayout(list) {
-  let y = PAD; const nodes = [], edges = [];
+function graphLayout(list, cw, ch) {
+  let y = PAD; const nodes = [], edges = [], trees = [];
   const lk = localKids();
   for (const s of list) {
+    const n0 = nodes.length, e0 = edges.length, y0 = y;
     const kids = {};
     for (const a of s.subagents) (kids[a.parent] ||= []).push(a);
     for (const l of lk[s.id] || []) (kids[s.id] ||= []).push({ localSession: l });
@@ -257,9 +260,35 @@ function graphLayout(list) {
       edges.push({ id: `${from.id}>${ext.id}`, a: from, b: nodes.find((n) => n.id === ext.id), kind: "msg" });
     });
     y += YG;
+    const tn = nodes.slice(n0), te = edges.slice(e0);
+    trees.push({ nodes: tn, y0, h: y - y0, w: Math.max(...tn.map((n) => n.x + NW)) + (te.some((e) => e.kind === "handoff") ? HB + 120 : 0) });
   }
-  const extra = edges.some((e) => e.kind === "handoff") ? HB + 120 : 0;
-  return { nodes, edges, W: Math.max(...nodes.map((n) => n.x + NW), 400) + PAD + extra, H: y + PAD };
+  // Pack session trees into columns to use the panel's width: pick the column count with the largest zoom.
+  const GAP = 40;
+  const pack = (c) => {
+    const cols = Array.from({ length: c }, () => ({ h: PAD, w: 0, trees: [] }));
+    for (const t of trees) {
+      const col = cols.reduce((a, b) => (b.h < a.h ? b : a));
+      col.trees.push(t); col.h += t.h; col.w = Math.max(col.w, t.w);
+    }
+    const used = cols.filter((c2) => c2.trees.length);
+    const W = used.reduce((a, c2) => a + c2.w, 0) + GAP * (used.length - 1) + PAD;
+    const H = Math.max(...used.map((c2) => c2.h)) + PAD;
+    return { cols: used, W, H, scale: Math.min(1.15, (cw || W) / W, (ch || H) / H) };
+  };
+  let best = pack(1);
+  for (let c = 2; c <= Math.min(4, trees.length); c++) { const p = pack(c); if (p.scale > best.scale * 1.05) best = p; }
+  let x0 = 0;
+  for (const col of best.cols) {
+    let cy = PAD;
+    for (const t of col.trees) {
+      const dy = cy - t.y0;
+      for (const n of t.nodes) { n.x += x0; n.y += dy; }
+      cy += t.h;
+    }
+    x0 += col.w + GAP;
+  }
+  return { nodes, edges, W: Math.max(best.W, 400), H: best.H };
 }
 
 const edgePath = (a, b) => {
@@ -274,11 +303,25 @@ const handoffPath = (a, b) => {
   return `M${x},${y1} C${x + HB},${y1} ${x + HB},${y2} ${x + 4},${y2}`;
 };
 
+// Slide a node to its new position (attribute transform, so it scales with the zoom group).
+function moveNode(g, x, y) {
+  const from = g._pos || { x, y };
+  g._pos = { x, y };
+  if ((from.x === x && from.y === y) || reducedMotion()) { g.setAttribute("transform", `translate(${x},${y})`); return; }
+  const t0 = performance.now(), D = 600;
+  const step = (t) => {
+    const k = Math.min(1, (t - t0) / D), e = 1 - Math.pow(1 - k, 3);
+    g.setAttribute("transform", `translate(${from.x + (x - from.x) * e},${from.y + (y - from.y) * e})`);
+    if (k < 1 && g._pos.x === x && g._pos.y === y) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
 function graphNode(n) {
   let g = G.nodes.get(n.id);
   if (!g) {
     g = svg("g", { class: "gnode enter" });
-    g.style.transform = `translate(${n.x}px, ${n.y}px)`;
+    g.setAttribute("transform", `translate(${n.x},${n.y})`); g._pos = { x: n.x, y: n.y };
     g.append(svg("rect", { class: "halo", width: NW, height: NH, rx: 10 }));
     g.append(svg("rect", { class: "box", width: NW, height: NH, rx: 10 }));
     g.append(svg("text", { class: "badge", x: 12, y: 16 }));
@@ -291,7 +334,7 @@ function graphNode(n) {
     G.nodes.set(n.id, g);
     setTimeout(() => g.classList.remove("enter"), 600);
   }
-  g.style.transform = `translate(${n.x}px, ${n.y}px)`;
+  moveNode(g, n.x, n.y);
   g.classList.toggle("session", n.kind === "session");
   g.classList.toggle("localnode", !!n.localModel);
   g.classList.toggle("running", !!n.running);
@@ -375,8 +418,12 @@ function renderGraph() {
     return;
   }
   graphInit();
-  const { nodes, edges, W, H } = graphLayout(list);
-  G.root.setAttribute("width", W); G.root.setAttribute("height", H); G.root.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const gbox = $("graph");
+  const { nodes, edges, W, H } = graphLayout(list, (gbox.clientWidth || 0) - 12, (gbox.clientHeight || 0) - 12);
+  const box = $("graph"), cw = (box.clientWidth || W) - 12, ch = (box.clientHeight || H) - 12;
+  const scale = Math.max(0.55, Math.min(1.15, cw / W, ch / H));
+  G.root.setAttribute("width", Math.round(W * scale)); G.root.setAttribute("height", Math.round(H * scale));
+  G.zoom.setAttribute("transform", `scale(${scale.toFixed(4)})`);
   $("graph").classList.toggle("calm", reducedMotion());
 
   const live = new Set();
@@ -484,9 +531,13 @@ function renderActions() {
       <span class="b"><button class="ghost" data-ago="${esc(a.id)}">Show</button>${open}${merge}</span>
       <span class="d" title="${esc(a.detail)}">${esc(a.detail)}</span></div>`;
   }).join("") : `<div class="none">Nothing needs you right now.</div>`;
-  for (const b of $("actionlist").querySelectorAll("[data-ago]")) b.onclick = () => { toggleDrop("actions", false); jumpTo(ACTIONS.find((a) => a.id === b.dataset.ago)); };
-  for (const b of $("actionlist").querySelectorAll("[data-aopen]")) b.onclick = () => b.dataset.aopen && window.open(b.dataset.aopen, "_blank", "noopener");
-  for (const b of $("actionlist").querySelectorAll("[data-amerge]")) b.onclick = () => { toggleDrop("actions", false); openMerge(b.dataset.amerge); };
+  $("needslist").innerHTML = $("actionlist").innerHTML;
+  $("needscount").hidden = !n; $("needscount").textContent = String(n); $("needscount").className = `needs ${high ? "high" : ""}`;
+  for (const box of [$("actionlist"), $("needslist")]) {
+    for (const b of box.querySelectorAll("[data-ago]")) b.onclick = () => { toggleDrop("actions", false); jumpTo(ACTIONS.find((a) => a.id === b.dataset.ago)); };
+    for (const b of box.querySelectorAll("[data-aopen]")) b.onclick = () => b.dataset.aopen && window.open(b.dataset.aopen, "_blank", "noopener");
+    for (const b of box.querySelectorAll("[data-amerge]")) b.onclick = () => { toggleDrop("actions", false); openMerge(b.dataset.amerge); };
+  }
 
   if (SEEN_ACTIONS && fresh.length) notify(fresh);
   SEEN_ACTIONS = new Set(ACTIONS.map((a) => a.id));
@@ -535,7 +586,9 @@ function renderTimeline() {
     for (const a of s.subagents) lanes.push({ label: a.type, start: a.start, stop: a.stop, tools: a.tools });
   }
   const t0 = Math.max(Math.min(...lanes.map((l) => l.start)), STATE.now - 6 * 3600), t1 = STATE.now;
-  const LW = 170, W = Math.max(640, box.clientWidth || 900), LH = 24, H = lanes.length * LH + 26;
+  const avail = (box.clientHeight || 300) - 22;
+  const LH = Math.max(12, Math.min(24, Math.floor((avail - 26) / Math.max(1, lanes.length))));
+  const LW = 170, W = Math.max(640, (box.clientWidth || 900) - 20), H = lanes.length * LH + 26;
   const x = (t) => LW + ((Math.max(t, t0) - t0) / Math.max(1, t1 - t0)) * (W - LW - 10);
   const root = svg("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Agent timeline" });
   for (let i = 0; i <= 4; i++) {
@@ -545,20 +598,20 @@ function renderTimeline() {
   }
   lanes.forEach((l, i) => {
     const y = i * LH + 2;
-    root.append(svg("rect", { x: LW, y, width: W - LW - 10, height: LH - 6, class: "lane", rx: 4 }));
-    root.append(svg("text", { x: l.session ? 0 : 12, y: y + 14, class: l.session ? "" : "muted" }, trunc(l.label, l.session ? 22 : 20)));
+    root.append(svg("rect", { x: LW, y, width: W - LW - 10, height: Math.max(6, LH - 4), class: "lane", rx: 3 }));
+    root.append(svg("text", { x: l.session ? 0 : 12, y: y + Math.min(14, LH - 4), class: l.session ? "" : "muted", "font-size": LH < 18 ? 10.5 : 12 }, trunc(l.label, l.session ? 22 : 20)));
     if (!l.session) {
-      const bar = svg("rect", { x: x(l.start), y: y + 2, width: Math.max(3, x(l.stop || t1) - x(l.start)), height: LH - 10, rx: 3, class: `bar-sub ${l.stop ? "" : "running"}` });
+      const bar = svg("rect", { x: x(l.start), y: y + 1, width: Math.max(3, x(l.stop || t1) - x(l.start)), height: Math.max(3, LH - 7), rx: 2, class: `bar-sub ${l.stop ? "" : "running"}` });
       bar.append(svg("title", {}, `${l.label}: ${hhmmss(l.start)} → ${l.stop ? hhmmss(l.stop) : "running"}`));
       root.append(bar);
     }
     for (const [ts, tool] of l.tools || []) {
       if (ts < t0) continue;
-      const tick = svg("rect", { x: x(ts) - 1, y: y + 3, width: 2.5, height: LH - 12, class: `tk-${TOOL_CLASS(tool)}` });
+      const tick = svg("rect", { x: x(ts) - 1, y: y + 1, width: 2.5, height: Math.max(4, LH - 7), class: `tk-${TOOL_CLASS(tool)}` });
       tick.append(svg("title", {}, `${hhmmss(ts)} ${tool}`));
       root.append(tick);
     }
-    for (const ts of l.waits || []) if (ts >= t0) root.append(svg("circle", { cx: x(ts), cy: y + LH / 2 - 3, r: 4, class: "wait" }));
+    for (const ts of l.waits || []) if (ts >= t0) root.append(svg("circle", { cx: x(ts), cy: y + (LH - 4) / 2, r: Math.min(4, LH / 3), class: "wait" }));
   });
   box.append(root);
 }
@@ -598,13 +651,11 @@ function renderPRs() {
 
 function renderToday() {
   const t = STATE.today;
-  const runs = t.runs.slice(0, 6).map(([k, v]) => `<span class="chip">${esc(k)} <b>${v}</b></span>`).join("") || `<span class="muted">none yet</span>`;
-  $("today").innerHTML = `<div class="stats">
-    <div class="stat"><b>${t.sessions}</b><span class="muted small">sessions</span></div>
-    <div class="stat"><b>${t.subagent_runs}</b><span class="muted small">subagent runs</span></div>
-    <div class="stat"><b>${t.reviewed}/${t.edited}</b><span class="muted small">editing sessions reviewed</span></div></div>
-    <div class="chips mt8">${runs}</div>
-    ${t.flagged_projects.length ? `<div class="flagmsg">⚠ without both reviewers: ${esc(t.flagged_projects.map((p) => p.replace("(workspace)", HOST())).join(", "))}</div>` : ""}`;
+  const top = t.runs.slice(0, 3).map(([k, v]) => `${k} ${v}`).join(", ");
+  $("today").innerHTML = `<span title="Sessions active today"><b>${t.sessions}</b> today</span>` +
+    `<span title="${esc(top || "no subagent runs yet")}"><b>${t.subagent_runs}</b> agent runs</span>` +
+    `<span class="${t.reviewed < t.edited ? "bad" : ""}" title="Editing sessions that ran both mandatory reviewers"><b>${t.reviewed}/${t.edited}</b> reviewed</span>` +
+    (t.flagged_projects.length ? `<span class="bad" title="${esc(t.flagged_projects.map((x) => x.replace("(workspace)", HOST())).join(", "))}">⚠ <b>${t.flagged_projects.length}</b> unreviewed</span>` : "");
 }
 
 function renderFeed() {
@@ -691,7 +742,14 @@ $("ended").onchange = () => { store.set("niu.ended", $("ended").checked); if (ST
 $("calm").onchange = () => { store.set("niu.calm", $("calm").checked); if (STATE) render(); };
 $("notify").checked = store.get("niu.notify", false) && typeof Notification !== "undefined" && Notification.permission === "granted";
 $("notify").onchange = () => setNotify($("notify").checked);
-window.addEventListener("resize", () => STATE && renderTimeline());
+let resizeT = 0;
+window.addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (STATE) { renderGraph(); renderTimeline(); } }, 120); });
+function tickClock() {
+  const t = new Date(Date.now() + CLOCK_OFFSET * 1000);
+  $("clock").textContent = t.toLocaleTimeString([], { hour12: false });
+}
+tickClock();
+setInterval(tickClock, 1000);
 
 // Local LLM endpoint health (GPU box / local CPU), refreshed every 30 s
 const EP_NAME = { remote: "Remote GPU", local: "Local CPU" };

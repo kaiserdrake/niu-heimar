@@ -96,10 +96,10 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .graph svg { display: block; }
 svg text { fill: var(--text); font-size: 12px; font-family: system-ui, sans-serif; }
 svg .lbl { font-size: 11px; fill: var(--muted); }
-.gnode { transition: transform .7s cubic-bezier(.2,.8,.2,1), opacity .4s; cursor: pointer; }
+.gnode { transition: opacity .4s; cursor: pointer; }
 .gnode.enter { animation: pop .55s cubic-bezier(.2,1.4,.4,1) both; transform-box: fill-box; }
 .gnode.leave { opacity: 0; }
-@keyframes pop { from { opacity: 0; scale: .6; } }
+@keyframes pop { from { opacity: 0; } }
 .gnode .box { fill: var(--card); stroke: var(--border); stroke-width: 1.3; transition: stroke .3s, fill .3s; }
 .gnode.session .box { stroke: var(--accent); stroke-width: 1.6; }
 .gnode.running .box { stroke: var(--ok); stroke-width: 2; }
@@ -270,3 +270,83 @@ button.linkish { border: 0; padding: 0; color: var(--accent); background: none; 
 .stg.skipped { text-decoration: line-through; opacity: .7; }
 .stg-sep { color: var(--muted); font-size: 11px; }
 .calm .stg.active { animation: none; }
+
+/* =====================================================================
+   Mission control: one fixed 1080p screen, panels scroll on their own
+   ===================================================================== */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0a0d12; --bg2: #0e131a; --card: #111821; --border: #1f2a36; --text: #e6edf3; --muted: #8b98a8;
+    --accent: #58a6ff; --accent-bg: #10243d; --shadow: 0 0 0 1px rgba(88,166,255,.03), 0 8px 30px rgba(0,0,0,.35);
+    --grid-dot: rgba(120,160,200,.09);
+  }
+}
+body.mc { height: 100vh; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
+.mc .bar { position: relative; padding: 7px 14px; gap: 8px 14px; flex-wrap: nowrap; }
+.logo { text-transform: uppercase; letter-spacing: .14em; font-size: 13px; }
+.logo-sub { font-size: 11px; text-transform: uppercase; letter-spacing: .14em; color: var(--muted); }
+.clock { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 64px; }
+.mc .counters span, .kpis span { font-size: 12px; padding: 2px 9px; }
+.kpis { display: flex; gap: 6px; flex-wrap: nowrap; }
+.kpis span { color: var(--muted); border-radius: 999px; border: 1px dashed var(--border); white-space: nowrap; }
+.kpis b { color: var(--text); font-variant-numeric: tabular-nums; }
+.kpis .bad b, .kpis .bad { color: var(--bad); border-color: var(--bad); }
+.mc .controls { margin-left: auto; flex-wrap: nowrap; }
+.mc .controls select { padding: 3px 8px; font-size: 12.5px; }
+
+.mcgrid { display: grid; gap: 10px; padding: 10px; min-height: 0;
+  grid-template-columns: minmax(270px, 19%) minmax(0, 1fr) minmax(330px, 22%);
+  grid-template-rows: minmax(0, .9fr) minmax(0, .85fr) auto minmax(0, 1fr);
+  grid-template-areas: "sess graph needs" "sess graph prs" "sess graph llm" "sess time feed"; }
+.p-sessions { grid-area: sess; } .p-graph { grid-area: graph; } .p-timeline { grid-area: time; }
+.p-needs { grid-area: needs; } .p-prs { grid-area: prs; } .p-llm { grid-area: llm; } .p-feed { grid-area: feed; }
+
+.panel { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; position: relative; }
+.panel::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 2px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 55%, transparent), transparent); opacity: .5; }
+.ph { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--border); flex: none; }
+.ph h2 { margin: 0; font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); }
+.ph .legend { margin-left: auto; gap: 8px; font-size: 11px; flex-wrap: nowrap; overflow: hidden; }
+.ph > .small { margin-left: auto; font-size: 11px; }
+.ph .tiny { margin-left: auto; padding: 1px 8px; font-size: 11.5px; }
+.pb { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 10px; scrollbar-width: thin; }
+.p-llm .pb { max-height: 22vh; }
+
+/* sessions: compact list */
+.mc .sessions { display: flex; flex-direction: column; gap: 6px; }
+.mc .domain-h { margin: 4px 0 0; font-size: 10.5px; }
+.mc .sess { padding: 7px 9px 7px 12px; border-radius: 8px; }
+.mc .sess .proj { font-size: 13px; }
+.mc .sess .pill { font-size: 10.5px; }
+.mc .sess .small { font-size: 11px; }
+.mc .cur { font-size: 11px; margin: 2px 0; }
+.mc .chips { gap: 4px; margin-top: 4px; } .mc .chip { font-size: 10.5px; padding: 0 6px; }
+.mc .pipe { gap: 2px; margin: 4px 0 1px; } .mc .stg { font-size: 10px; padding: 0 5px; } .mc .stg-sep { display: none; }
+.mc .flagmsg { font-size: 11px; margin-top: 3px; }
+
+/* graph + timeline fill their panels */
+.mc .graph { border-radius: 0; padding: 6px; display: flex; align-items: flex-start; justify-content: center; }
+.mc .timeline { padding: 6px 10px; overflow: hidden; }
+
+/* right column */
+.p-needs .act { padding: 7px 4px; } .p-needs .act:first-child { border-top: 0; }
+.p-needs .none { padding: 6px 2px; color: var(--muted); }
+.mc .pr { padding: 6px 0; } .mc .pr:first-child { border-top: 0; } .mc .pr .t { font-size: 12.5px; }
+.mc .pr .acts button { padding: 2px 8px; font-size: 12px; }
+.mc .repo { margin-bottom: 6px; } .mc .repo-h { font-size: 11px; }
+.mc .ep { padding: 6px 0; } .mc .ep .chips { margin-top: 4px; } .mc .ep .hint { margin-top: 5px; padding: 4px 8px; font-size: 11px; }
+.mc .feed { max-height: none; font-size: 11.5px; padding-top: 4px; }
+
+/* details drawer over the right column */
+.mc .details { top: 64px; bottom: 12px; right: 12px; max-height: none; width: min(420px, calc(100vw - 24px)); z-index: 20; }
+
+/* smaller screens: fall back to a scrolling stack */
+@media (max-width: 1279px), (max-height: 700px) {
+  body.mc { height: auto; overflow: auto; display: block; }
+  .mc .bar { flex-wrap: wrap; position: sticky; }
+  .mc .kpis, .mc .counters { flex-wrap: wrap; }
+  .mcgrid { display: flex; flex-direction: column; }
+  .p-graph { height: 60vh; } .p-timeline { height: 40vh; } .p-sessions, .p-needs, .p-prs, .p-feed { max-height: 70vh; }
+  .p-llm .pb { max-height: none; }
+}
