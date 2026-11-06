@@ -232,6 +232,14 @@ dv = to_json(build(drun, T + 51), drun, T + 51)["sessions"][0]
 st = {p["stage"]: p["status"] for p in dv["pipeline"]}
 check((st["implement"], st["review"], st["report"]) == ("done", "skipped", "done"), f"build-only /develop run: {st}")
 
+# Stale: a working session that went quiet for 30 min is stale; a waiting one stays waiting (needs you) for 12 h
+q = [E(0, "SessionStart", "w1"), E(1, "UserPromptSubmit", "w1"), E(2, "Notification", "w1", s="permission_prompt"),
+     E(0, "SessionStart", "k1"), E(1, "UserPromptSubmit", "k1")]
+qs = {x["id"]: x["state"] for x in to_json(build(q, T + 3600), q, T + 3600)["sessions"]}
+check(qs == {"w1": "waiting", "k1": "stale"}, f"waiting survives 1 h, working goes stale: {qs}")
+qs = {x["id"]: x["state"] for x in to_json(build(q, T + 13 * 3600), q, T + 13 * 3600)["sessions"]}
+check(qs["w1"] == "stale", f"waiting goes stale after 12 h: {qs}")
+
 print(f"live: {passed} passed, {failed} failed")
 os.system(f"rm -rf {tmp}")
 sys.exit(1 if failed else 0)

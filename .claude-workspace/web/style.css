@@ -91,6 +91,15 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .src-project { color: var(--project); } .src-domain { color: var(--domain); } .src-shared { color: var(--shared); } .src-builtin, .src-user { color: var(--builtin); }
 .flagmsg { color: var(--bad); font-size: 12px; margin-top: 6px; }
 
+/* themed hover tooltip for the graph and timeline */
+.gtip { position: fixed; left: 0; top: 0; z-index: 60; pointer-events: none; max-width: 320px; padding: 6px 10px 7px;
+  background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow);
+  font-size: 12px; line-height: 1.45; overflow: hidden; }
+.gtip::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 2px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 60%, transparent), transparent); }
+.gtip b { display: block; font-weight: 600; margin-bottom: 1px; overflow-wrap: anywhere; }
+.gtip div { color: var(--muted); font-size: 11.5px; overflow-wrap: anywhere; }
+
 /* interaction graph */
 .gnode .mdl { font-size: 10px; fill: var(--muted); font-family: var(--mono); }
 .gnode .mdl.guess { font-style: italic; opacity: .8; }

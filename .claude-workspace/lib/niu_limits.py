@@ -1,6 +1,7 @@
 """Claude plan usage limits (5-hour and weekly), as last reported by Claude Code's status line (bin/niu-statusline)."""
 import json
 import os
+import threading
 import time
 import urllib.request
 from datetime import datetime
@@ -9,12 +10,14 @@ from pathlib import Path
 from niu_events import db_path
 
 STALE_SECS = 15 * 60
-# Opt-in second source (NIU_CLAUDE_USAGE_API=1): the same usage numbers Claude's own apps show, fetched from Anthropic
+API_PREFERRED_AFTER_SECS = 2 * 60  # a status-line report older than this loses to the API (unless disabled)
+# Second source, on by default (set NIU_CLAUDE_USAGE_API=0 to turn it off): the same usage numbers Claude's own apps show, fetched from Anthropic
 # with the OAuth login Claude Code already holds. It works for the Claude Code desktop app, which never runs the
 # terminal status line. Read-only: the token is never stored, logged or refreshed, and only percentages are kept.
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 API_REFRESH_SECS = 5 * 60
 _api = {"at": 0.0, "rate_limits": None}
+_api_lock = threading.Lock()
 
 
 def _epoch(v):
@@ -63,20 +66,21 @@ def _fetch_usage(url=USAGE_URL, timeout=8):
 
 def _api_limits(now, fetch=None):
     """Cached (5 min) usage from the API when enabled; (rate_limits, fetched_at) or (None, 0)."""
-    if os.environ.get("NIU_CLAUDE_USAGE_API") != "1":
+    if os.environ.get("NIU_CLAUDE_USAGE_API") == "0":
         return None, 0
-    if now - _api["at"] > API_REFRESH_SECS:
-        _api["at"] = now  # also throttles retries after a failure
-        got = (fetch or _fetch_usage)()
-        if got:
-            _api["rate_limits"], _api["fetched"] = got, now
-    return _api["rate_limits"], _api.get("fetched", 0)
+    with _api_lock:  # dashboard requests run in threads: one fetch per refresh window
+        if now - _api["at"] > API_REFRESH_SECS:
+            _api["at"] = now  # also throttles retries after a failure
+            got = (fetch or _fetch_usage)()
+            if got:
+                _api["rate_limits"], _api["fetched"] = got, now
+        return _api["rate_limits"], _api.get("fetched", 0)
 
 
 def claude_limits(now=None, fetch=None):
     """{'available': bool, 'updated', 'stale', 'source', 'windows': [{key, label, used, resets_at}]}.
 
-    Newest of: the terminal status line's last report, and (opt-in) the usage API."""
+    Newest of: the terminal status line's last report, and the usage API (unless disabled)."""
     now = now or time.time()
     source = "statusline"
     try:
@@ -87,7 +91,7 @@ def claude_limits(now=None, fetch=None):
         data = {}
     if not isinstance(data.get("updated"), (int, float)):
         data["updated"] = 0
-    if now - data.get("updated", 0) > STALE_SECS:
+    if now - data.get("updated", 0) > API_PREFERRED_AFTER_SECS:
         rl_api, at = _api_limits(now, fetch)
         if rl_api and at > data.get("updated", 0):
             data, source = {"rate_limits": rl_api, "updated": at}, "api"
