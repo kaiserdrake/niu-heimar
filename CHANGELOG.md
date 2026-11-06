@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.5.0...niu-heimar-v0.6.0) (2026-11-06)
+
+
+### Features
+
+* local_logs/local_ci/local_git digest tools and dashboard improvements ([#22](https://github.com/kaiserdrake/niu-heimar/issues/22)) ([3ebb53a](https://github.com/kaiserdrake/niu-heimar/commit/3ebb53a0a5ffaa6dac16f853eb596e5f60f106d1))
+
 ## [0.5.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.4.0...niu-heimar-v0.5.0) (2026-11-06)
 
 
