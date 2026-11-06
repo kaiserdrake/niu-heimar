@@ -61,7 +61,7 @@ jobs:
             echo 'EOF_BODY'
           } >> "$GITHUB_OUTPUT"
           rm -rf .maintain
-      - uses: peter-evans/create-pull-request@v7
+      - uses: peter-evans/create-pull-request@v8
         if: env.HAS_KEY == 'true'
         with:
           branch: chore/claude-maintenance
