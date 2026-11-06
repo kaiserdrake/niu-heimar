@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.2.0...niu-heimar-v0.3.0) (2026-11-06)
+
+
+### Features
+
+* **dashboard:** left column instead of the pull-out drawer ([#16](https://github.com/kaiserdrake/niu-heimar/issues/16)) ([ba3da86](https://github.com/kaiserdrake/niu-heimar/commit/ba3da86cb4d689d1673931ca3d49aa30dc1a5e54))
+
 ## [0.2.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.1.0...niu-heimar-v0.2.0) (2026-11-06)
 
 
