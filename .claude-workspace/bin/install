@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # Install/refresh the niu-heimar workspace: render templates, merge user settings,
 # add bin/ to PATH, and re-link existing projects. Safe to run repeatedly.
-# Usage: install [--no-user-settings] [--no-shell] [--web]
+# Usage: install [--no-user-settings] [--no-shell] [--web] [--notify]
 set -euo pipefail
 
 WS="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd -P)"
 SHARED="$WS/.claude-workspace"
-user_settings=true shell=true web=false
+user_settings=true shell=true web=false notify=false
 for a in "$@"; do
   case "$a" in
     --no-user-settings) user_settings=false ;;
     --no-shell) shell=false ;;
     --web) web=true ;;
+    --notify) notify=true ;;
     *) echo "unknown option $a" >&2; exit 1 ;;
   esac
 done
@@ -141,5 +142,28 @@ To reach it from your other tailnet devices (one-time, run these yourself):
   tailscale serve status
 Then pair each browser: run `niu-dash pair` here and enter the code on that device.
 TS
+fi
+if $notify; then
+  # Discord notifier (outbound webhooks only). Webhook URLs live in $SHARED/.env, which only systemd reads.
+  unit="$HOME/.config/systemd/user/niu-notify.service"
+  mkdir -p "$(dirname "$unit")"
+  python3 "$SHARED/bin/niu-notify" unit >"$unit.tmp" && mv "$unit.tmp" "$unit"
+  [[ -f "$SHARED/discord.json" ]] || { cp "$SHARED/discord.template.json" "$SHARED/discord.json"; echo "created $SHARED/discord.json (edit endpoints for your ollama.json names)"; }
+  secrets="$SHARED/.env"
+  if [[ -e "$secrets" ]]; then
+    mode="$(stat -c %a "$secrets")"
+    [[ "$mode" =~ [0-7]00$ ]] || echo "warning: $secrets is readable by others (mode $mode); run: chmod 600 $secrets"
+  else
+    echo "note: create $secrets with the DISCORD_WEBHOOK_* names from .env.example (you set the values), then chmod 600 it"
+  fi
+  systemctl --user daemon-reload
+  systemctl --user enable niu-notify.service
+  systemctl --user restart niu-notify.service
+  if [[ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != "yes" ]]; then
+    loginctl enable-linger "$USER" 2>/dev/null && echo "enabled linger: niu-notify keeps running after logout and starts at boot" \
+      || echo "note: run 'sudo loginctl enable-linger $USER' so niu-notify runs without an active login"
+  fi
+  echo "niu-notify running (systemctl --user status niu-notify; journalctl --user -u niu-notify)"
+  echo "check the webhooks with: niu-notify check   (Discord setup steps: README, 'Discord notifications')"
 fi
 echo "niu-heimar installed at $WS"

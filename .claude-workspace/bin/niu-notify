@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""niu-notify: outbound-only Discord notifications for niu-heimar.
+
+  niu-notify run                 poll every poll_secs and post state changes (systemd: niu-notify.service)
+  niu-notify once                one poll (the very first poll only records a baseline)
+  niu-notify test [--route R]    send the fixed test message to each configured route
+  niu-notify check               validate discord.json and report each webhook as ok/missing/invalid (never the value)
+  niu-notify unit                print the systemd user unit (bin/install --notify writes it)
+
+Webhook URLs are read from the environment only (systemd loads .claude-workspace/.env); this program never opens .env.
+"""
+import argparse
+import signal
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import niu_notify as nn  # noqa: E402
+
+
+def _cfg():
+    try:
+        return nn.load_config()
+    except nn.ConfigError as e:
+        print(f"niu-notify: config error: {e}", file=sys.stderr)
+        sys.exit(2)
+
+
+def cmd_check(_a):
+    try:
+        cfg = nn.load_config()
+    except nn.ConfigError as e:
+        print(f"config: invalid ({e})")
+        return 2
+    print(f"config: ok ({nn.config_path().name})")
+    st = nn.webhook_status(cfg)
+    for route in nn.ROUTES:
+        note = " (uses the alerts webhook)" if st[route] == "fallback" else ""
+        print(f"  {route:<10} {cfg['routes'][route]:<28} {st[route]}{note}")
+    return 0 if any(v == "ok" for v in st.values()) and "invalid" not in st.values() else 1
+
+
+def cmd_test(a):
+    cfg = _cfg()
+    urls = nn.webhook_urls(cfg)
+    d = nn.Dispatcher(nn.UrllibSender(), urls, cfg)
+    routes = [a.route] if a.route else [r for r in nn.ROUTES if r in urls]
+    if not routes:
+        print("niu-notify: no valid webhooks configured (run `niu-notify check`)", file=sys.stderr)
+        return 1
+    rc = 0
+    for r in routes:
+        ok = d._deliver({"key": "sys:test", "route": r, "tpl": "test", "f": {"route": r}}, count=False)
+        print(f"  {r:<10} {'sent' if ok else 'FAILED'}")
+        rc |= 0 if ok else 1
+    return rc
+
+
+def cmd_run(a, loop=True):
+    cfg = _cfg()
+    n = nn.Notifier(cfg)
+    if not n.urls:
+        nn._log("niu-notify: no valid webhooks configured; nothing will be sent (run `niu-notify check`)")
+    stop = []
+    signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
+    while True:
+        try:
+            n.poll()
+        except Exception as e:  # noqa: BLE001 - keep running; log the class only (messages can carry URLs)
+            nn._log(f"niu-notify: poll failed: {type(e).__name__}")
+        if not loop:
+            return 0
+        end = time.time() + cfg["poll_secs"]
+        while not stop and time.time() < end:
+            time.sleep(1)
+        if stop:
+            nn.save_state(n.state)
+            return 0
+
+
+def main():
+    p = argparse.ArgumentParser(prog="niu-notify", description=__doc__.split("\n\n")[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("run")
+    sub.add_parser("once")
+    t = sub.add_parser("test")
+    t.add_argument("--route", choices=nn.ROUTES)
+    sub.add_parser("check")
+    sub.add_parser("unit")
+    a = p.parse_args()
+    if a.cmd == "unit":
+        sys.stdout.write(nn.unit_text())
+        return 0
+    if a.cmd == "check":
+        return cmd_check(a)
+    if a.cmd == "test":
+        return cmd_test(a)
+    return cmd_run(a, loop=a.cmd == "run")
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
