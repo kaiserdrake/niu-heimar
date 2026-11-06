@@ -129,6 +129,7 @@ def run_agent(ep, model, task, args, cwd, base, timeout):
            "--setting-sources", "user,project", "--append-system-prompt", AGENT_SYSTEM[task]]
     env = agent_env(ep, model)
     env["NIU_AGENT_ROOT"] = str(cwd)
+    env["NIU_AGENT_TASK"] = task
     r = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout,
                        stdin=subprocess.DEVNULL)
     out = (r.stdout or "").strip()

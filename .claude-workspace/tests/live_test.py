@@ -90,6 +90,91 @@ lv.dirty = True; lv.built_at = time.time()
 v = lv.refresh()
 check(lv.refresh() == v, "slow builds back off (throttle * cost)")
 
+# ---------- naming, system events, local-agent linking (pure build()) ----------
+import json as _json  # noqa: E402
+T = time.time()
+
+
+def E(dt, event, sid, **kw):
+    return {"id": int(dt * 1000), "ts": T + dt, "event": event, "session_id": sid, "domain": "PERSONAL", "project": "app",
+            "project_dir": "/p/app", "agent_id": kw.get("aid"), "agent_type": kw.get("at"), "tool": kw.get("tool"),
+            "tool_use_id": kw.get("tuid"), "summary": kw.get("s", "")}
+
+
+evs = [
+    E(0, "SessionStart", "main", s=_json.dumps({"title": "Add login page", "model": "claude-opus-5-5"})),
+    E(1, "UserPromptSubmit", "main"),
+    E(2, "PreToolUse", "main", tool="mcp__niu-local__local_search", tuid="t1", s="where is auth handled"),
+    E(3, "SessionStart", "loc1", s=_json.dumps({"local": "gpt-oss:20b", "task": "search"})),
+    E(4, "PreToolUse", "loc1", tool="Grep", s="auth"),
+    E(5, "SessionEnd", "loc1"),
+    E(6, "PostToolUse", "main", tool="mcp__niu-local__local_search", tuid="t1"),
+    E(7, "SessionStart", "loc2", s=_json.dumps({"local": "gpt-oss:20b", "task": "diff"})),  # no open call -> no parent
+    E(8, "PreToolUse", "web", tool="gh", s="o/r#1: merged"),                                   # dashboard's own log entry
+    E(9, "SessionStart", "old", s="local:qwen3:14b"),                                          # pre-upgrade format
+]
+ss = build(evs, T + 10)
+check(ss["main"].get("title") == "Add login page" and ss["main"].get("model") == "claude-opus-5-5", "title and model recorded")
+check(ss["loc1"].get("parent_session") == "main" and ss["loc1"].get("parent_tool") == "local_search", "local run linked to caller")
+check(ss["loc1"].get("query") == "where is auth handled" and ss["loc1"].get("task") == "search", "local run carries query and task")
+check(ss["loc2"].get("parent_session") is None, "no caller -> no link")
+check("web" not in ss, "dashboard system events are not a session")
+check(ss["old"].get("local") == "qwen3:14b", "older local label still understood")
+js = to_json(ss, evs, T + 10)
+check(any(e["session_id"] == "web" for e in js["feed"]), "system events still in the feed")
+check(next(s for s in js["sessions"] if s["id"] == "loc1")["parent_session"] == "main", "link exported to the page")
+
+# ---------- hand-off chain and /develop progress (simulated run) ----------
+run = [
+    E(0, "SessionStart", "dev", s=_json.dumps({"title": "Add --version flag"})),
+    E(1, "UserPromptSubmit", "dev"),
+    E(2, "PreToolUse", "dev", tool="Skill", s="develop"),
+    E(3, "PreToolUse", "dev", tool="Agent", s="designer: Design --version flag"),
+    E(4, "SubagentStart", "dev", aid="d1", at="designer"),
+    E(5, "PreToolUse", "dev", aid="d1", at="designer", tool="Read", s="bin/niu-dash"),
+    E(20, "SubagentStop", "dev", aid="d1", at="designer"),
+]
+st = to_json(build(run, T + 21), run, T + 21)["sessions"][0]
+stages = {p["stage"]: p["status"] for p in st["pipeline"] or []}
+check(stages.get("design") == "done" and stages.get("approve") == "active" and stages.get("implement") == "pending",
+      f"after design: waiting for approval {stages}")
+
+run += [
+    E(25, "PreToolUse", "dev", tool="AskUserQuestion"),
+    E(40, "PreToolUse", "dev", tool="Edit", s="bin/niu-dash"),
+    E(41, "PreToolUse", "dev", tool="Write", s="tests/v.py"),
+    E(50, "PreToolUse", "dev", tool="mcp__niu-local__local_diff_review", tuid="ld", s="error handling"),
+    E(51, "SessionStart", "ldiff", s=_json.dumps({"local": "gpt-oss:20b", "task": "diff"})),
+    E(70, "SessionEnd", "ldiff"),
+    E(71, "PostToolUse", "dev", tool="mcp__niu-local__local_diff_review", tuid="ld"),
+    E(80, "PreToolUse", "dev", tool="Agent", s="security-reviewer: review"),
+    E(80.5, "PreToolUse", "dev", tool="Agent", s="test-reviewer: review"),
+    E(81, "SubagentStart", "dev", aid="r1", at="security-reviewer"),
+    E(81.5, "SubagentStart", "dev", aid="r2", at="test-reviewer"),
+]
+st = to_json(build(run, T + 90), run, T + 90)["sessions"]
+dev = next(x for x in st if x["id"] == "dev")
+stages = {p["stage"]: p["status"] for p in dev["pipeline"]}
+check(stages == {"design": "done", "approve": "done", "implement": "done", "local review": "done", "review": "active",
+                 "report": "pending"}, f"mid-review stages {stages}")
+groups = dev["chain"]["groups"]
+check(groups[0] == ["d1"] and groups[1][0].startswith("impl:") and groups[2] == ["ldiff"] and sorted(groups[3]) == ["r1", "r2"],
+      f"steps in order, reviewers in parallel: {groups}")
+hand = {(h["from"], h["to"]): h["label"] for h in dev["chain"]["handoffs"]}
+impl_id = groups[1][0]
+check(hand.get(("d1", impl_id)) == "design", "designer → implement carries the design")
+check(hand.get((impl_id, "ldiff")) == "code changes", "implement → local diff review carries code changes")
+check(hand.get(("ldiff", "r1")) == "findings" and hand.get(("ldiff", "r2")) == "findings", "local review → both reviewers")
+check(not any(k[0] in ("r1", "r2") for k in hand), "no hand-off out of reviewers still running")
+
+run += [E(120, "SubagentStop", "dev", aid="r1", at="security-reviewer"), E(125, "SubagentStop", "dev", aid="r2", at="test-reviewer"),
+        E(126, "Stop", "dev")]
+dev = next(x for x in to_json(build(run, T + 130), run, T + 130)["sessions"] if x["id"] == "dev")
+stages = {p["stage"]: p["status"] for p in dev["pipeline"]}
+check(stages.get("review") == "done" and stages.get("report") == "done", f"finished run {stages}")
+plain = [E(0, "SessionStart", "p"), E(1, "PreToolUse", "p", tool="Edit")]
+check(to_json(build(plain, T + 2), plain, T + 2)["sessions"][0]["pipeline"] is None, "no /develop -> no progress strip")
+
 print(f"live: {passed} passed, {failed} failed")
 os.system(f"rm -rf {tmp}")
 sys.exit(1 if failed else 0)

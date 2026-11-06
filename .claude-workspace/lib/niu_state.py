@@ -1,4 +1,5 @@
 """Shared session/subagent model built from the event store (used by agents-dash and niu-dash)."""
+import json
 import threading
 import time
 from datetime import datetime
@@ -47,10 +48,38 @@ def load(since_secs):
     return [dict(r) for r in rows]
 
 
+SYSTEM_SESSIONS = {"web"}  # events written by the dashboard itself (e.g. PR merges): feed only, not a session
+
+
+def _session_info(summary):
+    """SessionStart/UserPromptSubmit summary: JSON {title, model, local, task} (or the older 'local:<model>')."""
+    summary = summary or ""
+    if summary.startswith("{"):
+        try:
+            return json.loads(summary)
+        except ValueError:
+            return {}
+    if summary.startswith("local:"):
+        return {"local": summary[6:]}
+    return {}
+
+
 def build(events, now):
     sessions = {}
+    open_local = {}  # project_dir -> open niu-local tool calls [{sid, ts, tool, query}]
     for e in events:
         sid = e["session_id"] or "?"
+        if sid in SYSTEM_SESSIONS:
+            continue
+        if e["event"] == "PreToolUse" and (e["tool"] or "").startswith("mcp__niu-local__"):
+            open_local.setdefault(e["project_dir"] or "", []).append(
+                {"sid": sid, "ts": e["ts"], "tool": e["tool"].split("__")[-1], "query": e["summary"] or "", "id": e["tool_use_id"]})
+        elif e["event"] == "PostToolUse" and (e["tool"] or "").startswith("mcp__niu-local__"):
+            calls = open_local.get(e["project_dir"] or "", [])
+            for c in calls:
+                if c["sid"] == sid and (not e["tool_use_id"] or c["id"] == e["tool_use_id"]):
+                    calls.remove(c)
+                    break
         s = sessions.get(sid)
         if s is None:
             s = sessions[sid] = {
@@ -68,10 +97,20 @@ def build(events, now):
             if s["state"] != st:
                 s["state"], s["since"] = st, e["ts"]
 
+        if ev in ("SessionStart", "UserPromptSubmit"):
+            info = _session_info(e["summary"])
+            for k in ("title", "model", "local", "task"):
+                if info.get(k):
+                    s[k] = info[k]
         if ev == "SessionStart":
             s["ended"] = False
-            if (e["summary"] or "").startswith("local:"):
-                s["local"] = e["summary"][6:]
+            if s.get("local"):
+                # A niu-agent run started while a session had a niu-local tool call open in this project:
+                # that session is its caller.
+                for call in reversed(open_local.get(s["project_dir"], [])):
+                    if call["sid"] != sid and e["ts"] >= call["ts"] - 2:
+                        s["parent_session"], s["parent_tool"], s["query"] = call["sid"], call["tool"], call["query"]
+                        break
             set_state("idle")
         elif ev == "UserPromptSubmit":
             set_state("working")
@@ -79,6 +118,8 @@ def build(events, now):
             if aid and sub is None:  # tool call from a subagent we missed the start of
                 sub = s["subagents"][aid] = new_sub(e)
             target = sub if sub else s
+            if not sub and e["tool"] == "Skill" and "develop" in (e["summary"] or ""):
+                s.setdefault("develop_at", e["ts"])
             ticks = target.setdefault("tools", [])
             if len(ticks) < MAX_TICKS:
                 ticks.append((e["ts"], e["tool"]))
@@ -149,9 +190,110 @@ def today_stats(sessions, now):
     }
 
 
+REVIEWERS = ("security-reviewer", "test-reviewer")
+HANDOFF_LABEL = {"designer": "design", "implement": "code changes", "security-reviewer": "verdict",
+                 "test-reviewer": "verdict", "diff": "findings", "search": "findings", "ask": "answer"}
+
+
+def chain(s, local_kids):
+    """Ordered steps a session ran (agents, local agents, its own implement stretches), grouped where they ran in
+    parallel, plus hand-offs between consecutive groups. Agents never talk directly: the session passes each
+    step's result on to the next; that's what a hand-off shows."""
+    steps = [{"id": aid, "kind": "agent", "name": sb["type"], "start": sb["start"], "end": sb["stop"]}
+             for aid, sb in s["subagents"].items()]
+    steps += [{"id": l["id"], "kind": "local", "name": l.get("task") or "local", "start": l["first"],
+               "end": l["last"] if l["ended"] else None} for l in local_kids]
+    # the session's own edits between agent steps = "implement" stretches
+    bounds = sorted(st["start"] for st in steps)
+    edits = [ts for ts, t in s.get("tools", []) if t in EDIT_TOOLS]
+    runs = {}
+    for ts in edits:
+        k = sum(1 for b in bounds if b <= ts)
+        runs.setdefault(k, []).append(ts)
+    for k, ts_list in runs.items():
+        open_ = s["state"] == "working" and k == len(bounds) and s.get("current") and s["current"][0] in EDIT_TOOLS
+        steps.append({"id": f"impl:{s['id']}:{k}", "kind": "implement", "name": "implement", "start": min(ts_list),
+                      "end": None if open_ else max(ts_list), "edits": len(ts_list)})
+    steps.sort(key=lambda st: st["start"])
+    groups = []
+    for st in steps:
+        g = groups[-1] if groups else None
+        # parallel if it started before every member of the current group had finished
+        if g and any(m["end"] is None or st["start"] < m["end"] for m in g) and st["kind"] != "implement" \
+                and all(m["kind"] != "implement" for m in g):
+            g.append(st)
+        else:
+            groups.append([st])
+    handoffs = []
+    for a, b in zip(groups, groups[1:]):
+        if any(m["end"] is None for m in a):
+            continue
+        pairs = [(x, y) for x in a for y in b][:6]
+        for x, y in pairs:
+            handoffs.append({"from": x["id"], "to": y["id"], "label": HANDOFF_LABEL.get(x["name"], "result"),
+                             "at": y["start"]})
+    return {"steps": steps, "groups": [[m["id"] for m in g] for g in groups], "handoffs": handoffs}
+
+
+def develop_stages(s, ch):
+    """Progress of a /develop run (design → approve → implement → local review → review → report), or None."""
+    steps = ch["steps"]
+    designers = [st for st in steps if st["name"] == "designer"]
+    if not designers and not s.get("develop_at"):
+        return None
+    t0 = min([st["start"] for st in designers] + ([s["develop_at"]] if s.get("develop_at") else []))
+    after = lambda t: [st for st in steps if st["start"] >= t]  # noqa: E731
+    stages = []
+
+    def add(name, status, at=None):
+        stages.append({"stage": name, "status": status, "at": at})
+
+    d_end = None
+    if not designers:
+        add("design", "active" if s["state"] == "working" else "pending")
+    elif any(st["end"] is None for st in designers):
+        add("design", "active", designers[0]["start"])
+    else:
+        d_end = max(st["end"] for st in designers)
+        add("design", "done", d_end)
+    impl = [st for st in after(d_end or t0) if st["kind"] == "implement"] if d_end else []
+    asked = [ts for ts, t in s.get("tools", []) if t == "AskUserQuestion" and d_end and ts >= d_end]
+    if not d_end:
+        add("approve", "pending")
+    elif impl:
+        add("approve", "done", asked[0] if asked else impl[0]["start"])
+    else:
+        add("approve", "active", asked[0] if asked else d_end)
+    i_start = impl[0]["start"] if impl else None
+    later = [st for st in after(i_start) if st["kind"] != "implement"] if i_start else []
+    if not impl:
+        add("implement", "pending")
+    else:
+        add("implement", "done" if later or any(st["end"] for st in impl) and s["state"] != "working" else "active", i_start)
+    localrev = [st for st in later if st["kind"] == "local" and st["name"] == "diff"]
+    revs = [st for st in later if st["name"] in REVIEWERS]
+    if localrev:
+        add("local review", "active" if any(st["end"] is None for st in localrev) else "done", localrev[0]["start"])
+    else:
+        add("local review", "skipped" if revs else "pending")
+    if not revs:
+        add("review", "pending")
+    elif any(st["end"] is None for st in revs) or not all(any(r["name"] == n for r in revs) for n in REVIEWERS):
+        add("review", "active", revs[0]["start"])
+    else:
+        add("review", "done", max(st["end"] for st in revs))
+    review_done = stages[-1]["status"] == "done"
+    add("report", "done" if review_done and s["state"] in ("idle", "ended") else "active" if review_done else "pending")
+    return stages
+
+
 def to_json(sessions, events, now, domain=None, show_ended=True, feed_n=60):
     """JSON-ready state for the web dashboard."""
     out = []
+    kids_of = {}
+    for s in sessions.values():
+        if s.get("parent_session"):
+            kids_of.setdefault(s["parent_session"], []).append(s)
     for s in sorted(sessions.values(), key=lambda s: -s["last"]):
         if domain and s["domain"] != domain:
             continue
@@ -177,6 +319,9 @@ def to_json(sessions, events, now, domain=None, show_ended=True, feed_n=60):
             "edited": s["edited"], "flagged": s["flagged"], "ran": sorted(s["ran"]),
             "subagents": subs, "pending": pending, "tools": s.get("tools", []),
             "waits": s.get("waits", []), "messages": s.get("messages", []), "local": s.get("local"),
+            "title": s.get("title"), "model": s.get("model"), "task": s.get("task"),
+            "parent_session": s.get("parent_session"), "parent_tool": s.get("parent_tool"), "query": s.get("query"),
+            **(lambda ch: {"chain": ch, "pipeline": develop_stages(s, ch)})(chain(s, kids_of.get(s["id"], []))),
         })
     feed = []
     for e in reversed(events):

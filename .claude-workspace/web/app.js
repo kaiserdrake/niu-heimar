@@ -35,6 +35,23 @@ const hhmmss = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour12: fals
 const visible = () => (STATE?.sessions || []).filter((s) => $("ended").checked || !s.ended);
 const trunc = (s, n) => (s = String(s || ""), s.length > n ? s.slice(0, n - 1) + "…" : s);
 const projLabel = (s) => s.project || (s.domain === "(workspace)" ? "niu-heimar config" : "(domain root)");
+const TASK_NAME = { search: "search agent", diff: "diff reviewer", ask: "Q&A agent", local_search: "search agent",
+  local_diff_review: "diff reviewer", local_ask: "Q&A agent" };
+const shortModel = (m) => String(m || "").replace(/^claude-/, "").replace(/-\d{8}$/, "");
+// Name: the session's own title, or what it is (local agent task / Claude session + short id).
+function sessName(s) {
+  if (s.local) return `Local ${TASK_NAME[s.task] || TASK_NAME[s.parent_tool] || "agent"}`;
+  return s.title || `Claude session ${s.id.slice(0, 4)}`;
+}
+// Details line: where it runs and on which model.
+function sessSub(s) {
+  if (s.local) return `${s.local} · ${STATE_LABEL[s.state] || s.state}`;
+  const bits = [s.title ? projLabel(s) : `${projLabel(s)}`, dl(s.domain)];
+  if (s.domain === "(workspace)") bits.splice(1, 1);
+  if (s.model) bits.push(shortModel(s.model));
+  bits.push(`${STATE_LABEL[s.state] || s.state}${s.current ? ` · ${s.current[0]}` : ""}`);
+  return bits.join(" · ");
+}
 function svg(tag, attrs, text) {
   const el = document.createElementNS(SVGNS, tag);
   for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v);
@@ -134,9 +151,11 @@ function renderSessions() {
       const need = ACT_BY.session.get(s.id);
       const needTag = need ? `<span class="needtag ${need.priority >= 3 ? "" : "mid"}" title="${esc(need.title)}">needs you</span>` : "";
       html += `<div class="sess st-${esc(s.state)} ${s.flagged ? "flag" : ""} ${need ? `needs-you ${need.priority >= 3 ? "high" : ""}` : ""}" data-sid="${esc(s.id)}">
-        <div class="top"><span class="proj">${esc(projLabel(s))} ${s.local ? `<span class="localtag" title="Agent running on a local Ollama model">local · ${esc(s.local)}</span>` : ""} ${needTag}</span>
+        <div class="top"><span class="proj" title="${esc(sessName(s))}">${esc(sessName(s))} ${s.local ? `<span class="localtag" title="Agent running on a local Ollama model">local · ${esc(s.local)}</span>` : ""} ${needTag}</span>
         <span class="pill st-${esc(s.state)}">${esc(STATE_LABEL[s.state] || s.state)} · ${dur(STATE.now - s.since)}</span></div>
-        <div class="muted small">session ${esc(s.id.slice(0, 8))}</div>
+        <div class="muted small">${esc(projLabel(s))}${s.model ? ` · ${esc(shortModel(s.model))}` : ""}${s.local && s.query ? ` · “${esc(trunc(s.query, 50))}”` : ""} · ${esc(s.id.slice(0, 8))}</div>
+        ${s.pipeline ? `<div class="pipe" aria-label="/develop progress">${s.pipeline.map((p) =>
+          `<span class="stg ${esc(p.status)}" title="${esc(`${p.stage}: ${p.status}${p.at ? ` · ${hhmmss(p.at)}` : ""}`)}">${p.status === "done" ? "✓" : p.status === "active" ? "●" : p.status === "skipped" ? "–" : "○"} ${esc(p.stage)}</span>`).join('<span class="stg-sep">›</span>')}</div>` : ""}
         <div class="cur" title="${esc(cur)}">${esc(cur) || "&nbsp;"}</div>
         <div class="chips">${chips}</div>
         ${s.flagged ? `<div class="flagmsg">⚠ edited files without both reviewers</div>` : ""}</div>`;
@@ -155,7 +174,7 @@ function graphInit() {
   if (G.root) return;
   const root = svg("svg", { role: "img", "aria-label": "Agent interaction graph" });
   const defs = svg("defs");
-  for (const [id, cls] of [["ar", "arrow"], ["ar-active", "arrow active"], ["ar-msg", "arrow msg"]]) {
+  for (const [id, cls] of [["ar", "arrow"], ["ar-active", "arrow active"], ["ar-msg", "arrow msg"], ["ar-local", "arrow local"], ["ar-handoff", "arrow handoff"]]) {
     const m = svg("marker", { id, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" });
     m.append(svg("path", { d: "M0,0 L10,5 L0,10 z", class: cls }));
     defs.append(m);
@@ -167,17 +186,53 @@ function graphInit() {
   G.root = root;
 }
 
+// Local Ollama agent runs started by a session's niu-local tool call, shown under that session.
+function localKids() {
+  const out = {};
+  for (const s of STATE.sessions) {
+    if (!s.local || !s.parent_session) continue;
+    if (s.ended && STATE.now - s.last > 600 && !$("ended").checked) continue;
+    (out[s.parent_session] ||= []).push(s);
+  }
+  return out;
+}
+
 function graphLayout(list) {
   let y = PAD; const nodes = [], edges = [];
+  const lk = localKids();
   for (const s of list) {
     const kids = {};
     for (const a of s.subagents) (kids[a.parent] ||= []).push(a);
+    for (const l of lk[s.id] || []) (kids[s.id] ||= []).push({ localSession: l });
+    // The session's own implement stretches, so the hand-off chain reads design → implement → review.
+    const hasAgents = (kids[s.id] || []).length > 0;
+    if (hasAgents) for (const st of (s.chain?.steps || []).filter((x) => x.kind === "implement")) (kids[s.id] ||= []).push({ implStep: st });
+    const startOf = (c) => c.localSession ? c.localSession.first : c.implStep ? c.implStep.start : c.start;
+    if (kids[s.id]) kids[s.id].sort((a, b) => startOf(a) - startOf(b));
     const place = (id, depth, info) => {
       const node = { id, x: PAD + depth * (NW + XG), y, ...info };
       nodes.push(node);
       const children = kids[id] || [];
       if (!children.length) y += NH + YG;
       for (const c of children) {
+        if (c.implStep) {
+          const st = c.implStep, live = st.end == null;
+          place(st.id, depth + 1, {
+            kind: "step", sid: s.id, label: "Implement", source: "session", running: live && s.state === "working", done: !live,
+            sub: `${st.edits} edit${st.edits === 1 ? "" : "s"} by the session${live ? "" : ` · ${dur(Math.max(0, st.end - st.start))}`}`,
+          });
+          continue;
+        }
+        if (c.localSession) {
+          const l = c.localSession, live = !l.ended;
+          const child = place(l.id, depth + 1, {
+            kind: "local", sid: l.id, label: sessName(l), source: "local", running: live && l.state === "working", done: !live,
+            sub: `${l.local} · ${live ? (l.current ? `${l.current[0]}: ${l.current[1]}` : STATE_LABEL[l.state] || l.state) : `done in ${dur(l.last - l.first)}`}`,
+            localModel: l.local,
+          });
+          edges.push({ id: `${id}>${l.id}`, a: node, b: child, label: l.query || l.task, active: live, kind: "local" });
+          continue;
+        }
         const child = place(c.id, depth + 1, {
           kind: "sub", sid: s.id, aid: c.id, label: c.type, source: c.source, running: !c.stop, done: !!c.stop,
           sub: c.stop ? `done in ${dur(c.stop - c.start)}` : c.current ? `${c.current[0]}: ${c.current[1]}` : `running ${dur(STATE.now - c.start)}`,
@@ -187,10 +242,14 @@ function graphLayout(list) {
       return node;
     };
     const root = place(s.id, 0, {
-      kind: "session", sid: s.id, label: projLabel(s), source: "session", running: s.state === "working", waiting: s.state === "waiting",
-      sub: `${s.local ? `local · ${s.local}` : dl(s.domain)} · ${STATE_LABEL[s.state] || s.state}${s.current ? ` · ${s.current[0]}` : ""}`,
-      localModel: s.local || null,
+      kind: "session", sid: s.id, label: sessName(s), source: s.local ? "local" : "session", running: s.state === "working", waiting: s.state === "waiting",
+      sub: sessSub(s), localModel: s.local || null,
     });
+    // Hand-offs: the session passes each finished step's result to the next step(s).
+    for (const h of s.chain?.handoffs || []) {
+      const a = nodes.find((n) => n.id === h.from), b = nodes.find((n) => n.id === h.to);
+      if (a && b) edges.push({ id: `${h.from}=>${h.to}`, a, b, label: h.label, kind: "handoff" });
+    }
     s.messages.forEach((m, i) => {
       const from = nodes.find((n) => n.id === m.from) || root;
       const ext = { id: `msg:${s.id}:${m.to}`, x: from.x + NW + XG, y: from.y + i * 4, kind: "ext", label: `→ ${m.to}`, sub: "message recipient", source: "msg" };
@@ -199,12 +258,20 @@ function graphLayout(list) {
     });
     y += YG;
   }
-  return { nodes, edges, W: Math.max(...nodes.map((n) => n.x + NW), 400) + PAD, H: y + PAD };
+  const extra = edges.some((e) => e.kind === "handoff") ? HB + 120 : 0;
+  return { nodes, edges, W: Math.max(...nodes.map((n) => n.x + NW), 400) + PAD + extra, H: y + PAD };
 }
 
 const edgePath = (a, b) => {
   const x1 = a.x + NW, y1 = a.y + NH / 2, x2 = b.x - 4, y2 = b.y + NH / 2, mx = (x1 + x2) / 2;
   return `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
+};
+// Hand-off between steps stacked in the same column: a bracket on the right-hand side, from one step to the next.
+const HB = 46;
+const handoffPath = (a, b) => {
+  if (a.x !== b.x) return edgePath(a, b);
+  const x = a.x + NW, y1 = a.y + NH * 0.66, y2 = b.y + NH * 0.34;
+  return `M${x},${y1} C${x + HB},${y1} ${x + HB},${y2} ${x + 4},${y2}`;
 };
 
 function graphNode(n) {
@@ -233,7 +300,7 @@ function graphNode(n) {
   g.classList.remove("leave");
   g.dataset.sid = n.sid || ""; g.dataset.aid = n.aid || "";
   const [badge, name, sub, bar, title] = [g.querySelector(".badge"), g.querySelector(".name"), g.querySelector(".sub"), g.querySelector(".bar"), g.querySelector("title")];
-  badge.textContent = n.kind === "session" ? "session" : n.kind === "ext" ? "message" : n.source;
+  badge.textContent = n.kind === "session" ? "session" : n.kind === "ext" ? "message" : n.kind === "step" ? "session step" : n.source;
   badge.setAttribute("class", `badge src-${n.kind === "sub" ? n.source : "session"}`);
   name.textContent = trunc(n.label, 26);
   sub.textContent = trunc(n.sub, 32);
@@ -253,14 +320,21 @@ function graphEdge(e) {
     rec = { pid, base, flow, label };
     G.edges.set(e.id, rec);
   }
-  const d = edgePath(e.a, e.b);
+  const hand = e.kind === "handoff";
+  const d = hand ? handoffPath(e.a, e.b) : edgePath(e.a, e.b);
   rec.base.setAttribute("d", d); rec.flow.setAttribute("d", d);
-  rec.base.setAttribute("class", `gedge ${e.kind === "msg" ? "msg" : ""} ${e.active ? "active" : ""}`);
-  rec.flow.setAttribute("class", `gflow ${e.active && e.kind === "spawn" ? "active" : ""}`);
-  rec.base.setAttribute("marker-end", `url(#${e.kind === "msg" ? "ar-msg" : e.active ? "ar-active" : "ar"})`);
+  rec.base.setAttribute("class", `gedge ${e.kind === "msg" ? "msg" : ""} ${e.kind === "local" ? "local" : ""} ${hand ? "handoff" : ""} ${e.active ? "active" : ""}`);
+  rec.flow.setAttribute("class", `gflow ${e.active && e.kind !== "msg" ? "active" : ""} ${e.kind === "local" ? "local" : ""}`);
+  rec.base.setAttribute("marker-end", `url(#${e.kind === "msg" ? "ar-msg" : e.kind === "local" ? "ar-local" : hand ? "ar-handoff" : e.active ? "ar-active" : "ar"})`);
   rec.label.textContent = trunc(e.label, 22);
-  rec.label.setAttribute("x", e.a.x + NW + 8);
-  rec.label.setAttribute("y", e.b.y + NH / 2 - 7);
+  rec.label.setAttribute("class", `elabel ${hand ? "hlabel" : ""}`);
+  if (hand) {
+    rec.label.setAttribute("x", e.a.x + NW + HB + 6);
+    rec.label.setAttribute("y", (e.a.y + e.b.y) / 2 + NH / 2 + 4);
+  } else {
+    rec.label.setAttribute("x", e.a.x + NW + 8);
+    rec.label.setAttribute("y", e.b.y + NH / 2 - 7);
+  }
   rec.alive = true;
   return rec;
 }
@@ -292,7 +366,9 @@ function burst(n, cls, text) {
 }
 
 function renderGraph() {
-  const list = visible().slice(0, 10);
+  // Local agent runs with a visible caller are drawn under that caller, not as separate roots.
+  const shown = new Set(visible().map((s) => s.id));
+  const list = visible().filter((s) => !(s.local && s.parent_session && shown.has(s.parent_session))).slice(0, 10);
   if (!list.length) {
     G.root = null; G.nodes.clear(); G.edges.clear(); G.seen.clear(); G.first = true;
     $("graph").innerHTML = `<div class="empty">&nbsp;&nbsp;No agent activity yet. Start a Claude session in the workspace.</div>`;
@@ -340,6 +416,27 @@ function renderGraph() {
       G.seen.set(k, { tools: now, stopped: !!a.stop });
     }
   }
+  // Local Ollama agents: request out, tool work, answer back
+  for (const kids of Object.values(localKids())) for (const l of kids) {
+    const k = `l:${l.id}`, p = G.seen.get(k), rec = recs.get(`${l.parent_session}>${l.id}`), now = l.tools.length;
+    if (!G.first && rec) {
+      if (!p) packet(rec.pid, "local", { dur: 1.1 });
+      else {
+        l.tools.slice(p.tools, now).slice(-3).forEach(([, tool], i) => {
+          packet(rec.pid, "local", { delay: i * 180 });
+          setTimeout(() => burst(byId.get(l.id), "local", tool), i * 180 + 900);
+        });
+        if (!p.ended && l.ended) packet(rec.pid, "result", { reverse: true, dur: 1.1 });
+      }
+    }
+    G.seen.set(k, { tools: now, ended: !!l.ended });
+  }
+  // A new hand-off: the finished step's result travels to the next step.
+  edges.filter((e) => e.kind === "handoff").forEach((e, i) => {
+    const k = `h:${e.id}`, rec = recs.get(e.id);
+    if (!G.seen.has(k) && !G.first && rec) packet(rec.pid, "handoff", { delay: i * 150, dur: 1.2 });
+    G.seen.set(k, true);
+  });
   G.first = false;
 }
 
@@ -597,16 +694,36 @@ $("notify").onchange = () => setNotify($("notify").checked);
 window.addEventListener("resize", () => STATE && renderTimeline());
 
 // Local LLM endpoint health (GPU box / local CPU), refreshed every 30 s
-async function loadLLM() {
-  const r = await fetch("/api/llm", { credentials: "same-origin" }).then((x) => x.json()).catch(() => null);
-  const box = $("llm");
-  if (!r || !r.endpoints || !r.endpoints.length) { box.hidden = true; return; }
+const EP_NAME = { remote: "Remote GPU", local: "Local CPU" };
+async function loadLLM(force) {
+  const r = await fetch(`/api/llm${force ? "?force=1" : ""}`, { credentials: "same-origin" }).then((x) => x.json()).catch(() => null);
+  const box = $("llm"), card = $("llmcard");
+  if (!r || !r.endpoints || !r.endpoints.length) {
+    box.hidden = true;
+    card.innerHTML = `<div class="msg err">Can't read the local LLM status from the dashboard server.</div>`;
+    return;
+  }
+  const eps = r.endpoints;
+  const state = (e) => !e.up ? "down" : Object.values(e.models || {}).every((m) => m.present) ? "up" : "partial";
+  const word = { up: "online", partial: "models missing", down: "offline" };
   box.hidden = false;
-  box.innerHTML = r.endpoints.map((e) => {
-    const models = Object.values(e.models || {}).map((m) => `${m.name}${m.present ? "" : " (missing)"}`);
-    const tip = `${e.label} ${e.url} · ${e.up ? `up, Ollama ${e.version}` : `down: ${e.error || "unreachable"}`} · ${e.mode} mode · ${[...new Set(models)].join(", ")}`;
-    return `<span class="llmdot ${e.up ? "up" : "down"}" title="${esc(tip)}"><i></i>${esc(e.label)}</span>`;
-  }).join("");
+  box.innerHTML = eps.map((e) => `<span class="llmpill ${state(e)}" title="${esc(`${EP_NAME[e.name] || e.label} ${e.url}: ${word[state(e)]}`)}">` +
+    `<i></i>${esc(e.label)} ${word[state(e)]}</span>`).join("");
+  card.innerHTML = eps.map((e) => {
+    const st = state(e);
+    const models = [...new Map(Object.entries(e.models || {}).map(([task, m]) => [m.name, { ...m, tasks: [] }])).values()];
+    for (const [task, m] of Object.entries(e.models || {})) models.find((x) => x.name === m.name).tasks.push(task);
+    const hint = e.up ? "" : e.name === "local"
+      ? `<div class="hint">Not reachable from ${esc(HOST())}. Publish the container on loopback (<code>ports: ["127.0.0.1:11434:11434"]</code>) or set <code>OLLAMA_LOCAL_BASE_URL</code>.</div>`
+      : `<div class="hint">Not reachable. Check the machine and that Ollama listens on the LAN (<code>OLLAMA_HOST=0.0.0.0</code>). Local agents fall back to the CPU endpoint.</div>`;
+    return `<div class="ep ${st}">
+      <div class="ep-h"><span class="llmpill ${st}"><i></i>${esc(word[st])}</span> <b>${esc(EP_NAME[e.name] || e.label)}</b>
+        <span class="muted small mono">${esc(e.url)}</span></div>
+      <div class="small muted">${e.up ? `Ollama ${esc(e.version)} · ` : ""}${esc(e.mode)} mode${e.name === "remote" ? " · used first" : " · fallback"}</div>
+      <div class="chips mt8">${models.map((m) => `<span class="chip ${m.present ? "" : "pend"}" title="${esc(m.tasks.join(", "))}">${m.present ? "✓" : "✗"} ${esc(m.name)} <span class="muted">${esc(m.tasks.join("/"))}</span></span>`).join("")}</div>
+      ${hint}</div>`;
+  }).join("") + `<div class="small muted mt8">checked ${hhmmss(Date.now() / 1000)} · <button class="ghost linkish" id="llmrecheck">Re-check now</button></div>`;
+  $("llmrecheck").onclick = () => loadLLM(true);
 }
 loadLLM();
 setInterval(() => { if (!document.hidden) loadLLM(); }, 30000);

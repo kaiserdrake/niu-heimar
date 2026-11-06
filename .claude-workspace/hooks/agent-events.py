@@ -41,6 +41,10 @@ def summarize(tool, ti, project_dir):
         s = f"{ti.get('subagent_type', '')}: {ti.get('description', '')}".strip(": ")
     elif tool == "WebFetch":
         s = (ti.get("url") or "").split("?")[0]
+    elif tool == "Skill":
+        s = ti.get("skill") or ti.get("command") or ti.get("name") or ""
+    elif tool.startswith("mcp__niu-local__"):
+        s = ti.get("query") or ti.get("question") or ti.get("focus") or ti.get("base") or ""
     elif tool == "SendMessage":
         s = f"to: {ti.get('to') or ti.get('recipient') or ''}"
     elif tool == "WebSearch":
@@ -69,9 +73,20 @@ def main():
     elif event == "Notification":
         from niu_events import redact
         summary = redact(str(data.get("notification_type") or data.get("message") or ""))[:120]
-    elif event == "SessionStart":
-        label = os.environ.get("NIU_AGENT_LABEL", "")
-        summary = label if label.startswith("local:") else str(data.get("source") or "")
+    elif event in ("SessionStart", "UserPromptSubmit"):
+        # Session identity for the dashboard: title, model, and (for niu-agent runs) the local model and task.
+        # Never the prompt text itself.
+        from niu_events import redact
+        info = {"title": redact(str(data.get("session_title") or ""))[:80] or None,
+                "model": str(data.get("model") or "")[:60] or None}
+        if event == "SessionStart":
+            info["source"] = str(data.get("source") or "") or None
+            label = os.environ.get("NIU_AGENT_LABEL", "")
+            if label.startswith("local:"):
+                info["local"] = label[6:]
+                info["task"] = os.environ.get("NIU_AGENT_TASK") or None
+        info = {k: v for k, v in info.items() if v}
+        summary = json.dumps(info, separators=(",", ":")) if info else ""
     elif event == "SessionEnd":
         summary = str(data.get("reason") or "")
 
