@@ -94,6 +94,9 @@ def build(events, now):
             }
         s["last"] = e["ts"]
         ev, aid = e["event"], e["agent_id"]
+        if s.get("dismissed") and ev != "SessionEnd":
+            # dismissed from the dashboard, but it was alive after all: show it again
+            s["ended"], s["dismissed"], s["state"], s["since"] = False, False, "working", e["ts"]
         sub = s["subagents"].get(aid) if aid else None
 
         def set_state(st, s=s, e=e):
@@ -171,6 +174,7 @@ def build(events, now):
                     s["ran"].add(sb["type"])
         elif ev == "SessionEnd":
             s["ended"] = True
+            s["dismissed"] = (e["summary"] or "").startswith("dismissed")
             set_state("ended")
     for s in sessions.values():
         quiet = now - s["last"]

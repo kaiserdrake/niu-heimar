@@ -91,6 +91,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .src-project { color: var(--project); } .src-domain { color: var(--domain); } .src-shared { color: var(--shared); } .src-builtin, .src-user { color: var(--builtin); }
 .flagmsg { color: var(--bad); font-size: 12px; margin-top: 6px; }
 
+.sessacts { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.sessacts .tiny { margin-left: auto; padding: 1px 8px; font-size: 11.5px; }
+
 /* themed hover tooltip for the graph and timeline */
 .gtip { position: fixed; left: 0; top: 0; z-index: 60; pointer-events: none; max-width: 320px; padding: 6px 10px 7px;
   background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow);

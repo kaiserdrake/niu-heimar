@@ -5,6 +5,7 @@ import json
 import os
 import re
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -219,12 +220,39 @@ try:
     node = shutil.which("node") or next(iter(sorted(glob.glob(os.path.expanduser("~/.nvm/versions/node/*/bin/node")))), None)
     if node:
         st_path = tmp / "state.json"
-        st_path.write_text(json.dumps(req("GET", "/api/state")[2]))
+        smoke = req("GET", "/api/state")[2]
+        if smoke["sessions"]:  # also render dismissable cards: one stale, one waiting and quiet for over 30 min
+            base = smoke["sessions"][0]
+            smoke["sessions"] += [{**base, "id": "smoke-stale", "state": "stale", "ended": False, "last": smoke["now"] - 4000},
+                                  {**base, "id": "smoke-wait", "state": "waiting", "ended": False, "last": smoke["now"] - 4000}]
+        st_path.write_text(json.dumps(smoke))
         r = subprocess.run([node, str(SH / "tests" / "web_smoke.js"), str(SH / "web" / "app.js"), str(st_path)],
                            capture_output=True, text=True, timeout=60)
         check(r.returncode == 0 and "rendered" in r.stdout, f"app.js renders without errors: {r.stdout.strip()} {r.stderr.strip()[:300]}")
     else:
         print("web: node not found, front-end smoke run skipped")
+
+    # Dismiss a session the hooks never saw end: paired browsers only; it comes back if it does anything again
+    check(req("POST", "/api/sessions/dismiss", {"session": "sess-web1"}, POSTH)[0] == 401, "dismiss needs pairing")
+    check(req("POST", "/api/sessions/dismiss", {"session": "sess-web1"}, {"Origin": ORIGIN, "Cookie": tok})[0] == 403,
+          "dismiss without CSRF header -> 403")
+    check(req("POST", "/api/sessions/dismiss", {"session": "../x"}, auth)[0] == 400, "dismiss validates the id")
+    check(req("POST", "/api/sessions/dismiss", {"session": "web"}, auth)[0] == 400, "system session can't be dismissed")
+    check(req("POST", "/api/sessions/dismiss", {"session": "nope-1"}, auth)[0] == 404, "unknown session -> 404")
+    check(req("POST", "/api/sessions/dismiss", ["sess-web1"], auth)[0] == 400, "non-object body -> 400")
+    check(req("POST", "/api/sessions/dismiss", {"session": "sess-web1"}, auth)[0] == 200, "dismiss ok")
+    check(req("POST", "/api/sessions/dismiss", {"session": "sess-web1"}, auth)[0] == 200, "repeat dismiss ok")
+    con = sqlite3.connect(env["NIU_EVENTS_DB"])
+    n_end = con.execute("SELECT COUNT(*) FROM events WHERE session_id='sess-web1' AND event='SessionEnd'").fetchone()[0]
+    con.close()
+    check(n_end == 1, f"repeat dismiss adds no second row: {n_end}")
+    time.sleep(1.1)
+    s = next(x for x in req("GET", "/api/state")[2]["sessions"] if x["id"] == "sess-web1")
+    check(s["ended"] and s["state"] == "ended", f"dismissed session is ended: {s['state']}")
+    ev("PreToolUse", tool_name="Bash", tool_input={"command": "ls"}, tool_use_id="t9")
+    time.sleep(1.1)
+    s = next(x for x in req("GET", "/api/state")[2]["sessions"] if x["id"] == "sess-web1")
+    check(not s["ended"] and s["state"] == "working", f"activity after dismiss reopens it: {s['state']}")
 
     # Revoke + rate limit
     subprocess.run([str(SH / "bin" / "niu-dash"), "revoke", "all"], env=env, capture_output=True)
