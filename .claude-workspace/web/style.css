@@ -272,7 +272,7 @@ button.linkish { border: 0; padding: 0; color: var(--accent); background: none; 
 .calm .stg.active { animation: none; }
 
 /* =====================================================================
-   One-screen layout (≥ 900×600): sessions | graph over timeline | pull-out drawer
+   One-screen layout (≥ 900×600): left column (sessions, needs you, PRs, LLMs) | graph over timeline
    Events tab: the feed takes the main area. Panels scroll on their own.
    ===================================================================== */
 @media (prefers-color-scheme: dark) {
@@ -282,8 +282,6 @@ button.linkish { border: 0; padding: 0; color: var(--accent); background: none; 
     --grid-dot: rgba(120,160,200,.09);
   }
 }
-:root { --drawer-w: 0px; }
-body.drawer-open { --drawer-w: clamp(300px, 26vw, 380px); }
 
 body.mc { height: 100vh; height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
 .mc .bar { position: relative; padding: 6px 12px; gap: 6px 12px; flex-wrap: wrap; }
@@ -304,39 +302,27 @@ body.mc { height: 100vh; height: 100dvh; display: grid; grid-template-rows: auto
 .mc .controls select { padding: 3px 8px; font-size: 12.5px; }
 
 .mcgrid { display: grid; gap: 10px; padding: 10px; min-height: 0; position: relative;
-  grid-template-columns: minmax(230px, 22%) minmax(0, 1fr) var(--drawer-w);
+  grid-template-columns: minmax(250px, 24%) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr) minmax(140px, 30%);
-  grid-template-areas: "sess graph drawer" "sess time drawer"; }
-/* slide the drawer only after the first paint (no animation on load), and never with reduced motion */
-body.ready .mcgrid { transition: grid-template-columns .25s ease; }
-@media (prefers-reduced-motion: reduce) { body.ready .mcgrid { transition: none; } }
-body.calm .mcgrid { transition: none; }
-body:not(.drawer-open) .mcgrid { column-gap: 10px; }
+  grid-template-areas: "left graph" "left time"; }
 .p-sessions { grid-area: sess; } .p-graph { grid-area: graph; } .p-timeline { grid-area: time; } .p-feed { grid-area: feed; }
 .mcgrid .panel.p-feed { display: none; }
-.mcgrid[data-view="events"] { grid-template-areas: "feed feed drawer" "feed feed drawer"; }
-.mcgrid[data-view="events"] .panel.p-sessions, .mcgrid[data-view="events"] .panel.p-graph, .mcgrid[data-view="events"] .panel.p-timeline { display: none; }
+.mcgrid[data-view="events"] { grid-template-areas: "left feed" "left feed"; }
+.mcgrid[data-view="events"] .panel.p-graph, .mcgrid[data-view="events"] .panel.p-timeline { display: none; }
 .mcgrid[data-view="events"] .panel.p-feed { display: flex; }
 
-.drawer { grid-area: drawer; display: grid; gap: 10px; min-height: 0; min-width: 0; overflow: hidden;
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) auto; }
-body:not(.drawer-open) .drawer { visibility: hidden; }
-.pulltab { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 15; display: flex; flex-direction: column;
-  align-items: center; gap: 8px; padding: 12px 5px; border-radius: 10px 0 0 10px; border: 1px solid var(--border); border-right: 0;
-  background: var(--card); box-shadow: var(--shadow); color: var(--muted); }
-.pulltab:hover { color: var(--text); border-color: var(--accent); }
-body.drawer-open .pulltab { right: calc(var(--drawer-w) + 10px); }
-.pt-arrow { font-size: 16px; line-height: 1; transition: transform .25s; }
-body.drawer-open .pt-arrow { transform: rotate(180deg); }
-.pt-label { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
-.pt-badge { min-width: 20px; height: 20px; padding: 0 5px; border-radius: 999px; background: var(--warn); color: #fff; font-size: 11px; font-weight: 700;
-  line-height: 20px; text-align: center; }
-.pt-badge.high { background: var(--bad); animation: bump .5s; }
-.pt-prs { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 10.5px; }
-.pt-llm { display: flex; flex-direction: column; gap: 4px; }
-.pt-llm i { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); display: block; }
-.pt-llm i.up { background: var(--t-local); } .pt-llm i.partial { background: var(--warn); }
-.drawer .panel.flash { animation: hl 1.4s ease-out; }
+/* left column: sessions take what the status panels don't need; empty panels shrink to their header */
+.leftcol { grid-area: left; display: flex; flex-direction: column; gap: 10px; min-height: 0; min-width: 0; }
+.leftcol .p-sessions { flex: 1 1 45%; min-height: 160px; }
+.leftcol .p-needs { flex: 0 1 auto; max-height: 28%; }
+.leftcol .p-prs { flex: 0 1 auto; max-height: 22%; }
+.leftcol .p-llm { flex: 0 0 auto; }
+.leftcol .panel .pb:has(> .none:only-child), .leftcol .panel .pb:has(> .empty:only-child) { padding: 6px 10px; }
+.leftcol .panel.flash { animation: hl 1.4s ease-out; }
+.llmrow { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 12px; min-width: 0; }
+.llmrow .nm { font-weight: 600; } .llmrow .mdl { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.llmrow + .hint { margin: 2px 0 4px; font-size: 11px; color: var(--warn); background: var(--warn-bg); border-radius: 6px; padding: 3px 7px; }
+.llmfoot { font-size: 11px; color: var(--muted); margin-top: 2px; }
 
 .panel { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--card); border: 1px solid var(--border);
   border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; position: relative; }
@@ -349,7 +335,7 @@ body.drawer-open .pt-arrow { transform: rotate(180deg); }
 .ph > .small { margin-left: auto; font-size: 11px; }
 .ph .tiny { margin-left: auto; padding: 1px 8px; font-size: 11.5px; }
 .pb { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 10px; scrollbar-width: thin; }
-.p-llm .pb { max-height: 34vh; }
+.p-llm .pb { padding: 6px 10px; }
 
 .mc .sessions { display: flex; flex-direction: column; gap: 6px; }
 .mc .domain-h { margin: 4px 0 0; font-size: 10.5px; }
@@ -380,22 +366,25 @@ body.drawer-open .pt-arrow { transform: rotate(180deg); }
 
 .mc .details { top: 56px; bottom: 12px; right: 12px; max-height: none; width: min(420px, calc(100vw - 24px)); z-index: 20; }
 
-/* 900–1100 px wide: the open drawer floats over the graph instead of squeezing it */
-@media (max-width: 1100px) {
-  body.drawer-open { --drawer-w: 0px; }
-  body.drawer-open .drawer { visibility: visible; position: fixed; top: 56px; bottom: 10px; right: 10px; width: min(360px, 80vw); z-index: 14;
-    background: var(--bg); padding: 0; }
-  body.drawer-open .pulltab { right: calc(min(360px, 80vw) + 10px); }
-}
 
-/* below 900×600: scrolling stack, drawer content inline */
+/* below 900×600: scrolling stack */
 @media (max-width: 899px), (max-height: 599px) {
   body.mc { height: auto; overflow: auto; display: block; }
   .mc .bar { position: sticky; }
   .mcgrid { display: flex; flex-direction: column; }
   .mcgrid[data-view="agents"] .p-feed { display: none; }
   .p-graph { height: 60vh; } .p-timeline { height: 40vh; } .p-sessions, .p-feed { max-height: 70vh; }
-  .drawer, body:not(.drawer-open) .drawer { visibility: visible; position: static; display: flex; flex-direction: column; width: auto; }
-  .drawer .panel { max-height: 60vh; }
-  .pulltab { display: none; }
+  .leftcol { display: contents; }
+  .leftcol .panel { max-height: 60vh; }
 }
+
+/* left column: cards keep their natural height (the panel scrolls), and needs-you rows stack in the narrow column */
+.mc .sessions > * { flex: none; }
+.leftcol .act { grid-template-columns: 14px minmax(0, 1fr); grid-template-areas: "ico t" ". d" ". b"; gap: 2px 8px; padding: 7px 2px; }
+.leftcol .act .ico { grid-area: ico; } .leftcol .act .t { grid-area: t; } .leftcol .act .d { grid-area: d; }
+.leftcol .act .b { grid-area: b; grid-row: auto; margin-top: 3px; }
+.leftcol .act .b button { padding: 1px 9px; font-size: 11.5px; }
+.leftcol .pr { grid-template-columns: minmax(0, 1fr); }
+.leftcol .pr .acts { grid-row: auto; }
+.leftcol .pr .acts button { padding: 1px 9px; font-size: 11.5px; }
+.needs { white-space: nowrap; }

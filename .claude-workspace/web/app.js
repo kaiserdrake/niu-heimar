@@ -101,21 +101,13 @@ const toggleMenu = (open) => toggleDrop("menu", open);
 $("menubtn").addEventListener("click", (e) => { e.stopPropagation(); toggleDrop("menu"); });
 $("bellbtn").addEventListener("click", (e) => {
   e.stopPropagation();
-  toggleDrawer(true);
-  const panel = document.querySelector(".p-needs");
+  const panel = $("needspanel");
+  panel.scrollIntoView({ block: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
   panel.classList.remove("flash"); void panel.offsetWidth; panel.classList.add("flash");
 });
-$("pulltab").addEventListener("click", () => toggleDrawer());
 
-// ---------- drawer + views ----------
+// ---------- views ----------
 function refit() { if (STATE && VIEW === "agents") { renderGraph(); renderTimeline(); } }
-function toggleDrawer(open) {
-  const on = open ?? !document.body.classList.contains("drawer-open");
-  document.body.classList.toggle("drawer-open", on);
-  $("pulltab").setAttribute("aria-expanded", String(on));
-  store.set("niu.drawer", on);
-  setTimeout(refit, 280);
-}
 let VIEW = "agents";
 function setView(v) {
   VIEW = v === "events" ? "events" : "agents";
@@ -130,13 +122,6 @@ function setView(v) {
 }
 $("tab-agents").onclick = () => setView("agents");
 $("tab-events").onclick = () => setView("events");
-function updatePullTab() {
-  const n = ACTIONS.length, high = ACTIONS.some((a) => a.priority >= 3);
-  $("pt-needs").hidden = !n; $("pt-needs").textContent = String(n); $("pt-needs").className = `pt-badge ${high ? "high" : ""}`;
-  const prs = (PRS?.repos || []).reduce((a, r) => a + r.prs.length, 0);
-  $("pt-prs").textContent = `${prs} PR${prs === 1 ? "" : "s"}`;
-  $("pt-llm").innerHTML = (LLM_EPS || []).map((e) => `<i class="${e.up ? (Object.values(e.models || {}).every((m) => m.present) ? "up" : "partial") : ""}" title="${esc(e.label)}"></i>`).join("");
-}
 let LLM_EPS = [];
 document.addEventListener("click", (e) => {
   for (const n of Object.keys(DROPS)) if (!$(n).hidden && !$(n).contains(e.target)) toggleDrop(n, false);
@@ -556,7 +541,6 @@ function renderActions() {
   $("bellbtn").title = n ? `${n} item(s) need you` : "Nothing needs you";
   document.title = `${n ? `(${n}) ` : ""}${HOST()} · niu-heimar agents`;
   setFavicon(n, high);
-  updatePullTab();
 
   const sessN = ACT_BY.session.size, prN = ACT_BY.pr.size;
   const sessHigh = [...ACT_BY.session.values()].some((a) => a.priority >= 3), prHigh = [...ACT_BY.pr.values()].some((a) => a.priority >= 3);
@@ -688,7 +672,6 @@ function renderPRs() {
   $("prs").innerHTML = html;
   for (const b of $("prs").querySelectorAll("[data-open]")) b.onclick = () => window.open(b.dataset.open, "_blank", "noopener");
   for (const b of $("prs").querySelectorAll("[data-merge]")) b.onclick = () => openMerge(b.dataset.merge);
-  updatePullTab();
 }
 
 function renderToday() {
@@ -824,7 +807,7 @@ async function loadLLM(force) {
     return;
   }
   const eps = r.endpoints;
-  LLM_EPS = eps; updatePullTab();
+  LLM_EPS = eps;
   const state = (e) => !e.up ? "down" : Object.values(e.models || {}).every((m) => m.present) ? "up" : "partial";
   const word = { up: "online", partial: "models missing", down: "offline" };
   box.hidden = false;
@@ -832,18 +815,14 @@ async function loadLLM(force) {
     `<i></i>${esc(e.label)} ${word[state(e)]}</span>`).join("");
   card.innerHTML = eps.map((e) => {
     const st = state(e);
-    const models = [...new Map(Object.entries(e.models || {}).map(([task, m]) => [m.name, { ...m, tasks: [] }])).values()];
-    for (const [task, m] of Object.entries(e.models || {})) models.find((x) => x.name === m.name).tasks.push(task);
+    const models = [...new Set(Object.values(e.models || {}).map((m) => `${m.present ? "" : "✗ "}${m.name}`))].join(", ");
+    const tip = `${EP_NAME[e.name] || e.label} ${e.url} · ${e.up ? `Ollama ${e.version}` : `down: ${e.error || "unreachable"}`} · ${e.mode} mode`;
     const hint = e.up ? "" : e.name === "local"
-      ? `<div class="hint">Not reachable from ${esc(HOST())}. Publish the container on loopback (<code>ports: ["127.0.0.1:11434:11434"]</code>) or set <code>OLLAMA_LOCAL_BASE_URL</code>.</div>`
-      : `<div class="hint">Not reachable. Check the machine and that Ollama listens on the LAN (<code>OLLAMA_HOST=0.0.0.0</code>). Local agents fall back to the CPU endpoint.</div>`;
-    return `<div class="ep ${st}">
-      <div class="ep-h"><span class="llmpill ${st}"><i></i>${esc(word[st])}</span> <b>${esc(EP_NAME[e.name] || e.label)}</b>
-        <span class="muted small mono">${esc(e.url)}</span></div>
-      <div class="small muted">${e.up ? `Ollama ${esc(e.version)} · ` : ""}${esc(e.mode)} mode${e.name === "remote" ? " · used first" : " · fallback"}</div>
-      <div class="chips mt8">${models.map((m) => `<span class="chip ${m.present ? "" : "pend"}" title="${esc(m.tasks.join(", "))}">${m.present ? "✓" : "✗"} ${esc(m.name)} <span class="muted">${esc(m.tasks.join("/"))}</span></span>`).join("")}</div>
-      ${hint}</div>`;
-  }).join("") + `<div class="small muted mt8">checked ${hhmmss(Date.now() / 1000)} · <button class="ghost linkish" id="llmrecheck">Re-check now</button></div>`;
+      ? `<div class="hint">Not reachable: publish the container on <code>127.0.0.1:11434</code> or set <code>OLLAMA_LOCAL_BASE_URL</code>.</div>`
+      : `<div class="hint">Not reachable: check the machine and <code>OLLAMA_HOST=0.0.0.0</code>. Local agents fall back to the CPU.</div>`;
+    return `<div class="llmrow" title="${esc(tip)}"><span class="llmpill ${st}"><i></i>${esc(e.label)}</span>` +
+      `<span class="nm">${esc(word[st])}</span><span class="mdl">${esc(models)}</span></div>${hint}`;
+  }).join("") + `<div class="llmfoot">checked ${hhmmss(Date.now() / 1000)} · <button class="ghost linkish" id="llmrecheck">Re-check</button></div>`;
   $("llmrecheck").onclick = () => loadLLM(true);
 }
 loadLLM();
@@ -857,8 +836,4 @@ setInterval(() => {
 }, 1000);
 
 loadMe();
-const drawerParam = new URLSearchParams(location.search).get("drawer");
-document.body.classList.toggle("drawer-open", drawerParam ? drawerParam === "open" : !!store.get("niu.drawer", false));
-$("pulltab").setAttribute("aria-expanded", String(document.body.classList.contains("drawer-open")));
 setView(location.hash === "#events" ? "events" : store.get("niu.view", "agents"));
-requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.add("ready")));

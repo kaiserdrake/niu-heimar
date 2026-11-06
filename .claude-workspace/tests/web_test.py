@@ -112,7 +112,9 @@ try:
     css = req("GET", "/style.css")[3]
     check(b"[hidden] { display: none !important; }" in css, "hidden attribute always wins over display rules")
     check(b'id="menu"' in raw and b'id="pairform"' in raw, "pairing lives in the menu")
-    check(b'id="drawer"' in raw and b'id="pulltab"' in raw and b'id="needslist"' in raw, "needs-you / PRs / LLMs live in the pull-out drawer")
+    check(b'class="leftcol"' in raw and b'id="needspanel"' in raw and b'id="prs"' in raw and b'id="llmcard"' in raw,
+          "needs-you / PRs / LLMs live in the left column")
+    check(b'id="pulltab"' not in raw and b'id="drawer"' not in raw, "no pull-out drawer")
     check(b'id="tab-events"' in raw and b'id="feed"' in raw, "event feed has its own tab")
     check(b"mission control" not in raw.lower().replace(b"<title>", b""), "no 'mission control' subtitle")
 
