@@ -94,3 +94,30 @@ agents-dash --once   # plain-text snapshot; --json for scripts; --domain WORK; -
   The hooks never block Claude.
 - **Privacy**: no prompt text and no tool output is stored. Tool targets are trimmed and secrets are redacted
   (tokens, `KEY=…`, auth headers, URL credentials). History is kept for 7 days (`NIU_EVENTS_RETENTION_DAYS`).
+
+## Web dashboard
+Same data as `agents-dash`, in a browser: live session cards, an **agent interaction graph** (session → the subagents it
+spawned, labelled with each task, plus dashed lines for messages), a **timeline** with one lane per agent and tool-call ticks,
+the PR panel with **Open/Merge** buttons, and today's stats.
+
+```bash
+.claude-workspace/bin/install --web        # systemd user service on 127.0.0.1:8765, plus linger
+```
+Open `http://127.0.0.1:8765` on this machine.
+
+**From other devices (Tailscale):** the server only listens on localhost. Publish it to your tailnet once:
+```bash
+sudo tailscale set --operator=$USER
+tailscale serve --bg --https=8443 http://127.0.0.1:8765
+tailscale serve status        # https://<host>.<tailnet>.ts.net:8443
+```
+This requires MagicDNS and HTTPS certificates to be enabled in the Tailscale admin console. To stop sharing it: `tailscale serve --https=8443 off`.
+
+**Pairing and merging:** anyone on your tailnet can view the dashboard. Merge buttons work only in a *paired* browser:
+run `niu-dash pair` here (an interactive terminal is required), then enter the 6-digit code on that device. List or remove paired
+browsers with `niu-dash devices` and `niu-dash revoke ID|all`. A merge uses the same rule as the TUI (green only, re-checked live,
+squash merge that deletes the branch), and you confirm by typing `owner/repo#N`. Merges are logged in the event feed. The dotenv guard
+hook also blocks agents from reading the dashboard's device credentials or calling its merge and pair endpoints. That's a policy guard,
+not a hard security boundary against processes running as your own user.
+
+Service: `systemctl --user status|restart|stop niu-dash`. Logs: `journalctl --user -u niu-dash`.
