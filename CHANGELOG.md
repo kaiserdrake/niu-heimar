@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.4.0...niu-heimar-v0.5.0) (2026-11-06)
+
+
+### Features
+
+* **guard:** live-stack guard for projects that are also the running compose stack ([#20](https://github.com/kaiserdrake/niu-heimar/issues/20)) ([81b8eb1](https://github.com/kaiserdrake/niu-heimar/commit/81b8eb198003d8c1be34d3813712de4f98a6406e))
+
 ## [0.4.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.3.0...niu-heimar-v0.4.0) (2026-11-06)
 
 
