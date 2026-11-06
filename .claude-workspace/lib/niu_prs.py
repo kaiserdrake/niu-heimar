@@ -191,3 +191,24 @@ def merge(repo, number):
         raise RuntimeError(f"{repo}#{number} not merged: {reason}")
     _gh(["pr", "merge", str(number), "-R", repo, "--squash", "--delete-branch"], timeout=60)
     return f"merged {repo}#{number}: {pr.get('title', '')[:60]}"
+
+
+def summarize(cache, refreshing=False):
+    """JSON-ready PR list with check counts and the green/blocked verdict per PR."""
+    cache = cache or {"fetched": 0, "repos": []}
+    repos = []
+    for r in cache.get("repos", []):
+        items = []
+        for pr in r.get("prs", []):
+            passed, failed, pending = check_summary(pr)
+            ok, reason = is_green(pr)
+            items.append({"number": pr["number"], "title": pr.get("title", ""), "url": pr.get("url"),
+                          "author": (pr.get("author") or {}).get("login"), "branch": pr.get("headRefName"),
+                          "draft": pr.get("isDraft"), "updated": pr.get("updatedAt"),
+                          "review": pr.get("reviewDecision") or None,
+                          "checks": {"passed": passed, "failed": failed, "pending": pending},
+                          "green": ok, "reason": reason, "ref": f"{r['repo']}#{pr['number']}",
+                          "needs_scope": "workflow" if "'workflow' scope" in reason else None})
+        repos.append({"label": r["label"], "repo": r["repo"], "error": r.get("error"), "prs": items})
+    return {"fetched": cache.get("fetched", 0), "refreshing": refreshing, "error": cache.get("error"), "repos": repos,
+            "scopes": cache.get("scopes")}

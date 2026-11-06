@@ -281,3 +281,4 @@ def mark_dirty():
     with _LIVE_LOCK:
         for lv in _LIVE.values():
             lv.dirty = True
+            lv.built_at = 0.0  # skip the throttle once so the change shows immediately

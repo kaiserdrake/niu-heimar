@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import niu_prs  # noqa: E402
 from niu_events import connect, db_path, host_label  # noqa: E402
 from niu_state import live, mark_dirty, parse_since  # noqa: E402
+from niu_actions import actions  # noqa: E402
 
 WEB = Path(__file__).resolve().parents[1] / "web"
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
@@ -103,22 +104,7 @@ def refresh_prs(force=False):
 
 def prs_json():
     refresh_prs()
-    cache = PRS["cache"] or {"fetched": 0, "repos": []}
-    repos = []
-    for r in cache.get("repos", []):
-        items = []
-        for pr in r.get("prs", []):
-            passed, failed, pending = niu_prs.check_summary(pr)
-            ok, reason = niu_prs.is_green(pr)
-            items.append({"number": pr["number"], "title": pr.get("title", ""), "url": pr.get("url"),
-                          "author": (pr.get("author") or {}).get("login"), "branch": pr.get("headRefName"),
-                          "draft": pr.get("isDraft"), "updated": pr.get("updatedAt"),
-                          "checks": {"passed": passed, "failed": failed, "pending": pending},
-                          "green": ok, "reason": reason, "ref": f"{r['repo']}#{pr['number']}",
-                          "needs_scope": "workflow" if "'workflow' scope" in reason else None})
-        repos.append({"label": r["label"], "repo": r["repo"], "error": r.get("error"), "prs": items})
-    return {"fetched": cache.get("fetched", 0), "refreshing": PRS["busy"], "error": cache.get("error"), "repos": repos,
-            "scopes": cache.get("scopes")}
+    return niu_prs.summarize(PRS["cache"], PRS["busy"])
 
 
 def log_merge(ref, label, ok, msg):
@@ -212,6 +198,7 @@ class Handler(BaseHTTPRequestHandler):
         state["host"] = host_label()
         state["version"] = lv.version
         state["server_now"] = time.time()
+        state["actions"] = actions(state, prs_json())
         return state
 
     # routes
@@ -253,6 +240,7 @@ class Handler(BaseHTTPRequestHandler):
                 if key != sent:
                     state = dict(lv.json_for(domain))
                     state.update(host=host_label(), version=version, prs=prs, server_now=time.time())
+                    state["actions"] = actions(state, prs)
                     self.wfile.write(b"data: " + json.dumps(state, default=str).encode() + b"\n\n")
                     self.wfile.flush()
                     sent, beat = key, time.time()

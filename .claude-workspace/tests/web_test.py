@@ -139,6 +139,12 @@ try:
     st, _, js, _ = req("GET", "/api/prs")
     prs = [p for r in js["repos"] for p in r["prs"]]
     check(any(p["green"] for p in prs) or js["repos"] == [], "PR list shape")
+    ev("Notification", notification_type="permission_prompt", message="needs permission")
+    time.sleep(1.1)
+    st, _, js, _ = req("GET", "/api/state")
+    kinds = {a["kind"] for a in js.get("actions", [])}
+    check("waiting" in kinds, f"waiting session is an action: {kinds}")
+    check(js["actions"] and js["actions"][0]["priority"] == 3, "highest priority first")
 
     # Merge guards
     body = {"repo": "o/r", "number": 7, "confirm": "o/r#7"}

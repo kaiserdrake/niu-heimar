@@ -15,6 +15,7 @@ const store = {
 };
 
 let STATE = null, PRS = null, ME = { paired: false }, ES = null, SELECTED = null, LAST_FEED_TS = 0, CLOCK_OFFSET = 0;
+let ACTIONS = [], SEEN_ACTIONS = null, ACT_BY = { session: new Map(), pr: new Map() };
 const STATE_LABEL = { working: "working", waiting: "waiting for you", idle: "idle", ended: "ended", stale: "stale" };
 const TOOL_CLASS = (t) => t === "Bash" ? "bash" : ["Read", "Grep", "Glob"].includes(t) ? "read"
   : ["Edit", "MultiEdit", "Write", "NotebookEdit"].includes(t) ? "edit" : ["Agent", "Task", "SendMessage"].includes(t) ? "agent"
@@ -68,23 +69,34 @@ async function loadMe() {
   if (PRS) renderPRs();
 }
 
-// ---------- menu ----------
-function toggleMenu(open) {
-  const m = $("menu"), show = open ?? m.hidden;
-  m.hidden = !show;
-  $("menubtn").setAttribute("aria-expanded", String(show));
-  if (show && !ME.paired) setTimeout(() => $("paircode").focus(), 50);
+// ---------- menus (hamburger + "needs you") ----------
+const DROPS = { menu: "menubtn", actions: "bellbtn" };
+function toggleDrop(name, open) {
+  for (const [n, btn] of Object.entries(DROPS)) {
+    const show = n === name ? (open ?? $(n).hidden) : false;
+    $(n).hidden = !show;
+    $(btn).setAttribute("aria-expanded", String(show));
+  }
+  if (name === "menu" && !$("menu").hidden && !ME.paired) setTimeout(() => $("paircode").focus(), 50);
 }
-$("menubtn").addEventListener("click", (e) => { e.stopPropagation(); toggleMenu(); });
-document.addEventListener("click", (e) => { if (!$("menu").hidden && !$("menu").contains(e.target)) toggleMenu(false); });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") { toggleMenu(false); $("details").hidden = true; SELECTED = null; } });
+const toggleMenu = (open) => toggleDrop("menu", open);
+$("menubtn").addEventListener("click", (e) => { e.stopPropagation(); toggleDrop("menu"); });
+$("bellbtn").addEventListener("click", (e) => { e.stopPropagation(); toggleDrop("actions"); });
+document.addEventListener("click", (e) => {
+  for (const n of Object.keys(DROPS)) if (!$(n).hidden && !$(n).contains(e.target)) toggleDrop(n, false);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { toggleDrop("menu", false); toggleDrop("actions", false); $("details").hidden = true; SELECTED = null; }
+});
 
 // ---------- render ----------
 function render() {
   $("hostname").textContent = HOST();
   for (const el of document.querySelectorAll(".hostref")) el.textContent = HOST();
   document.title = `${HOST()} · niu-heimar agents`;
-  renderDomains(); renderCounters(); renderGraph(); renderSessions(); renderTimeline(); renderPRs(); renderToday(); renderFeed();
+  document.body.classList.toggle("calm", reducedMotion());
+  indexActions();
+  renderDomains(); renderCounters(); renderActions(); renderGraph(); renderSessions(); renderTimeline(); renderPRs(); renderToday(); renderFeed();
   if (SELECTED) showDetails(SELECTED, true);
 }
 
@@ -119,8 +131,10 @@ function renderSessions() {
         `<span class="chip ${a.stop ? "" : "run"}" title="${esc(a.task)}">${a.stop ? "✓" : "●"} ${esc(a.type)} <span class="src src-${esc(a.source)}">${esc(a.source)}</span>` +
         `${!a.stop && a.current ? ` <span class="muted">${esc(a.current[0])}</span>` : ""}</span>`).join("") +
         s.pending.map((p) => `<span class="chip pend">○ ${esc(p.type)} <span class="src src-${esc(p.source)}">${esc(p.source)}</span></span>`).join("");
-      html += `<div class="sess st-${esc(s.state)} ${s.flagged ? "flag" : ""}" data-sid="${esc(s.id)}">
-        <div class="top"><span class="proj">${esc(projLabel(s))}</span>
+      const need = ACT_BY.session.get(s.id);
+      const needTag = need ? `<span class="needtag ${need.priority >= 3 ? "" : "mid"}" title="${esc(need.title)}">needs you</span>` : "";
+      html += `<div class="sess st-${esc(s.state)} ${s.flagged ? "flag" : ""} ${need ? `needs-you ${need.priority >= 3 ? "high" : ""}` : ""}" data-sid="${esc(s.id)}">
+        <div class="top"><span class="proj">${esc(projLabel(s))} ${needTag}</span>
         <span class="pill st-${esc(s.state)}">${esc(STATE_LABEL[s.state] || s.state)} · ${dur(STATE.now - s.since)}</span></div>
         <div class="muted small">session ${esc(s.id.slice(0, 8))}</div>
         <div class="cur" title="${esc(cur)}">${esc(cur) || "&nbsp;"}</div>
@@ -327,6 +341,90 @@ function renderGraph() {
   G.first = false;
 }
 
+// ---------- "needs you" actions ----------
+function indexActions() {
+  ACTIONS = STATE.actions || [];
+  ACT_BY = { session: new Map(), pr: new Map() };
+  for (const a of ACTIONS) {
+    const map = a.target.session ? ACT_BY.session : ACT_BY.pr, key = a.target.session || a.target.pr;
+    const cur = map.get(key);
+    if (!cur || a.priority > cur.priority) map.set(key, a);
+  }
+}
+
+function setFavicon(n, high) {
+  const color = n ? (high ? "#c2281e" : "#d08a00") : "#2563c9";
+  const label = n ? `<text x='16' y='21.5' font-size='16' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='white'>${n > 9 ? "9+" : n}</text>` : "";
+  const svgIcon = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='${color}'/>${label}</svg>`;
+  $("favicon").setAttribute("href", "data:image/svg+xml," + encodeURIComponent(svgIcon));
+}
+
+function renderActions() {
+  const n = ACTIONS.length, high = ACTIONS.some((a) => a.priority >= 3);
+  const badge = $("bellcount"), prev = badge.textContent;
+  badge.hidden = !n; badge.textContent = n > 99 ? "99+" : String(n);
+  badge.className = `bellcount ${high ? "high" : ""} ${prev !== badge.textContent && n ? "bump" : ""}`;
+  $("bellbtn").className = `icon-btn bell ${n ? "has" : ""} ${high ? "high" : ""}`;
+  $("bellbtn").title = n ? `${n} item(s) need you` : "Nothing needs you";
+  document.title = `${n ? `(${n}) ` : ""}${HOST()} · niu-heimar agents`;
+  setFavicon(n, high);
+
+  const sessN = ACT_BY.session.size, prN = ACT_BY.pr.size;
+  const sessHigh = [...ACT_BY.session.values()].some((a) => a.priority >= 3), prHigh = [...ACT_BY.pr.values()].some((a) => a.priority >= 3);
+  $("sessneeds").hidden = !sessN; $("sessneeds").textContent = `${sessN} need${sessN === 1 ? "s" : ""} you`; $("sessneeds").className = `needs ${sessHigh ? "high" : ""}`;
+  $("prneeds").hidden = !prN; $("prneeds").textContent = `${prN} need${prN === 1 ? "s" : ""} you`; $("prneeds").className = `needs ${prHigh ? "high" : ""}`;
+
+  const fresh = SEEN_ACTIONS ? ACTIONS.filter((a) => !SEEN_ACTIONS.has(a.id)) : [];
+  $("actionsub").textContent = n ? `${n} item${n === 1 ? "" : "s"}` : "";
+  $("actionlist").innerHTML = n ? ACTIONS.map((a) => {
+    const isPR = !!a.target.pr, pr = isPR && PRS ? PRS.repos.flatMap((r) => r.prs).find((p) => p.ref === a.target.pr) : null;
+    const merge = a.kind === "pr-ready" && pr && pr.green ? `<button class="danger" data-amerge="${esc(a.target.pr)}" ${ME.paired ? "" : `disabled title="Pair this browser (menu) to merge"`}>Merge</button>` : "";
+    const open = isPR ? `<button class="ghost" data-aopen="${esc(a.target.url || "")}">${a.kind === "pr-blocked" ? "Merge on GitHub" : "Open"}</button>` : "";
+    return `<div class="act p${a.priority} ${fresh.some((f) => f.id === a.id) ? "new" : ""}" data-aid="${esc(a.id)}">
+      <span class="ico"></span><span class="t">${esc(a.title)}</span>
+      <span class="b"><button class="ghost" data-ago="${esc(a.id)}">Show</button>${open}${merge}</span>
+      <span class="d" title="${esc(a.detail)}">${esc(a.detail)}</span></div>`;
+  }).join("") : `<div class="none">Nothing needs you right now.</div>`;
+  for (const b of $("actionlist").querySelectorAll("[data-ago]")) b.onclick = () => { toggleDrop("actions", false); jumpTo(ACTIONS.find((a) => a.id === b.dataset.ago)); };
+  for (const b of $("actionlist").querySelectorAll("[data-aopen]")) b.onclick = () => b.dataset.aopen && window.open(b.dataset.aopen, "_blank", "noopener");
+  for (const b of $("actionlist").querySelectorAll("[data-amerge]")) b.onclick = () => { toggleDrop("actions", false); openMerge(b.dataset.amerge); };
+
+  if (SEEN_ACTIONS && fresh.length) notify(fresh);
+  SEEN_ACTIONS = new Set(ACTIONS.map((a) => a.id));
+}
+
+function jumpTo(a) {
+  if (!a) return;
+  const sel = a.target.session ? `.sess[data-sid="${CSS.escape(a.target.session)}"]` : `.pr[data-ref="${CSS.escape(a.target.pr)}"]`;
+  const el = document.querySelector(sel);
+  if (el) {
+    el.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "center" });
+    el.classList.remove("highlight"); void el.offsetWidth; el.classList.add("highlight");
+  }
+  if (a.target.session) showDetails({ sid: a.target.session });
+}
+
+function notify(fresh) {
+  if (!$("notify").checked || typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  for (const a of fresh.slice(0, 3)) {
+    try {
+      const n = new Notification(`${HOST()}: ${a.title}`, { body: a.detail, tag: a.id, silent: a.priority < 3 });
+      n.onclick = () => { window.focus(); jumpTo(a); n.close(); };
+    } catch { /* notifications unavailable */ }
+  }
+}
+
+async function setNotify(on) {
+  const msg = $("notifymsg");
+  if (!on) { store.set("niu.notify", false); msg.textContent = ""; return; }
+  if (typeof Notification === "undefined" || !window.isSecureContext) {
+    $("notify").checked = false; msg.textContent = "Notifications need https (Tailscale URL) or localhost."; return;
+  }
+  const perm = Notification.permission === "default" ? await Notification.requestPermission() : Notification.permission;
+  if (perm !== "granted") { $("notify").checked = false; msg.textContent = "Notifications are blocked for this site in your browser settings."; return; }
+  store.set("niu.notify", true); msg.textContent = "You'll be notified when something new needs you.";
+}
+
 // ---------- timeline ----------
 function renderTimeline() {
   const box = $("timeline"); box.textContent = "";
@@ -384,7 +482,8 @@ function renderPRs() {
       const can = p.green && ME.paired;
       const why = !p.green ? p.reason : !ME.paired ? "Pair this browser (menu) to merge" : "Squash-merge";
       const status = p.needs_scope ? "blocked: gh token scope" : p.green ? "ready" : p.reason;
-      html += `<div class="pr"><div class="t" title="${esc(p.title)}">#${p.number} ${esc(p.title)}</div>
+      const need = ACT_BY.pr.get(p.ref);
+      html += `<div class="pr ${need ? "needs-you" : ""}" data-ref="${esc(p.ref)}"><div class="t" title="${esc(p.title)}">#${p.number} ${esc(p.title)} ${need ? `<span class="needtag ${need.priority >= 3 ? "" : "mid"}">${esc(need.kind === "pr-ready" ? "ready" : "needs you")}</span>` : ""}</div>
         <div class="acts"><button class="ghost" data-open="${esc(p.url)}">${p.needs_scope ? "Merge on GitHub" : "Open"}</button>
         <button class="danger" data-merge="${esc(p.ref)}" ${can ? "" : "disabled"} title="${esc(why)}">Merge</button></div>
         <div class="meta">${badge}<span>${esc(status)}</span><span>${esc(p.author || "")}</span><span class="mono">${esc(p.branch || "")}</span></div>
@@ -481,6 +580,8 @@ $("ended").checked = store.get("niu.ended", false);
 $("calm").checked = store.get("niu.calm", false);
 $("ended").onchange = () => { store.set("niu.ended", $("ended").checked); if (STATE) render(); };
 $("calm").onchange = () => { store.set("niu.calm", $("calm").checked); if (STATE) render(); };
+$("notify").checked = store.get("niu.notify", false) && typeof Notification !== "undefined" && Notification.permission === "granted";
+$("notify").onchange = () => setNotify($("notify").checked);
 window.addEventListener("resize", () => STATE && renderTimeline());
 
 setInterval(() => {

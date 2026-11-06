@@ -15,8 +15,9 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
-from niu_events import MANDATORY, agent_source, db_path, project_agents, show_domain  # noqa: E402
-from niu_state import build, dur, live, load, parse_since, today_stats  # noqa: E402
+from niu_events import MANDATORY, agent_source, db_path, host_label, project_agents, show_domain  # noqa: E402
+from niu_actions import actions  # noqa: E402
+from niu_state import build, dur, live, load, parse_since, to_json, today_stats  # noqa: E402
 import niu_prs  # noqa: E402
 
 # ---------- rendering: lines of [(text, style)] ----------
@@ -114,11 +115,22 @@ def plain(lines):
     return "\n".join("".join(t for t, _ in ln) for ln in lines)
 
 
-def header(sessions, domain, now):
-    live = [s for s in sessions.values() if not s["ended"]]
-    subs = sum(1 for s in live for sb in s["subagents"].values() if sb["stop"] is None)
-    return [("niu-heimar · agents-dash   ", "bold"),
-            (f"{len(live)} sessions · {subs} subagents active · filter: {domain or 'all'} · {datetime.fromtimestamp(now):%H:%M:%S}", "muted")]
+def header(sessions, domain, now, acts=None):
+    live_ = [s for s in sessions.values() if not s["ended"]]
+    subs = sum(1 for s in live_ for sb in s["subagents"].values() if sb["stop"] is None)
+    line = [("niu-heimar · agents-dash   ", "bold"),
+            (f"{len(live_)} sessions · {subs} subagents active · filter: {show_domain(domain) if domain else 'all'} · {datetime.fromtimestamp(now):%H:%M:%S}", "muted")]
+    if acts:
+        high = any(a["priority"] >= 3 for a in acts)
+        line.append((f"   ● {len(acts)} need{'s' if len(acts) == 1 else ''} you: " + "; ".join(a["title"] for a in acts[:2]), "bad" if high else "warn"))
+    return line
+
+
+def action_list(sessions, events, now, cache):
+    try:
+        return actions(to_json(sessions, events, now), niu_prs.summarize(cache), host=host_label())
+    except Exception:
+        return []
 
 
 def pr_lines(cache, now, domain=None, selected=None, width=200):
@@ -154,7 +166,10 @@ def snapshot(args):
     now = time.time()
     events = load(args.since)
     sessions = build(events, now)
-    lines = [header(sessions, args.domain, now), [("─" * 60, "muted")]]
+    acts = action_list(sessions, events, now, niu_prs.load_cache())
+    lines = [header(sessions, args.domain, now, acts), [("─" * 60, "muted")]]
+    for a in acts:
+        lines.append([("  ! ", "bad" if a["priority"] >= 3 else "warn"), (a["title"], ""), (f"  {a['detail']}", "muted")])
     lines += tree_lines(sessions, now, args.domain, args.all)
     lines += [[("── pull requests ", "muted")]] + pr_lines(niu_prs.load_cache(), now, args.domain, width=110)[0]
     lines += [[("── today ", "muted")], today_line(sessions, now), [("── events ", "muted")]]
@@ -225,7 +240,8 @@ def run_tui(args):
                     domains.append(d)
             dom = args.domain or domains[di % len(domains)]
             h, w = scr.getmaxyx()
-            top = [header(sessions, dom, now), [("─" * (w - 1), "muted")]]
+            acts = action_list(sessions, events, now, state["cache"])
+            top = [header(sessions, dom, now, acts), [("─" * (w - 1), "muted")]]
             tree = tree_lines(sessions, now, dom, args.all)
             prl, prrows = pr_lines(state["cache"], now, dom, pr_sel if pr_focus else None, w)
             pr_sel = max(0, min(pr_sel, len(prrows) - 1))
