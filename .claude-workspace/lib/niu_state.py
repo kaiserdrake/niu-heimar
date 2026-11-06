@@ -16,6 +16,8 @@ def new_sub(e):
 
 
 STALE_SECS = 30 * 60
+# A session waiting for the user (permission prompt, question) stays "needs you" much longer before it counts as gone.
+WAITING_STALE_SECS = 12 * 3600
 
 
 def parse_since(s):
@@ -171,7 +173,8 @@ def build(events, now):
             s["ended"] = True
             set_state("ended")
     for s in sessions.values():
-        if not s["ended"] and now - s["last"] > STALE_SECS and s["state"] != "idle":
+        quiet = now - s["last"]
+        if not s["ended"] and s["state"] != "idle" and quiet > (WAITING_STALE_SECS if s["state"] == "waiting" else STALE_SECS):
             s["state"] = "stale"
         s["flagged"] = s["edited"] and s["state"] in ("idle", "ended", "stale") and not all(m in s["ran"] for m in MANDATORY)
     return sessions

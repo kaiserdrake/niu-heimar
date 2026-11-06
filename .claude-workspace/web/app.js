@@ -32,7 +32,9 @@ function dur(secs) {
   return `${Math.floor(secs / 86400)}d${Math.floor((secs % 86400) / 3600)}h`;
 }
 const hhmmss = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour12: false });
-const visible = () => (STATE?.sessions || []).filter((s) => $("ended").checked || !s.ended);
+// Gone = ended, or stale (no SessionEnd, e.g. a closed or archived desktop session, and nothing logged for 30 min).
+const gone = (s) => s.ended || s.state === "stale";
+const visible = () => (STATE?.sessions || []).filter((s) => $("ended").checked || !gone(s));
 const trunc = (s, n) => (s = String(s || ""), s.length > n ? s.slice(0, n - 1) + "…" : s);
 const projLabel = (s) => s.project || (s.domain === "(workspace)" ? "niu-heimar config" : "(domain root)");
 const TASK_NAME = { search: "search agent", diff: "diff reviewer", ask: "Q&A agent", local_search: "search agent",
@@ -157,7 +159,7 @@ function renderDomains() {
 }
 
 function renderCounters() {
-  const live = STATE.sessions.filter((s) => !s.ended);
+  const live = STATE.sessions.filter((s) => !gone(s));
   const subs = live.reduce((n, s) => n + s.subagents.filter((a) => !a.stop).length, 0);
   const waiting = live.filter((s) => s.state === "waiting").length;
   const green = (PRS?.repos || []).reduce((n, r) => n + r.prs.filter((p) => p.green).length, 0);
@@ -262,7 +264,7 @@ function localKids() {
   const out = {};
   for (const s of STATE.sessions) {
     if (!s.local || !s.parent_session) continue;
-    if (s.ended && STATE.now - s.last > 600 && !$("ended").checked) continue;
+    if (((s.ended && STATE.now - s.last > 600) || s.state === "stale") && !$("ended").checked) continue;
     (out[s.parent_session] ||= []).push(s);
   }
   return out;
