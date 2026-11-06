@@ -26,7 +26,12 @@ for t in "$WS"/*/.claude/settings.domain.template.json; do
   D="$WS/$d/.claude"
   render "$t" | jq . >"$D/settings.domain.json.tmp" && mv "$D/settings.domain.json.tmp" "$D/settings.domain.json"
   mkdir -p "$D/memory" "$D/agents"
+  # MCP: committed template (niu-local etc.) merged over locally added servers in the gitignored mcp.json
   [[ -f "$D/mcp.json" ]] || echo '{ "mcpServers": {} }' >"$D/mcp.json"
+  if [[ -f "$D/mcp.template.json" ]]; then
+    render "$D/mcp.template.json" | jq -s '.[0] as $local | .[1] as $tpl | {mcpServers: (($local.mcpServers // {}) + ($tpl.mcpServers // {}))}' "$D/mcp.json" - >"$D/mcp.json.tmp" \
+      && mv "$D/mcp.json.tmp" "$D/mcp.json"
+  fi
   [[ -f "$D/LEARNINGS.md" ]] || printf '# %s learnings\n\n<!-- Short dated bullets: conventions, pitfalls, deploy quirks. No secrets. -->\n' "$d" >"$D/LEARNINGS.md"
   echo "rendered $d/.claude/settings.domain.json"
 done
@@ -35,7 +40,14 @@ if [[ -d "$WS/WORK/.claude" && ! -f "$WS/WORK/.claude/COMPANY.local.md" ]]; then
   printf '# Company context (local only, never committed)\n\n<!-- GitLab host, group, infra names, internal conventions. -->\n' >"$WS/WORK/.claude/COMPANY.local.md"
 fi
 
-chmod +x "$SHARED"/bin/* "$SHARED"/hooks/*.sh "$SHARED"/tests/*.sh 2>/dev/null || true
+chmod +x "$SHARED"/bin/* "$SHARED"/hooks/*.sh "$SHARED"/hooks/*.py "$SHARED"/tests/*.sh 2>/dev/null || true
+
+# Workspace root sessions get niu-local too (gitignored, machine-specific path)
+[[ -f "$WS/.mcp.json" ]] || echo '{ "mcpServers": {} }' >"$WS/.mcp.json"
+jq --arg cmd "$SHARED/bin/niu-local-mcp" '.mcpServers["niu-local"] = {type: "stdio", command: $cmd, args: []}' "$WS/.mcp.json" >"$WS/.mcp.json.tmp" \
+  && mv "$WS/.mcp.json.tmp" "$WS/.mcp.json"
+# Isolated Claude Code config for local Ollama agents (no Anthropic credentials, read-only tools, guard hooks)
+python3 "$SHARED/bin/niu-agent" setup >/dev/null && echo "wrote isolated config for local Ollama agents"
 
 if $user_settings; then
   US="$HOME/.claude/settings.json"; mkdir -p "$HOME/.claude/backups"

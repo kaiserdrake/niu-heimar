@@ -3,6 +3,10 @@
   "model": "opusplan",
   "autoMemoryDirectory": "${WORKSPACE}/WORK/.claude/memory",
   "enableAllProjectMcpServers": false,
-  "enabledMcpjsonServers": [],
-  "env": {}
+  "enabledMcpjsonServers": [
+    "niu-local"
+  ],
+  "env": {
+    "MCP_TOOL_TIMEOUT": "900000"
+  }
 }

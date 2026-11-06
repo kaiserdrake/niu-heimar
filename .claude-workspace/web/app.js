@@ -17,7 +17,7 @@ const store = {
 let STATE = null, PRS = null, ME = { paired: false }, ES = null, SELECTED = null, LAST_FEED_TS = 0, CLOCK_OFFSET = 0;
 let ACTIONS = [], SEEN_ACTIONS = null, ACT_BY = { session: new Map(), pr: new Map() };
 const STATE_LABEL = { working: "working", waiting: "waiting for you", idle: "idle", ended: "ended", stale: "stale" };
-const TOOL_CLASS = (t) => t === "Bash" ? "bash" : ["Read", "Grep", "Glob"].includes(t) ? "read"
+const TOOL_CLASS = (t) => String(t || "").startsWith("mcp__niu-local") ? "local" : t === "Bash" ? "bash" : ["Read", "Grep", "Glob"].includes(t) ? "read"
   : ["Edit", "MultiEdit", "Write", "NotebookEdit"].includes(t) ? "edit" : ["Agent", "Task", "SendMessage"].includes(t) ? "agent"
   : ["WebFetch", "WebSearch"].includes(t) ? "web" : "other";
 const reducedMotion = () => $("calm").checked || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -134,7 +134,7 @@ function renderSessions() {
       const need = ACT_BY.session.get(s.id);
       const needTag = need ? `<span class="needtag ${need.priority >= 3 ? "" : "mid"}" title="${esc(need.title)}">needs you</span>` : "";
       html += `<div class="sess st-${esc(s.state)} ${s.flagged ? "flag" : ""} ${need ? `needs-you ${need.priority >= 3 ? "high" : ""}` : ""}" data-sid="${esc(s.id)}">
-        <div class="top"><span class="proj">${esc(projLabel(s))} ${needTag}</span>
+        <div class="top"><span class="proj">${esc(projLabel(s))} ${s.local ? `<span class="localtag" title="Agent running on a local Ollama model">local · ${esc(s.local)}</span>` : ""} ${needTag}</span>
         <span class="pill st-${esc(s.state)}">${esc(STATE_LABEL[s.state] || s.state)} · ${dur(STATE.now - s.since)}</span></div>
         <div class="muted small">session ${esc(s.id.slice(0, 8))}</div>
         <div class="cur" title="${esc(cur)}">${esc(cur) || "&nbsp;"}</div>
@@ -188,7 +188,8 @@ function graphLayout(list) {
     };
     const root = place(s.id, 0, {
       kind: "session", sid: s.id, label: projLabel(s), source: "session", running: s.state === "working", waiting: s.state === "waiting",
-      sub: `${dl(s.domain)} · ${STATE_LABEL[s.state] || s.state}${s.current ? ` · ${s.current[0]}` : ""}`,
+      sub: `${s.local ? `local · ${s.local}` : dl(s.domain)} · ${STATE_LABEL[s.state] || s.state}${s.current ? ` · ${s.current[0]}` : ""}`,
+      localModel: s.local || null,
     });
     s.messages.forEach((m, i) => {
       const from = nodes.find((n) => n.id === m.from) || root;
@@ -225,6 +226,7 @@ function graphNode(n) {
   }
   g.style.transform = `translate(${n.x}px, ${n.y}px)`;
   g.classList.toggle("session", n.kind === "session");
+  g.classList.toggle("localnode", !!n.localModel);
   g.classList.toggle("running", !!n.running);
   g.classList.toggle("waiting", !!n.waiting);
   g.classList.toggle("done", !!n.done);
@@ -593,6 +595,21 @@ $("calm").onchange = () => { store.set("niu.calm", $("calm").checked); if (STATE
 $("notify").checked = store.get("niu.notify", false) && typeof Notification !== "undefined" && Notification.permission === "granted";
 $("notify").onchange = () => setNotify($("notify").checked);
 window.addEventListener("resize", () => STATE && renderTimeline());
+
+// Local LLM endpoint health (GPU box / local CPU), refreshed every 30 s
+async function loadLLM() {
+  const r = await fetch("/api/llm", { credentials: "same-origin" }).then((x) => x.json()).catch(() => null);
+  const box = $("llm");
+  if (!r || !r.endpoints || !r.endpoints.length) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = r.endpoints.map((e) => {
+    const models = Object.values(e.models || {}).map((m) => `${m.name}${m.present ? "" : " (missing)"}`);
+    const tip = `${e.label} ${e.url} · ${e.up ? `up, Ollama ${e.version}` : `down: ${e.error || "unreachable"}`} · ${e.mode} mode · ${[...new Set(models)].join(", ")}`;
+    return `<span class="llmdot ${e.up ? "up" : "down"}" title="${esc(tip)}"><i></i>${esc(e.label)}</span>`;
+  }).join("");
+}
+loadLLM();
+setInterval(() => { if (!document.hidden) loadLLM(); }, 30000);
 
 setInterval(() => {
   if (!STATE || document.hidden) return;

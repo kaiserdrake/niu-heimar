@@ -38,6 +38,14 @@ Each project needs `claude-init` once (it links the domain settings, reviewer ag
 skills and MCP config). If the SessionStart notice says a project isn't linked,
 tell the user to run `claude-init` in it and restart the session.
 
+## 5b. Design first, and local agents for cheap work
+- For any non-trivial feature or change, use `/develop <task>`. The `designer` agent (Opus) writes a design under
+  `docs/design/`, the user approves it, you implement, then a local diff review runs, then the two mandatory reviewers.
+- For broad codebase lookups ("where/how is X done", "what uses Y"), prefer the `niu-local` MCP tools
+  (`local_search`, `local_diff_review`, `local_ask`). They run read-only agents on the user's Ollama machines (GPU box
+  first, local CPU as fallback) and save Claude tokens. Treat their answers as leads, and confirm with Read before you rely on them.
+- `local_diff_review` is advisory. It never replaces `security-reviewer` and `test-reviewer`.
+
 ## 6. Maintaining this setup
 The workspace config is the git repo `kaiserdrake/niu-heimar` (only config is tracked,
 not projects). If you edit anything under `.claude-workspace/`, a `CLAUDE.md`, or a

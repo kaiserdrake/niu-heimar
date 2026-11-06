@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""niu-agent: run search / diff / ask tasks as agents on your Ollama machines.
+
+Usage:
+  niu-agent search "where is LiveState used?" [--cwd DIR] [--endpoint remote|local] [--json]
+  niu-agent diff [--base REF] [--focus TEXT] [--cwd DIR] [--json]
+  niu-agent ask "question" [--files a.py b.py] [--cwd DIR] [--json]
+  niu-agent status            endpoints, health and models
+  niu-agent probe [--endpoint remote]   check Anthropic API, tool calls and effective context length
+  niu-agent setup             (re)write the isolated Claude Code config used by agent mode
+
+Agent mode runs a headless Claude Code (`claude -p`) against Ollama's Anthropic-compatible API, with an isolated config
+dir that holds no Anthropic credentials, read-only tools, and the workspace guard hooks. Lite mode (default on the CPU
+endpoint) gathers context itself (git grep / git diff, honouring the guard) and makes one /api/chat call.
+"""
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import niu_ollama as no  # noqa: E402
+from niu_events import WS, db_path  # noqa: E402
+
+SHARED = WS / ".claude-workspace"
+TEXT_TOOL_CALL = __import__("re").compile(r"<function=\w+>|</?tool_call>|<\|tool_call|\"name\":\s*\"(Grep|Glob|Read|Bash)\"")
+READ_ONLY_TOOLS = ["Read", "Grep", "Glob"]
+DENIED_TOOLS = ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "Agent", "Task", "TodoWrite"]
+STRIP_ENV = ("ANTHROPIC_", "CLAUDE_CODE_OAUTH", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT",
+             "AWS_BEARER_TOKEN_BEDROCK", "CLAUDE_CODE_USE_")
+
+AGENT_SYSTEM = {
+    "search": "You are a read-only code search agent running on a local model. Use Grep, Glob and Read (no shell). "
+              "Cite file:line for every claim. Finish with a concise answer (at most 25 lines). Never modify anything.",
+    "diff": "You are a read-only diff review agent running on a local model. The diff is in the prompt; read surrounding "
+            "code where needed. Report concrete findings (bugs, risky changes, missing tests), most severe first, each with "
+            "file:line and a one-line fix. Say 'no findings' if there are none. At most 40 lines. Never modify anything.",
+    "ask": "You are a read-only assistant running on a local model. Answer using the repository; cite file:line. Be concise.",
+}
+
+
+def config_dir() -> Path:
+    return Path(os.environ.get("NIU_AGENT_CONFIG_DIR") or db_path().parent / "ollama-claude")
+
+
+def setup_config():
+    """Write the isolated Claude Code config (hooks + read-only permissions). Never holds credentials."""
+    d = config_dir()
+    d.mkdir(parents=True, exist_ok=True, mode=0o700)
+    hooks = SHARED / "hooks"
+    rec = {"type": "command", "command": str(hooks / "agent-events.py"), "timeout": 10, "async": True}
+    settings = {
+        "permissions": {"allow": READ_ONLY_TOOLS, "deny": DENIED_TOOLS + [f"Read(/{WS}/**/.env)", f"Read(/{WS}/**/.env.*)",
+                                                                       "Read(~/.ssh/**)", "Read(~/.claude/**)", "Read(~/.config/**)"]},
+        "hooks": {
+            "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": str(hooks / "agent-scope.py"), "timeout": 10}]},
+                           {"matcher": "Bash|Read|Edit|MultiEdit|Write|Grep|Glob|NotebookEdit",
+                            "hooks": [{"type": "command", "command": str(hooks / "block-env.sh"), "timeout": 10}]},
+                           {"matcher": "*", "hooks": [rec]}],
+            **{ev: [{"hooks": [rec]}] for ev in ("SessionStart", "SessionEnd", "UserPromptSubmit", "Stop")},
+            "PostToolUse": [{"matcher": "*", "hooks": [rec]}],
+        },
+        "autoMemoryEnabled": False,
+        "includeCoAuthoredBy": False,
+    }
+    (d / "settings.json").write_text(json.dumps(settings, indent=2))
+    os.chmod(d / "settings.json", 0o600)
+    return d
+
+
+def assert_no_credentials(d: Path):
+    bad = [p.name for p in d.glob("*") if p.name in (".credentials.json", "credentials.json")]
+    if bad:
+        raise RuntimeError(f"refusing to run: {d} contains {bad}; agent mode must never hold Anthropic credentials")
+
+
+def find_claude():
+    exe = shutil.which("claude")
+    if exe:
+        return exe, None
+    bundled = sorted((Path.home() / ".claude" / "remote" / "ccd-cli").glob("*"), key=lambda p: p.stat().st_mtime)
+    bundled = [p for p in bundled if p.is_file() and os.access(p, os.X_OK)]
+    if bundled:
+        return str(bundled[-1]), ("using the desktop app's bundled Claude Code; install the standalone CLI for a stable path: "
+                                  "curl -fsSL https://claude.ai/install.sh | bash")
+    return None, "Claude Code CLI not found (install: curl -fsSL https://claude.ai/install.sh | bash)"
+
+
+def agent_env(ep, model):
+    env = {k: v for k, v in os.environ.items() if not k.startswith(STRIP_ENV)}
+    env.update({
+        "ANTHROPIC_BASE_URL": ep["url"], "ANTHROPIC_AUTH_TOKEN": "ollama", "ANTHROPIC_API_KEY": "",
+        "ANTHROPIC_MODEL": model, "ANTHROPIC_SMALL_FAST_MODEL": model, "ANTHROPIC_DEFAULT_HAIKU_MODEL": model,
+        "CLAUDE_CONFIG_DIR": str(config_dir()), "NIU_AGENT_LABEL": f"local:{model}",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_AUTOUPDATER": "1", "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1", "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",
+    })
+    return env
+
+
+def agent_prompt(task, args, base, cwd=None):
+    if task == "search":
+        return f"Search this repository to answer:\n{args.text}"
+    if task == "diff":
+        focus = f"\nFocus on: {args.focus}" if args.focus else ""
+        # The agent has no shell, so niu-agent computes the diff (protected files omitted by the guard).
+        diff = no.lite_context("diff", cwd, base=base, limit=60000)
+        return (f"Review these changes (git diff {base}; protected files are omitted).{focus}\n"
+                f"Read surrounding code with Read/Grep when you need context.\n\n{diff}")
+    files = f"\nRelevant files: {' '.join(args.files)}" if args.files else ""
+    return f"{args.text}{files}"
+
+
+def run_agent(ep, model, task, args, cwd, base, timeout):
+    exe, warn = find_claude()
+    if not exe:
+        raise RuntimeError(warn)
+    d = config_dir()
+    if not (d / "settings.json").exists():
+        setup_config()
+    assert_no_credentials(d)
+    cmd = [exe, "-p", agent_prompt(task, args, base, cwd), "--model", model, "--output-format", "json",
+           "--allowedTools", *READ_ONLY_TOOLS, "--disallowedTools", *DENIED_TOOLS,
+           "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+           "--setting-sources", "user,project", "--append-system-prompt", AGENT_SYSTEM[task]]
+    env = agent_env(ep, model)
+    env["NIU_AGENT_ROOT"] = str(cwd)
+    r = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout,
+                       stdin=subprocess.DEVNULL)
+    out = (r.stdout or "").strip()
+    try:
+        data = json.loads(out.splitlines()[-1]) if out else {}
+    except ValueError:
+        data = {}
+    if r.returncode != 0 or data.get("is_error") or not data.get("result"):
+        detail = data.get("result") or (r.stderr or out or f"exit {r.returncode}").strip().splitlines()[-1:]
+        raise RuntimeError(f"agent failed: {str(detail)[:300]}")
+    # Some models print a tool call as text instead of calling the tool; that ends the agent loop with no answer.
+    if TEXT_TOOL_CALL.search(data["result"]):
+        raise RuntimeError(f"{model} wrote a tool call as text instead of calling it (agent loop ended early)")
+    return data["result"].strip(), warn, data.get("num_turns")
+
+
+def run_task(task, args):
+    cfg = no.load_config()
+    cwd = Path(args.cwd or os.getcwd()).resolve()
+    domain = no.domain_of(cwd)
+    timeout = cfg.get("timeouts", {}).get(task, 240)
+    cap = cfg.get("max_output_chars", 8000)
+    base = (args.base or no.default_base(cwd)) if task == "diff" else None
+    notes, t0 = [], time.time()
+    for ep, model in no.candidates(task, domain, cfg, args.endpoint):
+        h = no.health(ep)
+        if not h["up"]:
+            notes.append(f"{ep['name']} unreachable ({h['error']})")
+            continue
+        if not no._has_model(h["models"], model):
+            notes.append(f"{ep['name']} lacks {model}")
+            continue
+        modes = ["agent", "lite"] if ep.get("mode", "agent") == "agent" else ["lite"]
+        for mode in modes:
+            try:
+                if mode == "agent":
+                    answer, warn, turns = run_agent(ep, model, task, args, cwd, base, timeout)
+                    if warn:
+                        notes.append(warn)
+                else:
+                    ctx = no.lite_context(task, cwd, query=getattr(args, "text", "") or "", base=base,
+                                          files=getattr(args, "files", None), limit=cfg.get("lite_context_chars", 14000))
+                    prompt = {"search": f"Question: {args.text}", "diff": f"Diff against {base}." + (f" Focus: {args.focus}" if args.focus else ""),
+                              "ask": f"Question: {getattr(args, 'text', '')}"}[task]
+                    answer, turns = no.lite_run(ep, model, task, prompt, ctx, timeout), 1
+                if len(answer) > cap:
+                    answer = answer[:cap] + "\n[truncated]"
+                return {"ok": True, "task": task, "endpoint": ep["name"], "label": ep.get("label"), "url": ep["url"],
+                        "model": model, "mode": mode, "turns": turns, "seconds": round(time.time() - t0, 1),
+                        "base": base, "notes": notes, "answer": answer}
+            except Exception as e:  # try the next mode / endpoint
+                notes.append(f"{ep['name']} {mode} mode failed: {str(e)[:200]}")
+    return {"ok": False, "task": task, "notes": notes or ["no endpoint configured for this task"],
+            "seconds": round(time.time() - t0, 1), "answer": ""}
+
+
+def probe(args):
+    cfg = no.load_config()
+    eps = no.candidates("search", None, cfg, args.endpoint)
+    report = []
+    for ep, model in eps:
+        r = {"endpoint": ep["name"], "url": ep["url"], "model": model}
+        h = no.health(ep, force=True)
+        r.update(up=h["up"], version=h["version"], model_present=no._has_model(h["models"], model))
+        if not (h["up"] and r["model_present"]):
+            report.append(r)
+            continue
+        # 1) Anthropic Messages API + tool calling
+        tool = {"name": "get_time", "description": "Return the current time.", "input_schema": {"type": "object", "properties": {}}}
+        try:
+            t0 = time.time()
+            res = no._http(ep["url"] + "/v1/messages", {"model": model, "max_tokens": 64, "tools": [tool],
+                           "messages": [{"role": "user", "content": "Call the get_time tool now."}]}, timeout=120)
+            r["anthropic_api"] = True
+            r["tool_call"] = any(b.get("type") == "tool_use" for b in res.get("content", []))
+            r["first_call_s"] = round(time.time() - t0, 1)
+        except Exception as e:
+            r["anthropic_api"], r["error"] = False, str(e)[:160]
+        # 2) Effective context: send ~24k tokens and see how many were actually read
+        try:
+            filler = ("lorem ipsum dolor sit amet " * 4200)
+            res = no._http(ep["url"] + "/v1/messages", {"model": model, "max_tokens": 8,
+                           "messages": [{"role": "user", "content": filler + "\nReply with OK."}]}, timeout=300)
+            got = (res.get("usage") or {}).get("input_tokens", 0)
+            r["context_probe_tokens_sent"], r["context_tokens_read"] = "~24000", got
+            r["context_ok"] = got >= 20000
+        except Exception as e:
+            r["context_ok"], r["context_error"] = False, str(e)[:160]
+        report.append(r)
+    return report
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="niu-agent", description=__doc__.splitlines()[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    for name in ("search", "ask"):
+        p = sub.add_parser(name)
+        p.add_argument("text")
+        p.add_argument("--files", nargs="*")
+    p = sub.add_parser("diff")
+    p.add_argument("--base")
+    p.add_argument("--focus")
+    for p in sub.choices.values():
+        p.add_argument("--cwd")
+        p.add_argument("--endpoint", choices=["remote", "local"])
+        p.add_argument("--json", action="store_true")
+    for name in ("status", "setup"):
+        sub.add_parser(name)
+    p = sub.add_parser("probe")
+    p.add_argument("--endpoint", choices=["remote", "local"])
+    args = ap.parse_args()
+    if args.cmd == "setup":
+        print(f"isolated agent config written to {setup_config()}")
+        return
+    if args.cmd == "status":
+        print(json.dumps(no.status(), indent=2))
+        return
+    if args.cmd == "probe":
+        print(json.dumps(probe(args), indent=2))
+        return
+    if args.cmd == "diff":
+        args.text, args.files = "", None
+    if args.cmd != "diff":
+        args.base, args.focus = None, None
+    res = run_task(args.cmd, args)
+    if args.json:
+        print(json.dumps(res, indent=2))
+    else:
+        head = (f"[{res.get('label') or res.get('endpoint')} · {res.get('model')} · {res.get('mode')} · {res.get('seconds')}s]"
+                if res["ok"] else "[failed]")
+        print(head)
+        for n in res["notes"]:
+            print(f"note: {n}")
+        print(res["answer"])
+    sys.exit(0 if res["ok"] else 1)
+
+
+if __name__ == "__main__":
+    main()
