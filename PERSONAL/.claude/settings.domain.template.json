@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "model": "opusplan",
+  "autoMemoryDirectory": "${WORKSPACE}/PERSONAL/.claude/memory",
+  "enableAllProjectMcpServers": false,
+  "enabledMcpjsonServers": [],
+  "env": {}
+}

@@ -1,0 +1,36 @@
+# niu-heimar tracks ONLY the workspace config. Projects inside the domains are
+# separate repos. This is an allow-list: ignore everything, then re-include config.
+/*
+!/.gitignore
+!/README.md
+!/CHANGELOG.md
+!/CLAUDE.md
+!/release-please-config.json
+!/.release-please-manifest.json
+!/.github/
+!/.claude/
+!/.claude-workspace/
+
+# Domains: only their CLAUDE.md and .claude/ config, never project folders.
+!/*/
+/*/*
+!/*/CLAUDE.md
+!/*/.claude/
+!/.claude-workspace/**
+!/.github/**
+!/.claude/**
+
+# Never commit: machine-local or sensitive state
+/*/.claude/memory/
+/*/.claude/settings.domain.json
+/*/.claude/*.local.md
+/*/.claude/*.local.json
+/WORK/.claude/LEARNINGS.md
+/WORK/.claude/mcp.json
+/.claude/settings.local.json
+.env
+.env.*
+!.env.example
+*.tmp
+__pycache__/
+*.pyc

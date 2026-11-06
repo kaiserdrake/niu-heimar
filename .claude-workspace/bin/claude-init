@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Link a project into its workspace domain (settings, reviewer agents, skills, MCP).
+# Usage: claude-init [-q] [--check] [project-dir]
+set -euo pipefail
+
+WS="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd -P)"
+SHARED="$WS/.claude-workspace"
+quiet=false check=false dir=""
+for a in "$@"; do
+  case "$a" in
+    -q|--quiet) quiet=true ;;
+    --check) check=true ;;
+    -h|--help) sed -n '2,3p' "$0"; exit 0 ;;
+    *) dir="$a" ;;
+  esac
+done
+dir="$(cd "${dir:-$PWD}" && pwd -P)"
+say() { $quiet || echo "$@"; }
+
+rel="${dir#"$WS"/}"
+if [[ "$rel" == "$dir" || "$rel" != */* ]]; then
+  echo "claude-init: $dir is not a project inside a domain of $WS (expected $WS/<DOMAIN>/<project>)" >&2
+  exit 1
+fi
+domain="${rel%%/*}"
+D="$WS/$domain/.claude"
+if [[ ! -f "$D/settings.domain.json" ]]; then
+  echo "claude-init: domain '$domain' isn't set up (missing $D/settings.domain.json; run install)" >&2
+  exit 1
+fi
+
+# Pairs of "link-path-relative-to-project<TAB>target".
+links=()
+links+=(".claude/settings.local.json	$D/settings.domain.json")
+for f in "$SHARED"/agents/*.md "$D"/agents/*.md; do
+  [[ -e "$f" ]] && links+=(".claude/agents/$(basename "$f")	$f")
+done
+for s in "$SHARED"/skills/*/ "$D"/skills/*/; do
+  [[ -d "$s" ]] && links+=(".claude/skills/$(basename "$s")	${s%/}")
+done
+if [[ -f "$D/mcp.json" ]] && { [[ ! -e "$dir/.mcp.json" ]] || [[ -L "$dir/.mcp.json" ]]; }; then
+  links+=(".mcp.json	$D/mcp.json")
+fi
+
+missing=0 made=()
+for pair in "${links[@]}"; do
+  l="${pair%%	*}" t="${pair#*	}" p="$dir/$l"
+  if [[ -L "$p" && "$(readlink "$p")" == "$t" ]]; then made+=("$l"); continue; fi
+  if [[ -e "$p" && ! -L "$p" ]]; then
+    case "$l" in
+      .claude/agents/security-reviewer.md|.claude/agents/test-reviewer.md)
+        echo "claude-init: WARNING: project overrides mandatory reviewer $(basename "$l" .md); make sure it still covers the shared checklist" >&2 ;;
+      *) $check || echo "claude-init: keeping project's own $l (not linked)" >&2 ;;
+    esac
+    continue
+  fi
+  if $check; then echo "missing: $l"; missing=$((missing+1)); continue; fi
+  mkdir -p "$(dirname "$p")"
+  ln -sfn "$t" "$p"
+  made+=("$l"); say "linked $l -> $t"
+done
+
+# Remove our links whose target no longer exists (e.g. an agent that was deleted upstream).
+if ! $check; then
+  while IFS= read -r -d '' p; do
+    t="$(readlink "$p")"
+    [[ "$t" == "$WS"/* && ! -e "$t" ]] && { rm -f "$p"; say "removed stale ${p#"$dir"/}"; }
+  done < <(find "$dir/.claude" "$dir/.mcp.json" -maxdepth 2 -type l -print0 2>/dev/null)
+fi
+
+if $check; then
+  ((missing == 0)) && say "ok: $rel is linked to $domain" ; exit $((missing > 0))
+fi
+
+# Keep the links out of the project's own git history.
+if gitdir="$(git -C "$dir" rev-parse --git-dir 2>/dev/null)"; then
+  [[ "$gitdir" == /* ]] || gitdir="$dir/$gitdir"
+  top="$(git -C "$dir" rev-parse --show-toplevel)"
+  ex="$gitdir/info/exclude"; mkdir -p "$(dirname "$ex")"; touch "$ex"
+  sub="${dir#"$top"}"; sub="${sub#/}"; [[ -n "$sub" ]] && sub="$sub/"
+  for l in "${made[@]}"; do
+    line="/$sub$l"
+    grep -qxF "$line" "$ex" || echo "$line" >>"$ex"
+  done
+fi
+say "done: $rel is linked to the $domain domain. Restart any open Claude session there."

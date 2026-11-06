@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Report workspace health. With --hook, runs as a SessionStart hook: quiet unless there's
+# something to say, never blocks, and prints a JSON systemMessage.
+set -uo pipefail
+WS="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd -P)"
+hook=false; [[ "${1:-}" == "--hook" ]] && hook=true
+
+cwd="$PWD"
+if $hook; then
+  cwd="$(jq -r '.cwd // empty' 2>/dev/null || true)"; cwd="${cwd:-$PWD}"
+  [[ "$cwd" == "$WS" || "$cwd" == "$WS"/* ]] || exit 0
+fi
+
+msgs=()
+if git -C "$WS" rev-parse --git-dir >/dev/null 2>&1; then
+  timeout 5 git -C "$WS" fetch --quiet origin 2>/dev/null || true
+  if git -C "$WS" rev-parse -q --verify '@{u}' >/dev/null 2>&1; then
+    behind="$(git -C "$WS" rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)"
+    ((behind > 0)) && msgs+=("$behind commit(s) behind origin; run workspace-update")
+  fi
+  dirty="$(git -C "$WS" status --porcelain 2>/dev/null | wc -l)"
+  ((dirty > 0)) && msgs+=("$dirty uncommitted config change(s); run /workspace-sync")
+fi
+
+rel="${cwd#"$WS"/}"
+if [[ "$rel" != "$cwd" && "$rel" == */* && "$rel" != .* ]]; then
+  domain="${rel%%/*}"
+  # nearest folder (below the domain) with .claude/ or .git = the project, so nested projects work
+  proj="$cwd"
+  while [[ "$proj" != "$WS/$domain" && ! -d "$proj/.claude" && ! -e "$proj/.git" ]]; do proj="$(dirname "$proj")"; done
+  [[ "$proj" == "$WS/$domain" ]] && proj="$WS/$domain/$(cut -d/ -f2 <<<"$rel")"
+  if [[ -f "$WS/$domain/.claude/settings.domain.json" ]] && ! "$WS/.claude-workspace/bin/claude-init" -q --check "$proj" >/dev/null 2>&1; then
+    msgs+=("this project isn't linked to its domain; run claude-init in ${proj#"$WS"/} and restart")
+  fi
+fi
+
+((${#msgs[@]} == 0)) && { $hook || echo "niu-heimar: all good"; exit 0; }
+text="niu-heimar: ${msgs[0]}"
+for m in "${msgs[@]:1}"; do text+="; $m"; done
+if $hook; then jq -nc --arg m "$text" '{systemMessage: $m}'; else echo "$text"; fi
+exit 0

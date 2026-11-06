@@ -1,0 +1,332 @@
+#!/usr/bin/env python3
+"""agents-dash: live terminal view of Claude sessions and subagents in the workspace.
+
+Usage: agents-dash [--once] [--json] [--since 24h] [--domain NAME] [--all]
+Keys:  q quit · d domain filter · e show ended · f pause feed · up/down scroll
+"""
+import argparse
+import json
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+from niu_events import EDIT_TOOLS, MANDATORY, agent_source, connect, db_path, project_agents  # noqa: E402
+
+STALE_SECS = 30 * 60
+
+
+def parse_since(s):
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    if s and s[-1] in units:
+        return float(s[:-1]) * units[s[-1]]
+    return float(s)
+
+
+def dur(secs):
+    secs = max(0, int(secs))
+    if secs < 60:
+        return f"{secs}s"
+    if secs < 3600:
+        return f"{secs // 60}m{secs % 60:02d}s"
+    if secs < 86400:
+        return f"{secs // 3600}h{(secs % 3600) // 60:02d}m"
+    return f"{secs // 86400}d{(secs % 86400) // 3600}h"
+
+
+def load(since_secs):
+    try:
+        con = connect(readonly=True)
+    except FileNotFoundError:
+        return []
+    try:
+        rows = con.execute("SELECT * FROM events WHERE ts >= ? ORDER BY ts, id",
+                           (time.time() - since_secs,)).fetchall()
+    finally:
+        con.close()
+    return [dict(r) for r in rows]
+
+
+def build(events, now):
+    sessions = {}
+    for e in events:
+        sid = e["session_id"] or "?"
+        s = sessions.get(sid)
+        if s is None:
+            s = sessions[sid] = {
+                "id": sid, "domain": e["domain"] or "?", "project": e["project"] or "",
+                "project_dir": e["project_dir"] or "", "first": e["ts"], "last": e["ts"],
+                "state": "idle", "since": e["ts"], "current": None, "edited": False,
+                "subagents": {}, "ran": set(), "ended": False,
+            }
+        s["last"] = e["ts"]
+        ev, aid = e["event"], e["agent_id"]
+        sub = s["subagents"].get(aid) if aid else None
+
+        def set_state(st, s=s, e=e):
+            if s["state"] != st:
+                s["state"], s["since"] = st, e["ts"]
+
+        if ev == "SessionStart":
+            s["ended"] = False
+            set_state("idle")
+        elif ev == "UserPromptSubmit":
+            set_state("working")
+        elif ev == "PreToolUse":
+            if aid and sub is None:  # tool call from a subagent we missed the start of
+                sub = s["subagents"][aid] = {"type": e["agent_type"] or "subagent", "start": e["ts"], "stop": None, "current": None}
+            target = sub if sub else s
+            target["current"] = (e["tool"], e["summary"], e["ts"], e["tool_use_id"])
+            if e["tool"] in EDIT_TOOLS:
+                s["edited"] = True
+            if s["state"] in ("idle", "waiting"):
+                set_state("working")
+        elif ev == "PostToolUse":
+            target = sub if sub else s
+            cur = target.get("current")
+            if cur and (not e["tool_use_id"] or cur[3] == e["tool_use_id"]):
+                target["current"] = None
+            if s["state"] == "waiting":
+                set_state("working")
+        elif ev == "SubagentStart" and aid:
+            s["subagents"][aid] = {"type": e["agent_type"] or "subagent", "start": e["ts"], "stop": None, "current": None}
+            set_state("working")
+        elif ev == "SubagentStop" and aid:
+            sub = sub or s["subagents"].setdefault(aid, {"type": e["agent_type"] or "subagent", "start": e["ts"], "stop": None, "current": None})
+            sub["stop"], sub["current"] = e["ts"], None
+            s["ran"].add(sub["type"])
+        elif ev == "Notification":
+            set_state("waiting")
+            s["note"] = e["summary"]
+        elif ev == "Stop":
+            set_state("idle")
+            s["current"] = None
+            for sb in s["subagents"].values():
+                if sb["stop"] is None:
+                    sb["stop"], sb["current"] = e["ts"], None
+                    s["ran"].add(sb["type"])
+        elif ev == "SessionEnd":
+            s["ended"] = True
+            set_state("ended")
+    for s in sessions.values():
+        if not s["ended"] and now - s["last"] > STALE_SECS and s["state"] != "idle":
+            s["state"] = "stale"
+        s["flagged"] = s["edited"] and s["state"] in ("idle", "ended", "stale") and not all(m in s["ran"] for m in MANDATORY)
+    return sessions
+
+
+# ---------- rendering: lines of [(text, style)] ----------
+
+def tree_lines(sessions, now, domain=None, show_ended=False):
+    out = []
+    by_dom = {}
+    for s in sorted(sessions.values(), key=lambda s: (s["domain"], s["project"], -s["last"])):
+        if domain and s["domain"] != domain:
+            continue
+        if s["ended"] and not show_ended:
+            continue
+        by_dom.setdefault(s["domain"], {}).setdefault(s["project"], []).append(s)
+    if not by_dom:
+        return [[("  no active sessions in the workspace", "muted")]]
+    state_style = {"working": "ok", "waiting": "warn", "idle": "muted", "ended": "muted", "stale": "warn"}
+    state_icon = {"working": "● working", "waiting": "◐ waiting for you", "idle": "○ idle", "ended": "✓ ended", "stale": "? stale"}
+    for dom, projects in by_dom.items():
+        out.append([(dom, "domain")])
+        plist = list(projects.items())
+        for pi, (proj, sess) in enumerate(plist):
+            plast = pi == len(plist) - 1
+            out.append([(" └ " if plast else " ├ ", "muted"), (proj or ("niu-heimar config" if dom == "(workspace)" else "(domain root)"), "bold")])
+            pre = "   " if plast else " │ "
+            for si, s in enumerate(sess):
+                slast = si == len(sess) - 1
+                line = [(pre + ("└ " if slast else "├ "), "muted"), (f"session {s['id'][:4]}  ", ""),
+                        (state_icon[s["state"]], state_style[s["state"]]), (f" {dur(now - s['since'])}", "muted")]
+                if s["state"] == "waiting" and s.get("note"):
+                    line.append((f"  {s['note']}", "warn"))
+                elif s["current"]:
+                    t, summ, _, _ = s["current"]
+                    line.append((f"  ▸ {t}: {summ}", ""))
+                if s["flagged"]:
+                    line.append(("  ⚠ edited without both reviewers", "bad"))
+                out.append(line)
+                spre = pre + ("  " if slast else "│ ")
+                rows = []
+                for sb in sorted(s["subagents"].values(), key=lambda x: x["start"]):
+                    if sb["stop"] is not None and now - sb["stop"] > 600:
+                        continue  # finished more than 10 min ago
+                    rows.append(("sub", sb))
+                if not s["ended"]:
+                    active_types = {sb["type"] for sb in s["subagents"].values()}
+                    for name in project_agents(s["project_dir"]):
+                        if name not in s["ran"] and name not in active_types:
+                            rows.append(("pending", name))
+                for ri, (kind, item) in enumerate(rows):
+                    br = "└ " if ri == len(rows) - 1 else "├ "
+                    if kind == "sub":
+                        name = item["type"]
+                        src = agent_source(s["project_dir"], name)
+                        line = [(spre + br, "muted"), (f"{name:<20}", ""), (f"[{src}]", "tag"), (" ", "")]
+                        if item["stop"] is None:
+                            line += [("● running ", "ok"), (dur(now - item["start"]), "muted")]
+                            if item["current"]:
+                                t, summ, _, _ = item["current"]
+                                line.append((f"  {t}: {summ}", ""))
+                        else:
+                            line += [("✓ done ", "muted"), (f"{dur(now - item['stop'])} ago", "muted")]
+                    else:
+                        src = agent_source(s["project_dir"], item)
+                        line = [(spre + br, "muted"), (f"{item:<20}", "muted"), (f"[{src}]", "tag"), (" ○ not yet run", "muted")]
+                    out.append(line)
+        out.append([])
+    return out
+
+
+def today_line(sessions, now):
+    midnight = datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    today = [s for s in sessions.values() if s["last"] >= midnight]
+    runs = {}
+    for s in today:
+        for sb in s["subagents"].values():
+            if sb["start"] >= midnight:
+                runs[sb["type"]] = runs.get(sb["type"], 0) + 1
+    edited = [s for s in today if s["edited"]]
+    reviewed = [s for s in edited if all(m in s["ran"] for m in MANDATORY)]
+    flagged = [s for s in today if s["flagged"]]
+    top = ", ".join(f"{k} {v}" for k, v in sorted(runs.items(), key=lambda kv: -kv[1])[:5]) or "none"
+    line = [(f" sessions {len(today)} · subagent runs {sum(runs.values())} ({top}) · dual-review ", ""),
+            (f"{len(reviewed)}/{len(edited)} editing sessions", "ok" if len(reviewed) == len(edited) else "warn")]
+    if flagged:
+        names = ", ".join(sorted({f"{s['domain']}/{s['project']}" for s in flagged}))
+        line.append((f" · {len(flagged)} without reviewers: {names}", "bad"))
+    return line
+
+
+def feed_lines(events, n, domain=None):
+    out = []
+    for e in reversed(events):
+        if domain and e["domain"] != domain:
+            continue
+        who = e["agent_type"] if e["agent_id"] else f"session {(e['session_id'] or '?')[:4]}"
+        detail = " ".join(x for x in (e["tool"], e["summary"]) if x)
+        out.append([(datetime.fromtimestamp(e["ts"]).strftime("%H:%M:%S") + " ", "muted"),
+                    (f"{(e['domain'] or '?'):<12}", "domain"), (f"{who:<20} ", ""),
+                    (f"{e['event']:<16} ", "muted"), (detail, "")])
+        if len(out) >= n:
+            break
+    return out
+
+
+def plain(lines):
+    return "\n".join("".join(t for t, _ in ln) for ln in lines)
+
+
+def header(sessions, domain, now):
+    live = [s for s in sessions.values() if not s["ended"]]
+    subs = sum(1 for s in live for sb in s["subagents"].values() if sb["stop"] is None)
+    return [("niu-heimar · agents-dash   ", "bold"),
+            (f"{len(live)} sessions · {subs} subagents active · filter: {domain or 'all'} · {datetime.fromtimestamp(now):%H:%M:%S}", "muted")]
+
+
+def snapshot(args):
+    now = time.time()
+    events = load(args.since)
+    sessions = build(events, now)
+    lines = [header(sessions, args.domain, now), [("─" * 60, "muted")]]
+    lines += tree_lines(sessions, now, args.domain, args.all)
+    lines += [[("── today ", "muted")], today_line(sessions, now), [("── events ", "muted")]]
+    lines += feed_lines(events, 15, args.domain)
+    return lines, sessions
+
+
+def run_tui(args):
+    import curses
+    import locale
+    locale.setlocale(locale.LC_ALL, "")
+
+    def main(scr):
+        curses.curs_set(0)
+        curses.use_default_colors()
+        pal = {"ok": curses.COLOR_GREEN, "warn": curses.COLOR_YELLOW, "bad": curses.COLOR_RED,
+               "domain": curses.COLOR_CYAN, "tag": curses.COLOR_MAGENTA}
+        attrs = {"": curses.A_NORMAL, "bold": curses.A_BOLD, "muted": curses.A_DIM}
+        for i, (k, c) in enumerate(pal.items(), start=1):
+            curses.init_pair(i, c, -1)
+            attrs[k] = curses.color_pair(i) | (curses.A_BOLD if k in ("domain", "bad") else 0)
+        scr.timeout(1000)
+        domains, di, scroll, paused, frozen = [None], 0, 0, False, None
+        while True:
+            now = time.time()
+            events = load(args.since)
+            sessions = build(events, now)
+            for d in sorted({s["domain"] for s in sessions.values()}):
+                if d not in domains:
+                    domains.append(d)
+            dom = args.domain or domains[di % len(domains)]
+            h, w = scr.getmaxyx()
+            top = [header(sessions, dom, now), [("─" * (w - 1), "muted")]]
+            tree = tree_lines(sessions, now, dom, args.all)
+            bottom = [[("── today " + "─" * max(0, w - 10), "muted")], today_line(sessions, now),
+                      [("── events " + ("(paused) " if paused else "") + "─" * max(0, w - 20), "muted")]]
+            keys = [[("q quit · d domain · e ended · f pause feed · ↑↓ scroll", "muted")]]
+            feed_n = max(3, min(12, h // 3))
+            if not paused or frozen is None:
+                frozen = feed_lines(events, feed_n, dom)
+            tree_h = max(1, h - len(top) - len(bottom) - len(frozen) - len(keys))
+            scroll = max(0, min(scroll, max(0, len(tree) - tree_h)))
+            view = top + tree[scroll:scroll + tree_h] + [[]] * max(0, tree_h - len(tree)) + bottom + frozen + keys
+            scr.erase()
+            for y, ln in enumerate(view[:h]):
+                x = 0
+                for text, style in ln:
+                    if x >= w - 1:
+                        break
+                    try:
+                        scr.addstr(y, x, text[: w - 1 - x], attrs.get(style, 0))
+                    except curses.error:
+                        pass
+                    x += len(text)
+            scr.refresh()
+            k = scr.getch()
+            if k in (ord("q"), 27):
+                return
+            if k == ord("d") and not args.domain:
+                di += 1
+            elif k == ord("e"):
+                args.all = not args.all
+            elif k == ord("f"):
+                paused = not paused
+            elif k == curses.KEY_DOWN:
+                scroll += 1
+            elif k == curses.KEY_UP:
+                scroll -= 1
+
+    curses.wrapper(main)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--once", action="store_true", help="print one plain-text snapshot and exit")
+    ap.add_argument("--json", action="store_true", help="print session state as JSON and exit")
+    ap.add_argument("--since", default="24h", help="history window, e.g. 1h, 24h, 7d (default 24h)")
+    ap.add_argument("--domain", help="only show one domain (WORK, PERSONAL, HOBBY …)")
+    ap.add_argument("--all", action="store_true", help="include ended sessions")
+    args = ap.parse_args()
+    args.since = parse_since(args.since)
+    if args.json:
+        sessions = build(load(args.since), time.time())
+        for s in sessions.values():
+            s["ran"] = sorted(s["ran"])
+        print(json.dumps(list(sessions.values()), indent=2, default=str))
+        return
+    if args.once or not sys.stdout.isatty():
+        if not db_path().exists():
+            print(f"agents-dash: no events yet ({db_path()}). Start a Claude session in the workspace.")
+            return
+        print(plain(snapshot(args)[0]))
+        return
+    run_tui(args)
+
+
+if __name__ == "__main__":
+    main()

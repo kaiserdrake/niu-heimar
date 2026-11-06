@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Install/refresh the niu-heimar workspace: render templates, merge user settings,
+# add bin/ to PATH, and re-link existing projects. Safe to run repeatedly.
+# Usage: install [--no-user-settings] [--no-shell]
+set -euo pipefail
+
+WS="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd -P)"
+SHARED="$WS/.claude-workspace"
+user_settings=true shell=true
+for a in "$@"; do
+  case "$a" in
+    --no-user-settings) user_settings=false ;;
+    --no-shell) shell=false ;;
+    *) echo "unknown option $a" >&2; exit 1 ;;
+  esac
+done
+command -v jq >/dev/null || { echo "install: jq is required" >&2; exit 1; }
+
+render() { sed "s|\${WORKSPACE}|$WS|g" "$1"; }
+
+domains=()
+for t in "$WS"/*/.claude/settings.domain.template.json; do
+  [[ -e "$t" ]] || continue
+  d="$(basename "$(dirname "$(dirname "$t")")")"; domains+=("$d")
+  D="$WS/$d/.claude"
+  render "$t" | jq . >"$D/settings.domain.json.tmp" && mv "$D/settings.domain.json.tmp" "$D/settings.domain.json"
+  mkdir -p "$D/memory" "$D/agents"
+  [[ -f "$D/mcp.json" ]] || echo '{ "mcpServers": {} }' >"$D/mcp.json"
+  [[ -f "$D/LEARNINGS.md" ]] || printf '# %s learnings\n\n<!-- Short dated bullets: conventions, pitfalls, deploy quirks. No secrets. -->\n' "$d" >"$D/LEARNINGS.md"
+  echo "rendered $d/.claude/settings.domain.json"
+done
+# WORK-only, gitignored company context
+if [[ -d "$WS/WORK/.claude" && ! -f "$WS/WORK/.claude/COMPANY.local.md" ]]; then
+  printf '# Company context (local only, never committed)\n\n<!-- GitLab host, group, infra names, internal conventions. -->\n' >"$WS/WORK/.claude/COMPANY.local.md"
+fi
+
+chmod +x "$SHARED"/bin/* "$SHARED"/hooks/*.sh "$SHARED"/tests/*.sh 2>/dev/null || true
+
+if $user_settings; then
+  US="$HOME/.claude/settings.json"; mkdir -p "$HOME/.claude/backups"
+  [[ -f "$US" ]] || echo '{}' >"$US"
+  cp "$US" "$HOME/.claude/backups/settings.json.$(date +%Y%m%d-%H%M%S)"
+  frag="$(render "$SHARED/user-settings.template.json")"
+  # Drop earlier niu-heimar entries (anything mentioning $WS), then append fresh ones.
+  jq --arg ws "$WS" --argjson frag "$frag" '
+    def mine: tostring | contains($ws);
+    .permissions.deny = ([(.permissions.deny // [])[] | select(mine | not)] + ($frag.permissions.deny // []))
+    | .hooks = (.hooks // {})
+    | .hooks |= with_entries(.value |= [ .[] | .hooks |= [ .[] | select(mine | not) ] | select(.hooks | length > 0) ])
+    | reduce ($frag.hooks // {} | to_entries[]) as $e (.; .hooks[$e.key] = ((.hooks[$e.key] // []) + $e.value))
+    | .hooks |= with_entries(select(.value | length > 0))
+  ' "$US" >"$US.tmp" && mv "$US.tmp" "$US"
+  echo "merged niu-heimar rules into $US (backup in ~/.claude/backups/)"
+fi
+
+if $shell; then
+  # zsh: ~/.zshenv (keeps tools like zoxide last in ~/.zshrc); bash: ~/.bashrc if present
+  rcs=()
+  command -v zsh >/dev/null && rcs+=("$HOME/.zshenv")
+  [[ -f "$HOME/.bashrc" ]] && rcs+=("$HOME/.bashrc")
+  for rc in "${rcs[@]}"; do
+    touch "$rc"
+    if grep -q '# >>> niu-heimar >>>' "$rc"; then
+      sed -i '/# >>> niu-heimar >>>/,/# <<< niu-heimar <<</d' "$rc"
+      sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$rc"
+    fi
+      cat >>"$rc" <<RC
+
+# >>> niu-heimar >>>
+export PATH="$SHARED/bin:\$PATH"
+# cdc: link the current project (if needed), then start Claude Code
+cdc() { claude-init -q && claude "\$@"; }
+# cdash: agent dashboard (opens in a tmux split when inside tmux)
+cdash() { if [ -n "\$TMUX" ]; then tmux split-window -h -l 45% agents-dash "\$@"; else agents-dash "\$@"; fi; }
+# <<< niu-heimar <<<
+RC
+      echo "updated niu-heimar block in $rc (open a new shell)"
+  done
+fi
+
+# Re-link projects that are already set up (at any depth), and git repos directly inside a domain.
+for d in "${domains[@]}"; do
+  {
+    find "$WS/$d" -mindepth 3 -maxdepth 6 -path '*/.claude/settings.local.json' -type l -not -path '*/node_modules/*' 2>/dev/null \
+      | sed 's|/.claude/settings.local.json$||'
+    for p in "$WS/$d"/*/; do if [[ -d "$p/.git" ]]; then echo "${p%/}"; fi; done
+  } | sort -u | while IFS= read -r p; do
+    "$SHARED/bin/claude-init" -q "$p" || true
+  done
+done
+echo "niu-heimar installed at $WS"

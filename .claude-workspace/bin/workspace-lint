@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Validate the workspace config: shell syntax, shellcheck, JSON, agent/skill frontmatter, hook tests.
+set -uo pipefail
+WS="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd -P)"
+cd "$WS" || exit 1
+fail=0
+err() { echo "FAIL: $*"; fail=1; }
+
+mapfile -t scripts < <(grep -rlE '^#!.*\b(ba)?sh\b' .claude-workspace/bin .claude-workspace/hooks .claude-workspace/tests 2>/dev/null)
+for s in "${scripts[@]}"; do bash -n "$s" || err "syntax: $s"; done
+if command -v shellcheck >/dev/null; then
+  shellcheck -S warning "${scripts[@]}" || err "shellcheck"
+else
+  echo "warn: shellcheck not installed (CI runs it)"
+fi
+
+while IFS= read -r -d '' py; do python3 -m py_compile "$py" 2>/dev/null || err "python: $py"; done \
+  < <(grep -rlZE '^#!.*python' .claude-workspace/bin .claude-workspace/hooks; find .claude-workspace/lib -name '*.py' -print0)
+find .claude-workspace -name __pycache__ -type d -prune -exec rm -rf {} +
+
+while IFS= read -r -d '' j; do jq empty "$j" 2>/dev/null || err "invalid JSON: $j"; done \
+  < <(find . -maxdepth 1 -name '*.json' -print0
+      find .claude-workspace .github .claude ./*/.claude -maxdepth 2 -name '*.json' -not -path '*/memory/*' -print0 2>/dev/null)
+
+fm() { awk 'NR==1 && $0!="---"{exit} NR>1 && $0=="---"{exit} NR>1{print}' "$1"; }
+for a in .claude-workspace/agents/*.md */.claude/agents/*.md; do
+  [[ -f "$a" ]] || continue
+  for k in name description model; do fm "$a" | grep -q "^$k:" || err "$a: frontmatter missing '$k'"; done
+done
+for s in .claude-workspace/skills/*/SKILL.md */.claude/skills/*/SKILL.md; do
+  [[ -f "$s" ]] || continue
+  for k in name description; do fm "$s" | grep -q "^$k:" || err "$s: frontmatter missing '$k'"; done
+done
+for l in .claude/agents/* .claude/skills/*; do
+  [[ -L "$l" && ! -e "$l" ]] && err "dangling link: $l"
+done
+
+for t in .claude-workspace/tests/*.sh; do bash "$t" || err "test: $t"; done
+
+((fail)) && { echo "workspace-lint: FAILED"; exit 1; }
+echo "workspace-lint: OK"

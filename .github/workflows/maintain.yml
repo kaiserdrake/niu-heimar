@@ -1,0 +1,72 @@
+name: maintain
+# Weekly: Claude compares this config against the latest Claude Code changes and opens a PR.
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays 06:00 UTC
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+concurrency: { group: maintain, cancel-in-progress: false }
+jobs:
+  maintain:
+    runs-on: ubuntu-latest
+    env:
+      HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+    steps:
+      - name: Check for ANTHROPIC_API_KEY
+        if: env.HAS_KEY != 'true'
+        run: echo "::notice::ANTHROPIC_API_KEY secret not set; skipping maintenance. Add it with gh secret set ANTHROPIC_API_KEY -R kaiserdrake/niu-heimar"
+      - uses: actions/checkout@v4
+        if: env.HAS_KEY == 'true'
+      - name: Tools
+        if: env.HAS_KEY == 'true'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq
+      - name: Fetch Claude Code changelog
+        if: env.HAS_KEY == 'true'
+        run: |
+          mkdir -p .maintain
+          curl -fsSL https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md -o .maintain/CHANGELOG.md
+      - uses: anthropics/claude-code-action@v1
+        if: env.HAS_KEY == 'true'
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: >-
+            --model opus
+            --allowedTools "Read,Edit,Write,Glob,Grep,Agent,Bash(.claude-workspace/bin/workspace-lint),Bash(.claude-workspace/bin/install --no-user-settings --no-shell),Bash(git diff:*),Bash(git status:*)"
+          prompt: |
+            You maintain niu-heimar, a Claude Code workspace configuration (read README.md and CLAUDE.md first).
+            1. Read .maintain/CHANGELOG.md (the latest Claude Code changelog). Focus on roughly the last 60 days.
+            2. Compare it with this repo: settings keys used in the *.template.json files and .claude/settings.json,
+               hook events and hook input/output fields used in .claude-workspace/hooks and bin/workspace-status,
+               agent/skill frontmatter fields, the "opusplan" model alias and model env vars, and MCP settings.
+            3. Make only changes that are clearly needed or clearly beneficial: renamed or deprecated keys,
+               new options that strengthen the existing rules (.env protection, mandatory reviewers, per-domain memory),
+               and broken behaviour. Don't restructure the repo or change the policy intent.
+            4. Run .claude-workspace/bin/install --no-user-settings --no-shell and then .claude-workspace/bin/workspace-lint.
+               Both must pass.
+            5. If you changed scripts or hooks, run the security-reviewer and test-reviewer agents on the diff and address
+               their blocking findings.
+            6. Write a summary to .maintain/SUMMARY.md: what changed and why, with changelog version references,
+               plus anything you noticed but didn't change. If nothing needs changing, write "No changes needed" and
+               make no other edits.
+      - name: Prepare PR body
+        if: env.HAS_KEY == 'true'
+        id: body
+        run: |
+          {
+            echo 'text<<EOF_BODY'
+            cat .maintain/SUMMARY.md 2>/dev/null || echo "Automated maintenance run."
+            echo 'EOF_BODY'
+          } >> "$GITHUB_OUTPUT"
+          rm -rf .maintain
+      - uses: peter-evans/create-pull-request@v7
+        if: env.HAS_KEY == 'true'
+        with:
+          branch: chore/claude-maintenance
+          delete-branch: true
+          commit-message: "chore: automated Claude Code config maintenance"
+          title: "chore: Claude Code config maintenance"
+          body: ${{ steps.body.outputs.text }}
+          labels: maintenance

@@ -1,0 +1,151 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(/${WORKSPACE}/**/.env)",
+      "Read(/${WORKSPACE}/**/.env.local)",
+      "Read(/${WORKSPACE}/**/.env.*.local)",
+      "Read(/${WORKSPACE}/**/.env.development)",
+      "Read(/${WORKSPACE}/**/.env.production)",
+      "Read(/${WORKSPACE}/**/.env.staging)",
+      "Read(/${WORKSPACE}/**/.env.test)",
+      "Edit(/${WORKSPACE}/**/.env)",
+      "Edit(/${WORKSPACE}/**/.env.local)",
+      "Edit(/${WORKSPACE}/**/.env.*.local)",
+      "Edit(/${WORKSPACE}/**/.env.development)",
+      "Edit(/${WORKSPACE}/**/.env.production)",
+      "Edit(/${WORKSPACE}/**/.env.staging)",
+      "Edit(/${WORKSPACE}/**/.env.test)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Read|Edit|MultiEdit|Write|Grep|Glob|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${WORKSPACE}/.claude-workspace/hooks/block-env.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${WORKSPACE}/.claude-workspace/hooks/agent-events.py",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${WORKSPACE}/.claude-workspace/bin/workspace-status --hook",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${WORKSPACE}/.claude-workspace/hooks/agent-events.py",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${WORKSPACE}/.claude-workspace/hooks/agent-events.py",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${WORKSPACE}/.claude-workspace/hooks/agent-events.py",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${WORKSPACE}/.claude-workspace/hooks/agent-events.py",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${WORKSPACE}/.claude-workspace/hooks/agent-events.py",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${WORKSPACE}/.claude-workspace/hooks/agent-events.py",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${WORKSPACE}/.claude-workspace/hooks/agent-events.py",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${WORKSPACE}/.claude-workspace/hooks/agent-events.py",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Pull the latest workspace config (or a pinned release) and re-run install.
+# Usage: workspace-update [--ref vX.Y.Z]
+set -euo pipefail
+WS="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd -P)"
+ref=""
+[[ "${1:-}" == "--ref" ]] && ref="${2:?--ref needs a tag or branch}"
+git -C "$WS" fetch --tags --quiet origin
+if [[ -n "$ref" ]]; then
+  git -C "$WS" checkout --quiet "$ref"
+  echo "checked out $ref (run 'workspace-update' with no --ref, after 'git -C $WS switch main', to go back to main)"
+else
+  git -C "$WS" pull --ff-only --quiet
+fi
+"$WS/.claude-workspace/bin/install" --no-shell
