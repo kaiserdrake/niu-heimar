@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>niu-heimar mission control</title>
+<title>niu-heimar agents</title>
 <link rel="stylesheet" href="/style.css">
 <link id="favicon" rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='%232563c9'/%3E%3C/svg%3E">
 </head>
@@ -12,10 +12,13 @@
   <div class="brand">
     <span id="conn" class="dot" title="Live connection"></span>
     <span class="logo">niu-heimar</span>
-    <span class="logo-sub">mission control</span>
     <span id="hostname" class="host"></span>
     <span id="clock" class="clock mono" aria-label="Host time"></span>
   </div>
+  <nav class="tabs" aria-label="Views">
+    <button id="tab-agents" class="tab on" aria-pressed="true">Agents</button>
+    <button id="tab-events" class="tab" aria-pressed="false">Events</button>
+  </nav>
   <div id="counters" class="counters" aria-label="Live"></div>
   <div id="today" class="kpis" aria-label="Today"></div>
   <span id="llm" class="llm" hidden></span>
@@ -24,7 +27,7 @@
     <select id="since" aria-label="Time window">
       <option value="1h">1 hour</option><option value="24h" selected>24 hours</option><option value="7d">7 days</option>
     </select>
-    <button id="bellbtn" class="icon-btn bell" aria-label="Needs you" aria-haspopup="true" aria-expanded="false" title="Needs you">
+    <button id="bellbtn" class="icon-btn bell" aria-label="Needs you" aria-controls="drawer" title="Needs you">
       <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 16V11a6 6 0 1 1 12 0v5l1.5 2h-15L6 16z" /><path d="M10 20a2 2 0 0 0 4 0" /></svg>
       <span id="bellcount" class="bellcount" hidden></span>
     </button>
@@ -33,10 +36,6 @@
       <span id="menudot" class="menudot" hidden></span>
     </button>
   </div>
-  <nav id="actions" class="menu actions" hidden aria-label="Needs you">
-    <div class="actions-h"><h3>Needs you</h3><span id="actionsub" class="small muted"></span></div>
-    <div id="actionlist"></div>
-  </nav>
   <nav id="menu" class="menu" hidden>
     <section>
       <h3>This browser</h3>
@@ -63,7 +62,7 @@
   </nav>
 </header>
 
-<main class="mcgrid">
+<main id="mcgrid" class="mcgrid" data-view="agents">
   <section class="panel p-sessions" aria-label="Sessions">
     <div class="ph"><h2>Sessions</h2><span id="sessneeds" class="needs" hidden></span></div>
     <div id="sessions" class="pb sessions"></div>
@@ -84,25 +83,32 @@
     <div id="timeline" class="pb timeline"></div>
   </section>
 
-  <section class="panel p-needs" aria-label="Needs you">
-    <div class="ph"><h2>Needs you</h2><span id="needscount" class="needs" hidden></span></div>
-    <div id="needslist" class="pb"></div>
-  </section>
-
-  <section class="panel p-prs" aria-label="Pull requests">
-    <div class="ph"><h2>Pull requests</h2><span id="prneeds" class="needs" hidden></span><button id="prrefresh" class="ghost tiny">Refresh</button></div>
-    <div id="prs" class="pb"></div>
-  </section>
-
-  <section class="panel p-llm" aria-label="Local LLMs">
-    <div class="ph"><h2>Local LLMs</h2></div>
-    <div id="llmcard" class="pb"><div class="empty">Checking…</div></div>
-  </section>
-
   <section class="panel p-feed" aria-label="Event feed">
-    <div class="ph"><h2>Event feed</h2></div>
+    <div class="ph"><h2>Event feed</h2><span id="feedsub" class="small muted"></span></div>
     <div id="feed" class="pb feed"></div>
   </section>
+
+  <aside id="drawer" class="drawer" aria-label="Needs you, pull requests and local LLMs">
+    <section class="panel p-needs" aria-label="Needs you">
+      <div class="ph"><h2>Needs you</h2><span id="needscount" class="needs" hidden></span></div>
+      <div id="needslist" class="pb"></div>
+    </section>
+    <section class="panel p-prs" aria-label="Pull requests">
+      <div class="ph"><h2>Pull requests</h2><span id="prneeds" class="needs" hidden></span><button id="prrefresh" class="ghost tiny">Refresh</button></div>
+      <div id="prs" class="pb"></div>
+    </section>
+    <section class="panel p-llm" aria-label="Local LLMs">
+      <div class="ph"><h2>Local LLMs</h2></div>
+      <div id="llmcard" class="pb"><div class="empty">Checking…</div></div>
+    </section>
+  </aside>
+  <button id="pulltab" class="pulltab" aria-controls="drawer" aria-expanded="false" title="Needs you · pull requests · local LLMs">
+    <span class="pt-arrow" aria-hidden="true">‹</span>
+    <span id="pt-needs" class="pt-badge" hidden></span>
+    <span class="pt-label">Needs you</span>
+    <span id="pt-prs" class="pt-prs"></span>
+    <span id="pt-llm" class="pt-llm"></span>
+  </button>
 </main>
 
 <aside id="details" class="card details" hidden></aside>
