@@ -44,7 +44,7 @@ def tree_lines(sessions, now, domain=None, show_ended=False):
             pre = "   " if plast else " │ "
             for si, s in enumerate(sess):
                 slast = si == len(sess) - 1
-                line = [(pre + ("└ " if slast else "├ "), "muted"), (f"session {s['id'][:4]}  ", ""),
+                line = [(pre + ("└ " if slast else "├ "), "muted"), (f"session {s['id'][:4]}  ", ""), *([(f"[local · {s['local']}] ", "tag")] if s.get("local") else []),
                         (state_icon[s["state"]], state_style[s["state"]]), (f" {dur(now - s['since'])}", "muted")]
                 if s["state"] == "waiting" and s.get("note"):
                     line.append((f"  {s['note']}", "warn"))

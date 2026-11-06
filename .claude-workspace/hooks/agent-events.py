@@ -70,7 +70,8 @@ def main():
         from niu_events import redact
         summary = redact(str(data.get("notification_type") or data.get("message") or ""))[:120]
     elif event == "SessionStart":
-        summary = str(data.get("source") or "")
+        label = os.environ.get("NIU_AGENT_LABEL", "")
+        summary = label if label.startswith("local:") else str(data.get("source") or "")
     elif event == "SessionEnd":
         summary = str(data.get("reason") or "")
 

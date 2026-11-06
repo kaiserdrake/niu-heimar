@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""niu-local: MCP server (stdio) exposing agents that run on your Ollama machines.
+
+Tools: local_search, local_diff_review, local_ask, local_status. Each runs `niu-agent` in the project
+directory the session was started in. Results say which endpoint/model/mode answered.
+"""
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+AGENT = HERE / "niu-agent"
+ROOT = Path(os.environ.get("NIU_PROJECT_DIR") or os.getcwd()).resolve()
+PROTOCOL = "2025-06-18"
+
+TOOLS = [
+    {"name": "local_search",
+     "description": "Search the current repository with a read-only agent running on a local Ollama model (GPU box first, CPU fallback). "
+                    "Use for broad 'where/how is X done' lookups to save Claude tokens. Returns an answer with file:line citations.",
+     "inputSchema": {"type": "object", "required": ["query"], "properties": {
+         "query": {"type": "string", "description": "What to find, in plain words"},
+         "path": {"type": "string", "description": "Optional subdirectory (relative to the project) to search in"}}}},
+    {"name": "local_diff_review",
+     "description": "Review the current changes (git diff against a base) with a read-only agent on a local Ollama model. "
+                    "Advisory first pass before the mandatory Claude reviewers. Returns findings with file:line.",
+     "inputSchema": {"type": "object", "properties": {
+         "base": {"type": "string", "description": "Git ref to diff against (default: merge-base with origin/HEAD)"},
+         "focus": {"type": "string", "description": "Optional focus, e.g. 'error handling' or 'SQL'"}}}},
+    {"name": "local_ask",
+     "description": "Ask a local Ollama model a question about the repository, optionally about specific files (read-only).",
+     "inputSchema": {"type": "object", "required": ["question"], "properties": {
+         "question": {"type": "string"},
+         "files": {"type": "array", "items": {"type": "string"}, "description": "Files relative to the project"}}}},
+    {"name": "local_status",
+     "description": "Show the configured Ollama endpoints, whether they are up, and which models are present.",
+     "inputSchema": {"type": "object", "properties": {}}},
+]
+
+
+def subdir(rel):
+    if not rel:
+        return ROOT
+    p = (ROOT / rel).resolve()
+    if p != ROOT and ROOT not in p.parents:
+        raise ValueError("path must stay inside the project")
+    return p
+
+
+def run_agent(argv, cwd):
+    r = subprocess.run([sys.executable, str(AGENT), *argv, "--json", "--cwd", str(cwd)],
+                       capture_output=True, text=True, timeout=900, stdin=subprocess.DEVNULL)
+    try:
+        res = json.loads(r.stdout)
+    except ValueError:
+        return f"niu-agent failed: {(r.stderr or r.stdout).strip()[-400:]}", True
+    head = (f"[{res.get('label') or res.get('endpoint')} · {res.get('model')} · {res.get('mode')} mode · {res.get('seconds')}s]"
+            if res.get("ok") else "[local agent failed]")
+    notes = "".join(f"\nnote: {n}" for n in res.get("notes", []))
+    return f"{head}{notes}\n\n{res.get('answer', '')}".strip(), not res.get("ok")
+
+
+def call(name, args):
+    if name == "local_search":
+        return run_agent(["search", str(args["query"])], subdir(args.get("path")))
+    if name == "local_diff_review":
+        argv = ["diff"] + (["--base", str(args["base"])] if args.get("base") else []) + (["--focus", str(args["focus"])] if args.get("focus") else [])
+        return run_agent(argv, ROOT)
+    if name == "local_ask":
+        files = [str(f) for f in args.get("files") or []]
+        return run_agent(["ask", str(args["question"])] + (["--files", *files] if files else []), ROOT)
+    if name == "local_status":
+        r = subprocess.run([sys.executable, str(AGENT), "status"], capture_output=True, text=True, timeout=30)
+        return r.stdout.strip() or r.stderr.strip(), r.returncode != 0
+    raise KeyError(name)
+
+
+def reply(msg_id, result=None, error=None):
+    out = {"jsonrpc": "2.0", "id": msg_id}
+    if error:
+        out["error"] = error
+    else:
+        out["result"] = result
+    sys.stdout.write(json.dumps(out) + "\n")
+    sys.stdout.flush()
+
+
+def main():
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        method, msg_id = msg.get("method"), msg.get("id")
+        if msg_id is None:  # notification (e.g. notifications/initialized)
+            continue
+        if method == "initialize":
+            reply(msg_id, {"protocolVersion": (msg.get("params") or {}).get("protocolVersion", PROTOCOL),
+                           "capabilities": {"tools": {}}, "serverInfo": {"name": "niu-local", "version": "1.0.0"}})
+        elif method == "ping":
+            reply(msg_id, {})
+        elif method == "tools/list":
+            reply(msg_id, {"tools": TOOLS})
+        elif method == "tools/call":
+            p = msg.get("params") or {}
+            if p.get("name") not in {t["name"] for t in TOOLS}:
+                reply(msg_id, error={"code": -32602, "message": f"unknown tool {p.get('name')}"})
+                continue
+            try:
+                text, is_err = call(p.get("name"), p.get("arguments") or {})
+                reply(msg_id, {"content": [{"type": "text", "text": text}], "isError": bool(is_err)})
+            except KeyError as e:
+                reply(msg_id, {"content": [{"type": "text", "text": f"missing argument: {e}"}], "isError": True})
+            except (ValueError, subprocess.TimeoutExpired) as e:
+                reply(msg_id, {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True})
+        else:
+            reply(msg_id, error={"code": -32601, "message": f"method not found: {method}"})
+
+
+if __name__ == "__main__":
+    main()

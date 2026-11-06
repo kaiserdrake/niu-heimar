@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "niu-local": { "type": "stdio", "command": "${WORKSPACE}/.claude-workspace/bin/niu-local-mcp", "args": [] }
+  }
+}

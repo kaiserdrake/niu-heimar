@@ -80,6 +80,33 @@ CLAUDE.md                     common rules (inherited by every project)
   a PR when something should change. It needs the repo secret `ANTHROPIC_API_KEY` (set it with `gh secret set ANTHROPIC_API_KEY -R kaiserdrake/niu-heimar`, which prompts for the value). Until then it skips.
 - Dependabot keeps Actions up to date. release-please tags releases and writes `CHANGELOG.md`.
 
+## Design-first development and local Ollama agents
+```
+/develop <task>
+  designer (Opus) → docs/design/<date>-<slug>.md → you approve → implement →
+  local_diff_review (Ollama) → security-reviewer + test-reviewer (Claude) → fix loop (≤3) → report
+```
+- **designer** (`agents/designer.md`, Opus): researches, compares options, and writes the design document. It never edits code.
+- **Local agents** (`bin/niu-agent`, exposed to sessions by the `niu-local` MCP server): `local_search`, `local_diff_review`,
+  `local_ask` and `local_status`. They run as real, read-only Claude Code agents on Ollama.
+  - **Agent mode** (GPU box): headless `claude -p` against Ollama's Anthropic-compatible API. It uses an **isolated config dir**
+    (`~/.local/state/niu-heimar/ollama-claude`) that never holds Anthropic credentials, with read-only tools (Read, Grep, Glob, read-only git) and the
+    same guard hooks. These sessions appear on the dashboard tagged `local · <model>`.
+  - **Lite mode** (local CPU, the fallback): gathers context itself (`git grep` / `git diff`, honouring the guard and
+    `protected-paths`) and makes one `/api/chat` call. A full agent loop is too slow for a 3B model on CPU.
+- **Endpoints** are in `.claude-workspace/ollama.template.json`. Copy it to `ollama.json` (gitignored) to change models
+  or modes, or override the URLs with `OLLAMA_REMOTE_BASE_URL` / `OLLAMA_LOCAL_BASE_URL`. The GPU box comes first, with
+  automatic fallback to the local CPU.
+- From a shell: `niu-agent status`, `niu-agent probe`, `niu-agent search "…"`, and `niu-agent diff --base main`.
+
+**One-time setup**
+1. Publish the local container on loopback: add `ports: ["127.0.0.1:11434:11434"]` to the `ollama-local` service,
+   then `docker compose up -d ollama-local`.
+2. GPU box: set `OLLAMA_CONTEXT_LENGTH=65536` and restart Ollama. Claude Code's instructions are about 20k tokens, so a
+   smaller limit silently cuts them off. `niu-agent probe` reports the effective context length.
+3. Install the standalone CLI (`curl -fsSL https://claude.ai/install.sh | bash`). Without it, niu-agent falls back to
+   the desktop app's bundled copy, whose path changes with app updates.
+
 ## Agent dashboard
 ```bash
 agents-dash          # live TUI (or `cdash`: opens in a tmux split when inside tmux)

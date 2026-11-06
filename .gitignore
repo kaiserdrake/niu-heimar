@@ -26,7 +26,9 @@
 /*/.claude/*.local.md
 /*/.claude/*.local.json
 /WORK/.claude/LEARNINGS.md
-/WORK/.claude/mcp.json
+/*/.claude/mcp.json
+/.claude-workspace/ollama.json
+/.mcp.json
 /.claude/settings.local.json
 .env
 .env.*

@@ -70,6 +70,8 @@ def build(events, now):
 
         if ev == "SessionStart":
             s["ended"] = False
+            if (e["summary"] or "").startswith("local:"):
+                s["local"] = e["summary"][6:]
             set_state("idle")
         elif ev == "UserPromptSubmit":
             set_state("working")
@@ -174,7 +176,7 @@ def to_json(sessions, events, now, domain=None, show_ended=True, feed_n=60):
             "current": list(s["current"][:3]) if s["current"] else None, "note": s.get("note"),
             "edited": s["edited"], "flagged": s["flagged"], "ran": sorted(s["ran"]),
             "subagents": subs, "pending": pending, "tools": s.get("tools", []),
-            "waits": s.get("waits", []), "messages": s.get("messages", []),
+            "waits": s.get("waits", []), "messages": s.get("messages", []), "local": s.get("local"),
         })
     feed = []
     for e in reversed(events):

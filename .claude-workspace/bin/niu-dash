@@ -224,6 +224,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"paired": bool(d), "device": d and {"id": d["id"], "name": d["name"]}})
         elif path == "/api/stream":
             self._stream()
+        elif path == "/api/llm":
+            try:
+                import niu_ollama
+                self._json({"endpoints": niu_ollama.status()})
+            except Exception as e:
+                self._json({"endpoints": [], "error": str(e)[:200]})
         elif path == "/healthz":
             self._json({"ok": True})
         else:

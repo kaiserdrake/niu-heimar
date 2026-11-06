@@ -4,7 +4,7 @@ Each domain has its own MCP config at `<DOMAIN>/.claude/mcp.json`. `claude-init`
 into every project as `.mcp.json`, unless the project has its own.
 
 ## Add a server
-1. Add it to `<DOMAIN>/.claude/mcp.json`:
+1. Add it to `<DOMAIN>/.claude/mcp.json` (local only), or to `mcp.template.json` to commit it:
    ```json
    {
      "mcpServers": {
@@ -24,4 +24,4 @@ into every project as `.mcp.json`, unless the project has its own.
 - **Agents running as local services**: expose them over MCP (http/stdio) as above, so
   Claude can call them as tools.
 
-`WORK/.claude/mcp.json` is gitignored (company endpoints). PERSONAL and HOBBY configs are committed.
+Each domain has a committed `mcp.template.json` (shared servers such as `niu-local`). `install` renders it into the gitignored `mcp.json` and keeps any servers you added there locally, so company endpoints in `mcp.json` are never committed.
