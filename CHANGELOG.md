@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.8.0...niu-heimar-v0.8.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **dashboard:** agent graph rendered nothing after the tooltip change ([#28](https://github.com/kaiserdrake/niu-heimar/issues/28)) ([296a345](https://github.com/kaiserdrake/niu-heimar/commit/296a3456df4459b2f3068a25f2b5f32ce2cc65c9))
+
 ## [0.8.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.7.0...niu-heimar-v0.8.0) (2026-11-06)
 
 
