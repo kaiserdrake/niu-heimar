@@ -430,3 +430,7 @@ progress.lim.bad::-webkit-progress-value { background: var(--bad); } progress.li
 .limpct { font-variant-numeric: tabular-nums; font-weight: 700; min-width: 34px; text-align: right; }
 .limpct.ok { color: var(--ok); } .limpct.warn { color: var(--warn); } .limpct.bad { color: var(--bad); }
 .limrow + .llmrow { border-top: 1px solid var(--border); margin-top: 3px; padding-top: 6px; }
+
+/* release-please PRs: muted, marked, listed last */
+.pr.release { border-left: 3px solid var(--domain); padding-left: 8px; }
+.reltag { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding: 0 7px; border-radius: 999px; border: 1px solid var(--domain); color: var(--domain); }

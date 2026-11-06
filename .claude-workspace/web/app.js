@@ -162,7 +162,7 @@ function renderCounters() {
   const live = STATE.sessions.filter((s) => !gone(s));
   const subs = live.reduce((n, s) => n + s.subagents.filter((a) => !a.stop).length, 0);
   const waiting = live.filter((s) => s.state === "waiting").length;
-  const green = (PRS?.repos || []).reduce((n, r) => n + r.prs.filter((p) => p.green).length, 0);
+  const green = (PRS?.repos || []).reduce((n, r) => n + r.prs.filter((p) => p.green && !p.release).length, 0);
   $("counters").innerHTML = `<span title="Live sessions"><b>${live.length}</b> sessions</span>` +
     `<span class="${subs ? "hot" : ""}" title="Agents running now"><b>${subs}</b> running</span>` +
     `<span class="${waiting ? "wait" : ""}" title="Sessions waiting for you"><b>${waiting}</b> waiting</span>` +
@@ -726,15 +726,16 @@ function renderPRs() {
     if (!r.prs.length && !r.error) continue;
     html += `<div class="repo"><div class="repo-h">${esc(r.repo)} · ${esc(dl(r.label))}</div>`;
     if (r.error) html += `<div class="msg err">${esc(r.error)}</div>`;
-    for (const p of r.prs) {
+    // Release-please PRs go last: they collect the merged changes until you cut a version.
+    for (const p of [...r.prs.filter((x) => !x.release), ...r.prs.filter((x) => x.release)]) {
       const c = p.checks;
       const badge = c.failed ? `<span class="badge b-bad">✗ ${c.failed} failing</span>` : c.pending ? `<span class="badge b-warn">… ${c.pending} pending</span>`
         : `<span class="badge b-ok">✓ ${c.passed} passed</span>`;
       const can = p.green && ME.paired;
-      const why = !p.green ? p.reason : !ME.paired ? "Pair this browser (menu) to merge" : "Squash-merge";
+      const why = !p.green ? p.reason : !ME.paired ? "Pair this browser (menu) to merge" : p.release ? "Merge to cut this release" : "Squash-merge";
       const status = p.needs_scope ? "blocked: gh token scope" : p.green ? "ready" : p.reason;
       const need = ACT_BY.pr.get(p.ref);
-      html += `<div class="pr ${need ? "needs-you" : ""}" data-ref="${esc(p.ref)}"><div class="t" title="${esc(p.title)}">#${p.number} ${esc(p.title)} ${need ? `<span class="needtag ${need.priority >= 3 ? "" : "mid"}">${esc(need.kind === "pr-ready" ? "ready" : "needs you")}</span>` : ""}</div>
+      html += `<div class="pr ${need ? "needs-you" : ""} ${p.release ? "release" : ""}" data-ref="${esc(p.ref)}"><div class="t" title="${esc(p.title)}">${p.release ? `<span class="reltag" title="release-please release PR: merging it tags the version and publishes the release. Leave it open to batch more changes.">release</span> ` : ""}#${p.number} ${esc(p.title)} ${need ? `<span class="needtag ${need.priority >= 3 ? "" : "mid"}">${esc(need.kind === "pr-ready" ? "ready" : "needs you")}</span>` : ""}</div>
         <div class="acts"><button class="ghost" data-open="${esc(p.url)}">${p.needs_scope ? "Merge on GitHub" : "Open"}</button>
         <button class="danger" data-merge="${esc(p.ref)}" ${can ? "" : "disabled"} title="${esc(why)}">Merge</button></div>
         <div class="meta">${badge}<span>${esc(status)}</span><span>${esc(p.author || "")}</span><span class="mono">${esc(p.branch || "")}</span></div>
@@ -840,6 +841,7 @@ $("mergeform").addEventListener("submit", async (ev) => {
     if (r.status === 401) loadMe();
   }
 });
+$("mergecancel").addEventListener("click", () => $("mergedlg").close());
 $("mergeconfirm").addEventListener("input", () => { $("mergemsg").textContent = ""; });
 
 $("pairform").addEventListener("submit", async (ev) => {

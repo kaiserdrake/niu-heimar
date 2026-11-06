@@ -89,5 +89,8 @@ for st in failing pending; do
   grep -q "pr merge" "$FAKE_GH_LOG" && bad "$st PR merged" || ok
 done
 
+# is_release(): only the release bot's same-repo release-please PRs (see prs_test.py)
+python3 "$SH/tests/prs_test.py" && ok || bad "prs_test.py"
+
 echo "prs: $pass passed, $fail failed"
 ((fail == 0))
