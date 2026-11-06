@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.6.0...niu-heimar-v0.7.0) (2026-11-06)
+
+
+### Features
+
+* Discord notifications, per-PR reviews with Sonnet agents, dashboard fixes ([#24](https://github.com/kaiserdrake/niu-heimar/issues/24)) ([2843d09](https://github.com/kaiserdrake/niu-heimar/commit/2843d09350e0d0caee34defaae44b7aa9b21aea7))
+
 ## [0.6.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.5.0...niu-heimar-v0.6.0) (2026-11-06)
 
 
