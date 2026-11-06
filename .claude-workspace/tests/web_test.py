@@ -139,6 +139,12 @@ try:
     st, _, js, _ = req("GET", "/api/prs")
     prs = [p for r in js["repos"] for p in r["prs"]]
     check(any(p["green"] for p in prs) or js["repos"] == [], "PR list shape")
+    ev("Notification", notification_type="permission_prompt", message="needs permission")
+    time.sleep(1.1)
+    st, _, js, _ = req("GET", "/api/state")
+    kinds = {a["kind"] for a in js.get("actions", [])}
+    check("waiting" in kinds, f"waiting session is an action: {kinds}")
+    check(js["actions"] and js["actions"][0]["priority"] == 3, "highest priority first")
 
     # Merge guards
     body = {"repo": "o/r", "number": 7, "confirm": "o/r#7"}
@@ -167,15 +173,32 @@ try:
     check(oct((tmp / "state" / "web-sessions.json").stat().st_mode)[-3:] == "600", "credential file mode 600")
     check(req("GET", "/api/me", headers={"Cookie": tok})[2]["paired"] is True, "/api/me paired")
 
-    # Merge with pairing
+    # Merge with pairing: the host issues a single-use 4-digit code that must be typed back
     open(env["FAKE_GH_LOG"], "w").close()
-    check(req("POST", "/api/prs/merge", {**body, "confirm": "o/r#8"}, auth)[0] == 400, "wrong confirm -> 400")
+    target = {"repo": "o/r", "number": 7}
+    check(req("POST", "/api/prs/merge-code", target, POSTH)[0] == 401, "merge code needs pairing")
+    check(req("POST", "/api/prs/merge", {**target, "confirm": "1234"}, auth)[0] == 400, "merge without a code issued -> 400")
+    st, _, js, _ = req("POST", "/api/prs/merge-code", target, auth)
+    code = js.get("code", "")
+    check(st == 200 and re.fullmatch(r"\d{4}", code or "") is not None, f"4-digit code issued: {js}")
+    wrong = "0000" if code != "0000" else "1111"
+    st, _, js, _ = req("POST", "/api/prs/merge", {**target, "confirm": wrong}, auth)
+    check(st == 400 and "wrong code" in js.get("error", ""), "wrong code -> 400")
+    check("pr merge" not in Path(env["FAKE_GH_LOG"]).read_text(), "no gh merge on wrong code")
     (tmp / "pr_state").write_text("failing")
-    st, _, js, _ = req("POST", "/api/prs/merge", body, auth)
+    st, _, js, _ = req("POST", "/api/prs/merge", {**target, "confirm": code}, auth)
     check(st == 409 and "failing" in js.get("error", ""), f"failing PR refused: {st} {js}")
     check("pr merge" not in Path(env["FAKE_GH_LOG"]).read_text(), "no gh merge for failing PR")
+    check(req("POST", "/api/prs/merge", {**target, "confirm": code}, auth)[0] == 400, "code is single-use")
+    # three wrong codes burn the code
+    code3 = req("POST", "/api/prs/merge-code", target, auth)[2]["code"]
+    bad = "0000" if code3 != "0000" else "1111"
+    tries = [req("POST", "/api/prs/merge", {**target, "confirm": bad}, auth)[0] for _ in range(3)]
+    check(tries == [400, 400, 429], f"attempt limit: {tries}")
+    check(req("POST", "/api/prs/merge", {**target, "confirm": code3}, auth)[0] == 400, "code dropped after attempt limit")
     (tmp / "pr_state").write_text("green")
-    st, _, js, _ = req("POST", "/api/prs/merge", body, auth)
+    code2 = req("POST", "/api/prs/merge-code", target, auth)[2]["code"]
+    st, _, js, _ = req("POST", "/api/prs/merge", {**target, "confirm": code2}, auth)
     check(st == 200, f"green PR merged: {st} {js}")
     check("pr merge 7 -R o/r --squash --delete-branch" in Path(env["FAKE_GH_LOG"]).read_text(), "gh merge called correctly")
     st, _, js, _ = req("GET", "/api/state")

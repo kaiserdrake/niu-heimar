@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import niu_prs  # noqa: E402
 from niu_events import connect, db_path, host_label  # noqa: E402
 from niu_state import live, mark_dirty, parse_since  # noqa: E402
+from niu_actions import actions  # noqa: E402
 
 WEB = Path(__file__).resolve().parents[1] / "web"
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
@@ -35,6 +36,9 @@ PAIR_TTL = 300
 PAIR_MAX_ATTEMPTS = 5
 PR_REFRESH_SECS = 60
 LOCK = threading.Lock()
+MERGE_CODE_TTL = 120          # seconds a merge confirmation code stays valid
+MERGE_CODE_ATTEMPTS = 3
+MERGE_CODES = {}              # (device id, owner/repo#N) -> {code, expires, attempts}; memory only
 
 
 # ---------- paired-device store (only hashes are kept) ----------
@@ -103,22 +107,7 @@ def refresh_prs(force=False):
 
 def prs_json():
     refresh_prs()
-    cache = PRS["cache"] or {"fetched": 0, "repos": []}
-    repos = []
-    for r in cache.get("repos", []):
-        items = []
-        for pr in r.get("prs", []):
-            passed, failed, pending = niu_prs.check_summary(pr)
-            ok, reason = niu_prs.is_green(pr)
-            items.append({"number": pr["number"], "title": pr.get("title", ""), "url": pr.get("url"),
-                          "author": (pr.get("author") or {}).get("login"), "branch": pr.get("headRefName"),
-                          "draft": pr.get("isDraft"), "updated": pr.get("updatedAt"),
-                          "checks": {"passed": passed, "failed": failed, "pending": pending},
-                          "green": ok, "reason": reason, "ref": f"{r['repo']}#{pr['number']}",
-                          "needs_scope": "workflow" if "'workflow' scope" in reason else None})
-        repos.append({"label": r["label"], "repo": r["repo"], "error": r.get("error"), "prs": items})
-    return {"fetched": cache.get("fetched", 0), "refreshing": PRS["busy"], "error": cache.get("error"), "repos": repos,
-            "scopes": cache.get("scopes")}
+    return niu_prs.summarize(PRS["cache"], PRS["busy"])
 
 
 def log_merge(ref, label, ok, msg):
@@ -212,6 +201,7 @@ class Handler(BaseHTTPRequestHandler):
         state["host"] = host_label()
         state["version"] = lv.version
         state["server_now"] = time.time()
+        state["actions"] = actions(state, prs_json())
         return state
 
     # routes
@@ -253,6 +243,7 @@ class Handler(BaseHTTPRequestHandler):
                 if key != sent:
                     state = dict(lv.json_for(domain))
                     state.update(host=host_label(), version=version, prs=prs, server_now=time.time())
+                    state["actions"] = actions(state, prs)
                     self.wfile.write(b"data: " + json.dumps(state, default=str).encode() + b"\n\n")
                     self.wfile.flush()
                     sent, beat = key, time.time()
@@ -281,7 +272,7 @@ class Handler(BaseHTTPRequestHandler):
                     data["devices"] = [d for d in data["devices"] if d["id"] != device["id"]]
                     save_auth(data)
             return self._json({"ok": True}, extra={"Set-Cookie": f"{COOKIE}=; Max-Age=0; Path=/"})
-        if path == "/api/prs/merge":
+        if path in ("/api/prs/merge-code", "/api/prs/merge"):
             if not device:
                 return self._err(401, "pair this browser first: run `niu-dash pair` on the host")
             b = self._body()
@@ -289,8 +280,24 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(number, int) or "/" not in repo:
                 return self._err(400, "repo and number required")
             ref = f"{repo}#{number}"
-            if str(b.get("confirm", "")).strip() != ref:
-                return self._err(400, f"type {ref} to confirm")
+            key = (device["id"], ref)
+            if path == "/api/prs/merge-code":
+                code = f"{secrets.randbelow(10_000):04d}"
+                with LOCK:
+                    MERGE_CODES[key] = {"code": code, "expires": time.time() + MERGE_CODE_TTL, "attempts": 0}
+                return self._json({"code": code, "expires_in": MERGE_CODE_TTL})
+            with LOCK:
+                pending = MERGE_CODES.get(key)
+                if not pending or time.time() > pending["expires"]:
+                    MERGE_CODES.pop(key, None)
+                    return self._err(400, "confirmation code expired: open the merge dialog again")
+                pending["attempts"] += 1
+                if not hmac.compare_digest(pending["code"], str(b.get("confirm", "")).strip()):
+                    if pending["attempts"] >= MERGE_CODE_ATTEMPTS:
+                        MERGE_CODES.pop(key, None)
+                        return self._err(429, "too many wrong codes: open the merge dialog again")
+                    return self._err(400, "wrong code: type the 4 digits shown")
+                MERGE_CODES.pop(key, None)  # single use
             label = next((r["label"] for r in (PRS["cache"] or {}).get("repos", []) if r["repo"] == repo), "")
             try:
                 msg = niu_prs.merge(repo, number)
