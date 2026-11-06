@@ -115,7 +115,8 @@ svg .lbl { font-size: 11px; fill: var(--muted); }
 .gnode .bar { fill: var(--ok); opacity: .9; }
 .gnode.done .bar, .gnode.session .bar { opacity: 0; }
 .gnode .bar.anim { animation: work 1.4s ease-in-out infinite; transform-box: fill-box; transform-origin: left; }
-@keyframes work { 0% { scale: .1 1; } 50% { scale: 1 1; } 100% { scale: .1 1; translate: 100% 0; } }
+/* stays inside the node: left edge = translate, right edge = translate + scale <= 100% */
+@keyframes work { 0% { scale: .1 1; translate: 0 0; } 50% { scale: .4 1; translate: 60% 0; } 100% { scale: .1 1; translate: 90% 0; } }
 .gedge { fill: none; stroke: var(--border); stroke-width: 1.6; transition: d .7s cubic-bezier(.2,.8,.2,1), stroke .3s; }
 .gedge.active { stroke: color-mix(in srgb, var(--spawn) 45%, var(--border)); }
 .gflow { fill: none; stroke: var(--spawn); stroke-width: 2.2; stroke-dasharray: 2 10; stroke-linecap: round; opacity: 0; transition: d .7s cubic-bezier(.2,.8,.2,1); }
@@ -284,7 +285,12 @@ button.linkish { border: 0; padding: 0; color: var(--accent); background: none; 
 }
 
 body.mc { height: 100vh; height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
-.mc .bar { position: relative; padding: 6px 12px; gap: 6px 12px; flex-wrap: wrap; }
+.mc .bar { position: relative; padding: 6px 12px; gap: 6px 12px; flex-wrap: nowrap; min-width: 0; }
+.mc .bar .brand, .mc .bar .controls, .mc .bar .counters { flex: none; flex-wrap: nowrap; white-space: nowrap; }
+.mc .bar .kpis { flex: 1 1 0; min-width: 0; overflow: hidden; flex-wrap: nowrap; }
+.mc .bar .controls { margin-left: auto; }
+.wspill { display: none; margin-right: 6px; font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; padding: 1px 7px; border-radius: 999px; background: var(--accent-bg); color: var(--accent); vertical-align: 1px; }
+body.ctrl .wspill { display: inline-block; }
 .logo { text-transform: uppercase; letter-spacing: .14em; font-size: 13px; }
 .clock { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 60px; }
 .tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; flex: none; }
@@ -370,7 +376,7 @@ body.mc { height: 100vh; height: 100dvh; display: grid; grid-template-rows: auto
 /* below 900×600: scrolling stack */
 @media (max-width: 899px), (max-height: 599px) {
   body.mc { height: auto; overflow: auto; display: block; }
-  .mc .bar { position: sticky; }
+  .mc .bar { position: sticky; flex-wrap: wrap; }
   .mcgrid { display: flex; flex-direction: column; }
   .mcgrid[data-view="agents"] .p-feed { display: none; }
   .p-graph { height: 60vh; } .p-timeline { height: 40vh; } .p-sessions, .p-feed { max-height: 70vh; }

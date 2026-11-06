@@ -172,6 +172,8 @@ run += [E(120, "SubagentStop", "dev", aid="r1", at="security-reviewer"), E(125, 
 dev = next(x for x in to_json(build(run, T + 130), run, T + 130)["sessions"] if x["id"] == "dev")
 stages = {p["stage"]: p["status"] for p in dev["pipeline"]}
 check(stages.get("review") == "done" and stages.get("report") == "done", f"finished run {stages}")
+check(dev["chain"]["review_rounds"] == 1 and {st["id"]: st.get("round") for st in dev["chain"]["steps"]}["r1"] == 1,
+      "one review round, both reviewers in round 1")
 plain = [E(0, "SessionStart", "p"), E(1, "PreToolUse", "p", tool="Edit")]
 check(to_json(build(plain, T + 2), plain, T + 2)["sessions"][0]["pipeline"] is None, "no /develop -> no progress strip")
 

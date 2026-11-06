@@ -130,6 +130,12 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { toggleDrop("menu", false); $("details").hidden = true; SELECTED = null; }
 });
 
+// Hold Ctrl to reveal which workspace each session belongs to (hidden otherwise, e.g. when screen sharing).
+const setCtrl = (on) => document.body.classList.toggle("ctrl", on);
+document.addEventListener("keydown", (e) => { if (e.key === "Control") setCtrl(true); });
+document.addEventListener("keyup", (e) => { if (e.key === "Control") setCtrl(false); });
+window.addEventListener("blur", () => setCtrl(false));
+
 // ---------- render ----------
 function render() {
   $("hostname").textContent = HOST();
@@ -168,7 +174,6 @@ function renderSessions() {
   for (const s of list) (byDom[s.domain] ||= []).push(s);
   let html = "";
   for (const [dom, ss] of Object.entries(byDom).sort()) {
-    html += `<div class="domain-h">${esc(dl(dom))}</div>`;
     for (const s of ss) {
       const cur = s.state === "waiting" && s.note ? `waiting: ${s.note}` : s.current ? `▸ ${s.current[0]}: ${s.current[1]}` : "";
       const chips = s.subagents.filter((a) => !a.stop || STATE.now - a.stop < 600).map((a) =>
@@ -178,9 +183,9 @@ function renderSessions() {
       const need = ACT_BY.session.get(s.id);
       const needTag = need ? `<span class="needtag ${need.priority >= 3 ? "" : "mid"}" title="${esc(need.title)}">needs you</span>` : "";
       html += `<div class="sess st-${esc(s.state)} ${s.flagged ? "flag" : ""} ${need ? `needs-you ${need.priority >= 3 ? "high" : ""}` : ""}" data-sid="${esc(s.id)}">
-        <div class="top"><span class="proj" title="${esc(sessName(s))}">${esc(sessName(s))} ${s.local ? `<span class="localtag" title="Agent running on a local Ollama model">local · ${esc(s.local)}</span>` : ""} ${needTag}</span>
+        <div class="top"><span class="proj" title="${esc(sessName(s))}"><span class="wspill">${esc(dl(s.domain))}</span>${esc(sessName(s))} ${s.local ? `<span class="localtag" title="Agent running on a local Ollama model">local · ${esc(s.local)}</span>` : ""} ${needTag}</span>
         <span class="pill st-${esc(s.state)}">${esc(STATE_LABEL[s.state] || s.state)} · ${dur(STATE.now - s.since)}</span></div>
-        <div class="muted small">${esc(projLabel(s))}${s.model ? ` · ${esc(shortModel(s.model))}` : ""}${s.local && s.query ? ` · “${esc(trunc(s.query, 50))}”` : ""} · ${esc(s.id.slice(0, 8))}</div>
+        <div class="muted small">${esc(projLabel(s))}${s.model ? ` · ${esc(shortModel(s.model))}` : ""}${s.local && s.query ? ` · “${esc(trunc(s.query, 50))}”` : ""} · ${esc(s.id.slice(0, 8))}${s.chain?.review_rounds ? ` · <b title="Rounds in which a mandatory reviewer ran">${s.chain.review_rounds} review round${s.chain.review_rounds === 1 ? "" : "s"}</b>` : ""}</div>
         ${s.pipeline ? `<div class="pipe" aria-label="/develop progress">${s.pipeline.map((p) =>
           `<span class="stg ${esc(p.status)}" title="${esc(`${p.stage}: ${p.status}${p.at ? ` · ${hhmmss(p.at)}` : ""}`)}">${p.status === "done" ? "✓" : p.status === "active" ? "●" : p.status === "skipped" ? "–" : "○"} ${esc(p.stage)}</span>`).join('<span class="stg-sep">›</span>')}</div>` : ""}
         <div class="cur" title="${esc(cur)}">${esc(cur) || "&nbsp;"}</div>
@@ -235,12 +240,15 @@ function graphLayout(list, cw, ch) {
     for (const a of s.subagents) (kids[a.parent] ||= []).push(a);
     for (const l of lk[s.id] || []) (kids[s.id] ||= []).push({ localSession: l });
     // The session's own implement stretches, so the hand-off chain reads design → implement → review.
+    const rounds = new Map((s.chain?.steps || []).filter((x) => x.round).map((x) => [x.id, x.round]));
     const hasAgents = (kids[s.id] || []).length > 0;
     if (hasAgents) for (const st of (s.chain?.steps || []).filter((x) => x.kind === "implement")) (kids[s.id] ||= []).push({ implStep: st });
     const startOf = (c) => c.localSession ? c.localSession.first : c.implStep ? c.implStep.start : c.start;
     if (kids[s.id]) kids[s.id].sort((a, b) => startOf(a) - startOf(b));
+    // Steps of the session stair-step to the right in pipeline order: design, implement, local review, review.
+    const IND = 24, STAGE = { designer: 0, implement: 1, local: 2, "security-reviewer": 3, "test-reviewer": 3 };
     const place = (id, depth, info) => {
-      const node = { id, x: PAD + depth * (NW + XG), y, ...info };
+      const node = { id, col: depth, x: PAD + depth * (NW + XG) + (info.stage || 0) * IND, y, ...info };
       nodes.push(node);
       const children = kids[id] || [];
       if (!children.length) y += NH + YG;
@@ -248,7 +256,7 @@ function graphLayout(list, cw, ch) {
         if (c.implStep) {
           const st = c.implStep, live = st.end == null;
           place(st.id, depth + 1, {
-            kind: "step", sid: s.id, label: "Implement", source: "session", running: live && s.state === "working", done: !live,
+            kind: "step", sid: s.id, label: "Implement", stage: STAGE.implement, source: "session", running: live && s.state === "working", done: !live,
             sub: `${st.edits} edit${st.edits === 1 ? "" : "s"} by the session${live ? "" : ` · ${dur(Math.max(0, st.end - st.start))}`}`,
           });
           continue;
@@ -258,14 +266,15 @@ function graphLayout(list, cw, ch) {
           const child = place(l.id, depth + 1, {
             kind: "local", sid: l.id, label: sessName(l), source: "local", running: live && l.state === "working", done: !live,
             sub: `${l.local} · ${live ? (l.current ? `${l.current[0]}: ${l.current[1]}` : STATE_LABEL[l.state] || l.state) : `done in ${dur(l.last - l.first)}`}`,
-            localModel: l.local,
+            localModel: l.local, stage: id === s.id ? STAGE.local : 0,
           });
           edges.push({ id: `${id}>${l.id}`, a: node, b: child, label: l.query || l.task, active: live, kind: "local" });
           continue;
         }
         const child = place(c.id, depth + 1, {
           kind: "sub", sid: s.id, aid: c.id, label: c.type, source: c.source, running: !c.stop, done: !!c.stop,
-          sub: c.stop ? `done in ${dur(c.stop - c.start)}` : c.current ? `${c.current[0]}: ${c.current[1]}` : `running ${dur(STATE.now - c.start)}`,
+          stage: id === s.id ? (STAGE[c.type] ?? 0) : 0,
+          sub: (rounds.get(c.id) ? `round ${rounds.get(c.id)} · ` : "") + (c.stop ? `done in ${dur(c.stop - c.start)}` : c.current ? `${c.current[0]}: ${c.current[1]}` : `running ${dur(STATE.now - c.start)}`),
         });
         edges.push({ id: `${id}>${c.id}`, a: node, b: child, label: c.task, active: !c.stop, kind: "spawn" });
       }
@@ -325,9 +334,9 @@ const edgePath = (a, b) => {
 // Hand-off between steps stacked in the same column: a bracket on the right-hand side, from one step to the next.
 const HB = 46;
 const handoffPath = (a, b) => {
-  if (a.x !== b.x) return edgePath(a, b);
-  const x = a.x + NW, y1 = a.y + NH * 0.66, y2 = b.y + NH * 0.34;
-  return `M${x},${y1} C${x + HB},${y1} ${x + HB},${y2} ${x + 4},${y2}`;
+  if (a.col !== b.col) return edgePath(a, b);
+  const xa = a.x + NW, xb = b.x + NW, xr = Math.max(xa, xb) + HB, y1 = a.y + NH * 0.66, y2 = b.y + NH * 0.34;
+  return `M${xa},${y1} C${xr},${y1} ${xr},${y2} ${xb + 4},${y2}`;
 };
 
 // Slide a node to its new position (attribute transform, so it scales with the zoom group).
@@ -399,7 +408,7 @@ function graphEdge(e) {
   rec.label.textContent = trunc(e.label, 22);
   rec.label.setAttribute("class", `elabel ${hand ? "hlabel" : ""}`);
   if (hand) {
-    rec.label.setAttribute("x", e.a.x + NW + HB + 6);
+    rec.label.setAttribute("x", Math.max(e.a.x, e.b.x) + NW + HB + 6);
     rec.label.setAttribute("y", (e.a.y + e.b.y) / 2 + NH / 2 + 4);
   } else {
     rec.label.setAttribute("x", e.a.x + NW + 8);
@@ -789,12 +798,6 @@ $("notify").checked = store.get("niu.notify", false) && typeof Notification !== 
 $("notify").onchange = () => setNotify($("notify").checked);
 let resizeT = 0;
 window.addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(refit, 120); });
-function tickClock() {
-  const t = new Date(Date.now() + CLOCK_OFFSET * 1000);
-  $("clock").textContent = t.toLocaleTimeString([], { hour12: false });
-}
-tickClock();
-setInterval(tickClock, 1000);
 
 // Local LLM endpoint health (GPU box / local CPU), refreshed every 30 s
 const EP_NAME = { remote: "Remote GPU", local: "Local CPU" };
@@ -802,7 +805,7 @@ const EP_NAME = { remote: "Remote GPU", local: "Local CPU" };
 function claudeLimits(c) {
   if (!c || !c.available) {
     return `<div class="limrow muted small" title="Recorded by the niu-statusline status line of Claude Code terminal sessions">` +
-      `Claude limits: shown once a Claude Code session in a terminal reports them</div>`;
+      `Claude limits: shown once a terminal Claude Code session reports them (the desktop app does not; set NIU_CLAUDE_USAGE_API=1 for the dashboard server to read them directly)</div>`;
   }
   const fmtReset = (ts) => {
     if (!ts) return "";
@@ -825,13 +828,12 @@ function claudeLimits(c) {
       `<span class="limpct ${lvl}">${Math.round(w.used)}%</span><span class="mdl">${esc(shortReset(w.resets_at))}</span></div>`;
   }).join("");
   const age = Date.now() / 1000 - (c.updated || 0);
-  return rows + (c.stale ? `<div class="llmfoot">Claude limits as of ${hhmmss(c.updated)} (${dur(age)} ago)</div>` : "");
+  return rows + (c.stale ? `<div class="llmfoot">Claude limits as of ${hhmmss(c.updated)} (${dur(age)} ago)${c.source === "api" ? " · from the usage API" : " · updates while a terminal Claude Code session runs"}</div>` : "");
 }
 async function loadLLM(force) {
   const r = await fetch(`/api/llm${force ? "?force=1" : ""}`, { credentials: "same-origin" }).then((x) => x.json()).catch(() => null);
-  const box = $("llm"), card = $("llmcard");
+  const card = $("llmcard");
   if (!r) {
-    box.hidden = true;
     card.innerHTML = `<div class="msg err">Can't read the LLM status from the dashboard server.</div>`;
     return;
   }
@@ -839,9 +841,6 @@ async function loadLLM(force) {
   LLM_EPS = eps;
   const state = (e) => !e.up ? "down" : Object.values(e.models || {}).every((m) => m.present) ? "up" : "partial";
   const word = { up: "online", partial: "models missing", down: "offline" };
-  box.hidden = false;
-  box.innerHTML = eps.map((e) => `<span class="llmpill ${state(e)}" title="${esc(`${EP_NAME[e.name] || e.label} ${e.url}: ${word[state(e)]}`)}">` +
-    `<i></i>${esc(e.label)} ${word[state(e)]}</span>`).join("");
   card.innerHTML = claudeLimits(r.claude) + eps.map((e) => {
     const st = state(e);
     const models = [...new Set(Object.values(e.models || {}).map((m) => `${m.present ? "" : "✗ "}${m.name}`))].join(", ");

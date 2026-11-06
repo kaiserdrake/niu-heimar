@@ -226,7 +226,7 @@ try:
     check(init["result"]["serverInfo"]["name"] == "niu-local", "MCP initialize")
     p.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"); p.stdin.flush()
     tools = {t["name"] for t in rpc(2, "tools/list")["result"]["tools"]}
-    check(tools == {"local_search", "local_diff_review", "local_ask", "local_status"}, f"MCP tools: {tools}")
+    check(tools == {"local_search", "local_diff_review", "local_ask", "local_status", "local_logs", "local_ci", "local_git"}, f"MCP tools: {tools}")
     st = rpc(3, "tools/call", {"name": "local_status", "arguments": {}})
     check("remote" in st["result"]["content"][0]["text"], "local_status tool")
     sr = rpc(4, "tools/call", {"name": "local_search", "arguments": {"query": "LiveThing"}})
@@ -237,6 +237,10 @@ try:
     check("error" in unk, "unknown tool rejected")
     miss = rpc(7, "tools/call", {"name": "local_search", "arguments": {}})
     check(miss["result"]["isError"] is True and "missing argument" in miss["result"]["content"][0]["text"], "missing argument reported")
+    bad = rpc(8, "tools/call", {"name": "local_logs", "arguments": {"service": "-rf"}})
+    check(bad["result"]["isError"] is True and "service must match" in bad["result"]["content"][0]["text"], "local_logs rejects a flag-like service")
+    bl = rpc(9, "tools/call", {"name": "local_git", "arguments": {"kind": "blame"}})
+    check(bl["result"]["isError"] is True and "blame needs a file path" in bl["result"]["content"][0]["text"], "local_git blame needs a path")
     p.stdin.close(); p.wait(5)
 finally:
     subprocess.run(["rm", "-rf", str(tmp), str(WS / "PERSONAL" / ".niu-test-ollama")])

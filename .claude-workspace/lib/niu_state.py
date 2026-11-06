@@ -224,6 +224,14 @@ def chain(s, local_kids):
             g.append(st)
         else:
             groups.append([st])
+    # a review round = one (parallel) group that ran at least one mandatory reviewer
+    rounds = 0
+    for g in groups:
+        if any(m["name"] in REVIEWERS for m in g):
+            rounds += 1
+            for m in g:
+                if m["name"] in REVIEWERS:
+                    m["round"] = rounds
     handoffs = []
     for a, b in zip(groups, groups[1:]):
         if any(m["end"] is None for m in a):
@@ -232,7 +240,8 @@ def chain(s, local_kids):
         for x, y in pairs:
             handoffs.append({"from": x["id"], "to": y["id"], "label": HANDOFF_LABEL.get(x["name"], "result"),
                              "at": y["start"]})
-    return {"steps": steps, "groups": [[m["id"] for m in g] for g in groups], "handoffs": handoffs}
+    return {"steps": steps, "groups": [[m["id"] for m in g] for g in groups], "handoffs": handoffs,
+            "review_rounds": rounds}
 
 
 def develop_stages(s, ch):

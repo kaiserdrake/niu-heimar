@@ -89,6 +89,10 @@ CLAUDE.md                     common rules (inherited by every project)
 - **designer** (`agents/designer.md`, Opus): researches, compares options, and writes the design document. It never edits code.
 - **Local agents** (`bin/niu-agent`, exposed to sessions by the `niu-local` MCP server): `local_search`, `local_diff_review`,
   `local_ask` and `local_status`. They run as real, read-only Claude Code agents on Ollama.
+- **Digest tools** `local_logs` (compose service logs), `local_ci` (failed GitHub runs, PR checks, PR diff; not in WORK) and
+  `local_git` (log/diff/blame): the server (`lib/niu_runs.py`) runs a fixed read-only command with validated arguments and no
+  shell, strips terminal codes, drops guard-protected files, and redacts secrets. The model then gets only that text in one
+  `/api/chat` call (**digest mode**, no tools), so instructions hidden in logs or PRs have nothing to act on. Raw output is never returned.
   - **Agent mode** (GPU box): headless `claude -p` against Ollama's Anthropic-compatible API. It uses an **isolated config dir**
     (`~/.local/state/niu-heimar/ollama-claude`) that never holds Anthropic credentials, with read-only tools (Read, Grep, Glob, read-only git) and the
     same guard hooks. These sessions appear on the dashboard tagged `local · <model>`.
@@ -97,7 +101,8 @@ CLAUDE.md                     common rules (inherited by every project)
 - **Endpoints** are in `.claude-workspace/ollama.template.json`. Copy it to `ollama.json` (gitignored) to change models
   or modes, or override the URLs with `OLLAMA_REMOTE_BASE_URL` / `OLLAMA_LOCAL_BASE_URL`. The GPU box comes first, with
   automatic fallback to the local CPU.
-- From a shell: `niu-agent status`, `niu-agent probe`, `niu-agent search "…"`, and `niu-agent diff --base main`.
+- From a shell: `niu-agent status`, `niu-agent probe`, `niu-agent search "…"`, `niu-agent diff --base main`, `niu-agent logs --service=web`,
+  `niu-agent ci --kind=failed_run` and `niu-agent git --kind=log --range=HEAD~10..HEAD`.
 
 **One-time setup**
 1. Publish the local container on loopback: add `ports: ["127.0.0.1:11434:11434"]` to the `ollama-local` service,
