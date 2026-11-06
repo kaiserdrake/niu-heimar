@@ -18,7 +18,7 @@ jobs:
       - name: Check for ANTHROPIC_API_KEY
         if: env.HAS_KEY != 'true'
         run: echo "::notice::ANTHROPIC_API_KEY secret not set; skipping maintenance. Add it with gh secret set ANTHROPIC_API_KEY -R kaiserdrake/niu-heimar"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: env.HAS_KEY == 'true'
       - name: Tools
         if: env.HAS_KEY == 'true'
