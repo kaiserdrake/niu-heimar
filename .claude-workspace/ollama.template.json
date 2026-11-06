@@ -9,11 +9,16 @@
       "models": {
         "search": "gpt-oss:20b",
         "diff": "gpt-oss:20b",
-        "ask": "gpt-oss:20b"
+        "ask": "gpt-oss:20b",
+        "logs": "gpt-oss:20b",
+        "ci": "gpt-oss:20b",
+        "git": "gpt-oss:20b"
       },
       "allowed_domains": [
         "*"
-      ]
+      ],
+      "digest_context_chars": 40000,
+      "num_ctx": 16384
     },
     "local": {
       "url": "http://127.0.0.1:11434",
@@ -24,19 +29,33 @@
       "models": {
         "search": "qwen2.5-coder:3b",
         "diff": "qwen2.5-coder:3b",
-        "ask": "qwen2.5-coder:3b"
+        "ask": "qwen2.5-coder:3b",
+        "logs": "qwen2.5-coder:3b",
+        "ci": "qwen2.5-coder:3b",
+        "git": "qwen2.5-coder:3b"
       },
       "allowed_domains": [
         "*"
-      ]
+      ],
+      "digest_context_chars": 14000,
+      "num_ctx": 8192
     }
   },
   "timeouts": {
     "search": 180,
     "diff": 300,
-    "ask": 240
+    "ask": 240,
+    "logs": 180,
+    "ci": 300,
+    "git": 240
   },
   "max_output_chars": 8000,
   "lite_context_chars": 14000,
-  "notes": "Agent mode needs a model whose tool calls Ollama parses for Claude Code. Tested on Ollama 0.30.10: gpt-oss:20b works (accurate file:line answers); qwen3-coder:30b printed tool calls as text; qwen3:14b works but is less precise."
+  "notes": "Agent mode needs a model whose tool calls Ollama parses for Claude Code. Tested on Ollama 0.30.10: gpt-oss:20b works (accurate file:line answers); qwen3-coder:30b printed tool calls as text; qwen3:14b works but is less precise. logs/ci/git tasks always use digest mode: the server runs a fixed read-only command and the model gets only the redacted text (no tools).",
+  "run_timeouts": {
+    "docker": 20,
+    "gh": 60,
+    "git": 30
+  },
+  "run_capture_bytes": 2000000
 }

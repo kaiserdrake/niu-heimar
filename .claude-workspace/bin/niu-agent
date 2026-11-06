@@ -5,6 +5,9 @@ Usage:
   niu-agent search "where is LiveState used?" [--cwd DIR] [--endpoint remote|local] [--json]
   niu-agent diff [--base REF] [--focus TEXT] [--cwd DIR] [--json]
   niu-agent ask "question" [--files a.py b.py] [--cwd DIR] [--json]
+  niu-agent logs --service=S [--tail=N] [--since=30m] [--focus=T] [--cwd DIR] [--json]   compose service logs, summarized
+  niu-agent ci --kind=failed_run|pr_checks|pr_diff [--run-id=N] [--pr=N] [--focus=T] [--json]   GitHub CI, summarized
+  niu-agent git --kind=log|diff|blame [--range=R] [--path=P] [--lines=A,B] [--max-commits=N] [--patch] [--focus=T] [--json]
   niu-agent status            endpoints, health and models
   niu-agent probe [--endpoint remote]   check Anthropic API, tool calls and effective context length
   niu-agent setup             (re)write the isolated Claude Code config used by agent mode
@@ -24,6 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import niu_ollama as no  # noqa: E402
+import niu_runs as nr  # noqa: E402
 from niu_events import WS, db_path  # noqa: E402
 
 SHARED = WS / ".claude-workspace"
@@ -146,7 +150,46 @@ def run_agent(ep, model, task, args, cwd, base, timeout):
     return data["result"].strip(), warn, data.get("num_turns")
 
 
+def run_digest(task, args):
+    """logs / ci / git: the server runs fixed read-only commands; the model only summarizes (no tools, one chat call)."""
+    cfg = no.load_config()
+    cwd = Path(args.cwd or os.getcwd()).resolve()
+    domain = no.domain_of(cwd)
+    timeout = cfg.get("timeouts", {}).get(task, 240)
+    cap = cfg.get("max_output_chars", 8000)
+    t0 = time.time()
+    try:
+        g = nr.gather(task, args, cwd, cfg)
+    except nr.RunError as e:
+        return {"ok": False, "task": task, "notes": [str(e)], "seconds": round(time.time() - t0, 1), "answer": ""}
+    notes = list(g["notes"])
+    for ep, model in no.candidates(task, domain, cfg, args.endpoint):
+        h = no.health(ep)
+        if not h["up"]:
+            notes.append(f"{ep['name']} unreachable ({h['error']})")
+            continue
+        if not no._has_model(h["models"], model):
+            notes.append(f"{ep['name']} lacks {model}")
+            continue
+        try:
+            budget = int(ep.get("digest_context_chars", cfg.get("lite_context_chars", 14000)))
+            body = nr.fit(g["text"], budget, g["keep"])
+            answer = no.lite_run(ep, model, task, no.digest_prompt(g["commands"], args.focus, body), "", timeout)
+            answer, n_out = nr.redact(answer)
+            if len(answer) > cap:
+                answer = answer[:cap] + "\n[truncated]"
+            return {"ok": True, "task": task, "endpoint": ep["name"], "label": ep.get("label"), "url": ep["url"],
+                    "model": model, "mode": "digest", "turns": 1, "seconds": round(time.time() - t0, 1), "base": None,
+                    "notes": notes, "commands": g["commands"], "redactions": g["redactions"] + n_out, "answer": answer}
+        except Exception as e:  # next endpoint; raw output is never returned as a fallback
+            notes.append(f"{ep['name']} digest failed: {str(e)[:200]}")
+    return {"ok": False, "task": task, "notes": notes or ["no endpoint configured for this task"],
+            "seconds": round(time.time() - t0, 1), "answer": ""}
+
+
 def run_task(task, args):
+    if task in nr.RUN_TASKS:
+        return run_digest(task, args)
     cfg = no.load_config()
     cwd = Path(args.cwd or os.getcwd()).resolve()
     domain = no.domain_of(cwd)
@@ -232,6 +275,23 @@ def main():
     p = sub.add_parser("diff")
     p.add_argument("--base")
     p.add_argument("--focus")
+    p = sub.add_parser("logs")
+    p.add_argument("--service", required=True)
+    p.add_argument("--tail")
+    p.add_argument("--since")
+    p = sub.add_parser("ci")
+    p.add_argument("--kind", required=True, choices=["failed_run", "pr_checks", "pr_diff"])
+    p.add_argument("--run-id", dest="run_id")
+    p.add_argument("--pr")
+    p = sub.add_parser("git")
+    p.add_argument("--kind", required=True, choices=["log", "diff", "blame"])
+    p.add_argument("--range")
+    p.add_argument("--path")
+    p.add_argument("--lines")
+    p.add_argument("--max-commits", dest="max_commits")
+    p.add_argument("--patch", action="store_true")
+    for name in ("logs", "ci", "git"):
+        sub.choices[name].add_argument("--focus")
     for p in sub.choices.values():
         p.add_argument("--cwd")
         p.add_argument("--endpoint", choices=["remote", "local"])
@@ -252,7 +312,9 @@ def main():
         return
     if args.cmd == "diff":
         args.text, args.files = "", None
-    if args.cmd != "diff":
+    elif args.cmd in nr.RUN_TASKS:
+        args.base = None
+    else:
         args.base, args.focus = None, None
     res = run_task(args.cmd, args)
     if args.json:
