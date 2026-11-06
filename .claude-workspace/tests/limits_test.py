@@ -65,6 +65,32 @@ check(claude_limits(now=now + 20 * 60)["stale"], "older than 15 min -> stale")
 check({x["key"]: x for x in claude_limits(now=now + 7200)["windows"]}["five_hour"]["used"] == 0.0, "5-hour window rolled over")
 check(claude_limits.__module__ and not claude_limits(now=now)["stale"], "fresh again at report time")
 
+# 3b. opt-in usage API source (for the desktop app, which never runs the status line)
+import niu_limits  # noqa: E402
+api = {"five_hour": {"used_percentage": 12.0, "resets_at": "2099-01-01T00:00:00Z"}}
+calls = []
+fake = lambda: (calls.append(1), api)[1]  # noqa: E731
+(tmp / "state" / "claude-limits.json").write_text(json.dumps({"rate_limits": sample["rate_limits"], "updated": now - 3600}))
+os.environ.pop("NIU_CLAUDE_USAGE_API", None)
+check(claude_limits(now=now, fetch=fake)["source"] == "statusline" and not calls, "API source is off by default")
+os.environ["NIU_CLAUDE_USAGE_API"] = "1"
+lim = claude_limits(now=now, fetch=fake)
+check(lim["source"] == "api" and not lim["stale"] and lim["windows"][0]["used"] == 12.0, f"stale status line -> API numbers: {lim}")
+claude_limits(now=now + 60, fetch=fake)
+check(len(calls) == 1, "API is polled at most every 5 minutes")
+(tmp / "state" / "claude-limits.json").write_text(json.dumps({"rate_limits": sample["rate_limits"], "updated": now + 100}))
+check(claude_limits(now=now + 120, fetch=fake)["source"] == "statusline", "fresh status line wins over the API")
+creds = tmp / "creds.json"
+creds.write_text(json.dumps({"claudeAiOauth": {"accessToken": "tok-secret"}}))
+os.environ["NIU_CLAUDE_CREDENTIALS"] = str(creds)
+check(niu_limits._fetch_usage(url="http://127.0.0.1:1/x", timeout=1) is None, "unreachable API -> None, no exception")
+creds.write_text("garbage")
+check(niu_limits._fetch_usage(url="http://127.0.0.1:1/x", timeout=1) is None, "bad credentials file -> None")
+(tmp / "state" / "claude-limits.json").write_text(json.dumps({"rate_limits": sample["rate_limits"], "updated": "bad"}))
+niu_limits._api.update(at=0.0, rate_limits=None)
+check(claude_limits(now=now + 9999, fetch=lambda: None)["source"] == "statusline", "corrupt 'updated' does not crash; failed fetch keeps status line")
+os.environ.pop("NIU_CLAUDE_USAGE_API"); os.environ.pop("NIU_CLAUDE_CREDENTIALS")
+
 # 4. install: sets our status line, never replaces a user's own
 home = tmp / "home"
 (home / ".claude").mkdir(parents=True)
