@@ -47,6 +47,11 @@ assert not p.is_green(pr([run("SUCCESS")], isDraft=True))[0]
 assert not p.is_green(pr([run("SUCCESS")], mergeable="CONFLICTING"))[0]
 assert not p.is_green(pr([run("SUCCESS")], mergeStateStatus="BLOCKED"))[0]
 assert p.parse_ref("kaiserdrake/niu-heimar#4") == ("kaiserdrake/niu-heimar", 4)
+wf = pr([run("SUCCESS")], mergeStateStatus="BLOCKED", files=[{"path": ".github/workflows/ci.yml"}])
+ok, why = p.is_green(wf, scopes={"repo", "gist"})
+assert not ok and "'workflow' scope" in why, why
+assert p.is_green(dict(wf, mergeStateStatus="CLEAN"), scopes={"repo", "workflow"})[0]
+assert "blocked" in p.is_green(dict(wf, files=[{"path": "src/x.py"}]), scopes={"repo"})[1]
 PY
 cd "$WS" || exit 1
 

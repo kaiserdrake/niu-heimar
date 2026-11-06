@@ -8,42 +8,64 @@
 </head>
 <body>
 <header class="bar">
-  <div class="brand"><span id="conn" class="dot" title="connection"></span> niu-heimar <span class="muted">agents</span></div>
+  <div class="brand">
+    <span id="conn" class="dot" title="Live connection"></span>
+    <span class="logo">niu-heimar</span>
+    <span id="hostname" class="host"></span>
+  </div>
   <div id="counters" class="counters"></div>
   <div class="controls">
     <select id="domain" aria-label="Domain filter"><option value="">All domains</option></select>
     <select id="since" aria-label="Time window">
       <option value="1h">1 hour</option><option value="24h" selected>24 hours</option><option value="7d">7 days</option>
     </select>
-    <label class="check"><input type="checkbox" id="ended"> ended</label>
-    <span id="me" class="muted"></span>
+    <button id="menubtn" class="icon-btn" aria-label="Menu" aria-haspopup="true" aria-expanded="false">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+      <span id="menudot" class="menudot" hidden></span>
+    </button>
   </div>
+  <nav id="menu" class="menu" hidden>
+    <section>
+      <h3>This browser</h3>
+      <div id="devstatus" class="small"></div>
+      <form id="pairform" class="stack" hidden>
+        <p class="small muted">To enable Merge buttons, run <code>niu-dash pair</code> on <span class="hostref"></span> and enter the code.</p>
+        <input id="paircode" inputmode="numeric" autocomplete="one-time-code" placeholder="123 456" aria-label="Pairing code">
+        <input id="pairname" placeholder="This device's name" aria-label="Device name">
+        <button type="submit" class="primary">Pair this browser</button>
+        <span id="pairmsg" class="msg"></span>
+      </form>
+      <button id="unpair" class="ghost" hidden>Unpair this browser</button>
+    </section>
+    <section>
+      <h3>Display</h3>
+      <label class="check"><input type="checkbox" id="ended"> Show ended sessions</label>
+      <label class="check"><input type="checkbox" id="calm"> Reduce motion</label>
+    </section>
+    <section class="small muted">
+      Paired devices: <code>niu-dash devices</code> · revoke: <code>niu-dash revoke ID</code>
+    </section>
+  </nav>
 </header>
 
-<section id="pairbox" class="card pair" hidden>
-  <div><strong>Pair this browser</strong> to enable merge buttons. On the host, run <code>niu-dash pair</code> and enter the code.</div>
-  <form id="pairform" class="row">
-    <input id="paircode" inputmode="numeric" autocomplete="one-time-code" placeholder="123 456" aria-label="Pairing code">
-    <input id="pairname" placeholder="This device's name" aria-label="Device name">
-    <button type="submit">Pair</button>
-    <span id="pairmsg" class="msg"></span>
-  </form>
-</section>
-
 <main class="grid">
+  <section class="card span2 graph-card">
+    <div class="head"><h2>Agent interactions</h2>
+      <div class="legend small">
+        <span><i class="lg-spawn"></i>spawn</span><span><i class="lg-bash"></i>bash</span><span><i class="lg-read"></i>read</span>
+        <span><i class="lg-edit"></i>edit</span><span><i class="lg-agent"></i>agent</span><span><i class="lg-web"></i>web</span>
+        <span><i class="lg-result"></i>result</span><span><i class="lg-msg"></i>message</span>
+      </div></div>
+    <div id="graph" class="graph"></div>
+  </section>
+
   <section class="card span2">
     <h2>Live sessions</h2>
     <div id="sessions" class="sessions"></div>
   </section>
 
   <section class="card span2">
-    <div class="head"><h2>Agent interactions</h2><span class="muted small">session → subagents it spawned · dashed = messages</span></div>
-    <div id="graph" class="scroll-x"></div>
-  </section>
-
-  <section class="card span2">
-    <div class="head"><h2>Timeline</h2>
-      <div class="legend small" id="legend"></div></div>
+    <div class="head"><h2>Timeline</h2><span class="small muted">one lane per agent · ticks are tool calls</span></div>
     <div id="timeline" class="scroll-x"></div>
   </section>
 
@@ -60,7 +82,7 @@
   </section>
 </main>
 
-<div id="details" class="card details" hidden></div>
+<aside id="details" class="card details" hidden></aside>
 
 <dialog id="mergedlg">
   <form method="dialog" id="mergeform">

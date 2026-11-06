@@ -15,7 +15,8 @@ from pathlib import Path
 
 from niu_events import WS, db_path
 
-GH_FIELDS = "number,title,author,headRefName,url,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,updatedAt"
+GH_FIELDS = "number,title,author,headRefName,url,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,updatedAt,files"
+SCOPES = None  # gh token scopes, filled by fetch_all() (None = unknown)
 OK_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 GH_RE = re.compile(r"github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
 
@@ -71,8 +72,13 @@ def check_summary(pr):
     return passed, failed, pending
 
 
-def is_green(pr):
+def touches_workflows(pr):
+    return any((f.get("path") or "").startswith(".github/workflows/") for f in pr.get("files") or [])
+
+
+def is_green(pr, scopes=None):
     """(ok, reason). Green = not draft, mergeable, no failing or pending checks."""
+    scopes = SCOPES if scopes is None else scopes
     passed, failed, pending = check_summary(pr)
     if pr.get("isDraft"):
         return False, "draft"
@@ -82,6 +88,8 @@ def is_green(pr):
         return False, f"{pending} check(s) pending"
     if pr.get("mergeable") != "MERGEABLE":
         return False, f"not mergeable ({(pr.get('mergeable') or 'unknown').lower()})"
+    if touches_workflows(pr) and scopes is not None and "workflow" not in scopes:
+        return False, "gh token lacks 'workflow' scope (PR edits workflows): run gh auth refresh -s workflow, or merge on GitHub"
     if pr.get("mergeStateStatus") in ("BLOCKED", "DIRTY", "BEHIND"):
         return False, f"merge state {pr['mergeStateStatus'].lower()}"
     return True, "ready" if passed else "ready (no checks)"
@@ -97,9 +105,23 @@ def _gh(args, timeout=30):
     return out.stdout
 
 
+def token_scopes():
+    """Scopes of the gh token, or None when they can't be read."""
+    try:
+        out = _gh(["api", "-i", "user"], timeout=15)
+    except (RuntimeError, subprocess.TimeoutExpired, OSError):
+        return None
+    for line in out.splitlines():
+        if line.lower().startswith("x-oauth-scopes:"):
+            return {x.strip() for x in line.split(":", 1)[1].split(",") if x.strip()}
+    return None
+
+
 def fetch_all():
     """Query gh for every discovered repo, write the cache, return it."""
-    data = {"fetched": time.time(), "repos": [], "error": None}
+    global SCOPES
+    SCOPES = token_scopes()
+    data = {"fetched": time.time(), "repos": [], "error": None, "scopes": sorted(SCOPES) if SCOPES is not None else None}
     try:
         repos = discover()
     except OSError as e:
@@ -121,10 +143,14 @@ def fetch_all():
 
 
 def load_cache():
+    global SCOPES
     try:
-        return json.loads(cache_path().read_text())
+        data = json.loads(cache_path().read_text())
     except (OSError, ValueError):
         return None
+    if SCOPES is None and data.get("scopes") is not None:
+        SCOPES = set(data["scopes"])
+    return data
 
 
 def flat(cache):
@@ -156,6 +182,9 @@ def can_prompt():
 
 def merge(repo, number):
     """Re-check the PR live, then squash-merge it and delete the branch. Returns a message."""
+    global SCOPES
+    if SCOPES is None:
+        SCOPES = token_scopes()
     pr = fresh(repo, number)
     ok, reason = is_green(pr)
     if not ok:
