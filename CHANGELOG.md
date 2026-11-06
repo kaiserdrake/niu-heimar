@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.8.1...niu-heimar-v0.9.0) (2026-11-06)
+
+
+### Features
+
+* **dashboard:** dismiss sessions the hooks never saw end ([#31](https://github.com/kaiserdrake/niu-heimar/issues/31)) ([71ae808](https://github.com/kaiserdrake/niu-heimar/commit/71ae8085a937ae1614d4592c4eab0aed0ab0a641))
+
 ## [0.8.1](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.8.0...niu-heimar-v0.8.1) (2026-11-06)
 
 
