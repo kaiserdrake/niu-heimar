@@ -24,7 +24,7 @@ from urllib.parse import parse_qs, urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import niu_prs  # noqa: E402
 from niu_events import connect, db_path, host_label  # noqa: E402
-from niu_state import build, load, parse_since, to_json  # noqa: E402
+from niu_state import live, mark_dirty, parse_since  # noqa: E402
 
 WEB = Path(__file__).resolve().parents[1] / "web"
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
@@ -206,10 +206,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _state(self):
         since, domain = self._args()
-        now = time.time()
-        events = load(since)
-        state = to_json(build(events, now), events, now, domain)
+        lv = live(since)
+        lv.refresh()
+        state = dict(lv.json_for(domain))
         state["host"] = host_label()
+        state["version"] = lv.version
+        state["server_now"] = time.time()
         return state
 
     # routes
@@ -238,17 +240,22 @@ class Handler(BaseHTTPRequestHandler):
             self._err(404, "not found")
 
     def _stream(self):
+        """Push a snapshot whenever the shared state or the PR list changes (checked once a second)."""
         self._headers(200, "text/event-stream", {"Connection": "keep-alive", "X-Accel-Buffering": "no"})
-        last, beat = None, time.time()
+        since, domain = self._args()
+        lv = live(since)
+        sent, beat = None, time.time()
         try:
             while True:
-                state = self._state()
-                state["prs"] = prs_json()
-                key = _sha(json.dumps({**state, "now": 0}, default=str, sort_keys=True))
-                if key != last:
+                version = lv.refresh()
+                prs = prs_json()
+                key = (version, prs.get("fetched"), prs.get("refreshing"))
+                if key != sent:
+                    state = dict(lv.json_for(domain))
+                    state.update(host=host_label(), version=version, prs=prs, server_now=time.time())
                     self.wfile.write(b"data: " + json.dumps(state, default=str).encode() + b"\n\n")
                     self.wfile.flush()
-                    last, beat = key, time.time()
+                    sent, beat = key, time.time()
                 elif time.time() - beat > 15:
                     self.wfile.write(b": keep-alive\n\n")
                     self.wfile.flush()
@@ -291,6 +298,7 @@ class Handler(BaseHTTPRequestHandler):
                 log_merge(ref, label, False, str(e))
                 return self._err(409, str(e))
             log_merge(ref, label, True, f"merged from {device['name']}")
+            mark_dirty()
             refresh_prs(force=True)
             return self._json({"ok": True, "message": msg})
         self._err(404, "not found")

@@ -1,4 +1,5 @@
 """Shared session/subagent model built from the event store (used by agents-dash and niu-dash)."""
+import threading
 import time
 from datetime import datetime
 
@@ -184,3 +185,99 @@ def to_json(sessions, events, now, domain=None, show_ended=True, feed_n=60):
             break
     return {"now": now, "sessions": out, "today": today_stats(sessions, now), "feed": feed,
             "domains": sorted({s["domain"] for s in sessions.values()})}
+
+
+# ---------- shared, incremental live state ----------
+
+class LiveState:
+    """Keeps the events of one time window in memory and rebuilds the model only when needed.
+
+    Each refresh() reads only rows newer than the last seen id (one indexed query), trims rows that
+    fell out of the window, and rebuilds when something changed or every IDLE_REBUILD seconds (for
+    stale/idle states). A rebuild that took t seconds delays the next one by at least THROTTLE * t,
+    so CPU stays bounded on very large histories no matter how many viewers are connected.
+    """
+    IDLE_REBUILD = 30.0
+    THROTTLE = 10.0
+
+    def __init__(self, since_secs):
+        self.since = since_secs
+        self.events, self.max_id = [], 0
+        self.sessions, self.version, self.built_at, self.cost = {}, 0, 0.0, 0.0
+        self.dirty = True
+        self.lock = threading.Lock()
+        self._json = {}
+
+    def _read_new(self, cutoff):
+        try:
+            con = connect(readonly=True)
+        except FileNotFoundError:
+            return []
+        try:
+            rows = con.execute("SELECT * FROM events WHERE id > ? AND ts >= ? ORDER BY id",
+                               (self.max_id, cutoff)).fetchall()
+            if not rows:
+                # Detect pruning or a reset store (max id went backwards).
+                top = con.execute("SELECT max(id) FROM events").fetchone()[0] or 0
+                if top < self.max_id:
+                    self.events, self.max_id, self.dirty = [], 0, True
+                    rows = con.execute("SELECT * FROM events WHERE ts >= ? ORDER BY id", (cutoff,)).fetchall()
+        finally:
+            con.close()
+        return [dict(r) for r in rows]
+
+    def refresh(self, force=False):
+        with self.lock:
+            now = time.time()
+            cutoff = now - self.since
+            new = self._read_new(cutoff)
+            if new:
+                in_order = not self.events or new[0]["ts"] >= self.events[-1]["ts"]
+                self.events.extend(new)
+                if not in_order or any(new[i]["ts"] > new[i + 1]["ts"] for i in range(len(new) - 1)):
+                    self.events.sort(key=lambda e: (e["ts"], e["id"]))
+                self.max_id = max(self.max_id, max(e["id"] for e in new))
+                self.dirty = True
+            drop = 0
+            while drop < len(self.events) and self.events[drop]["ts"] < cutoff:
+                drop += 1
+            if drop:
+                del self.events[:drop]
+                self.dirty = True
+            due = now - self.built_at >= max(1.0, self.THROTTLE * self.cost)
+            idle_due = now - self.built_at >= self.IDLE_REBUILD
+            if self.version == 0 or force or (due and (self.dirty or idle_due)):
+                t0 = time.perf_counter()
+                self.sessions = build(self.events, now)
+                self.cost = time.perf_counter() - t0
+                self.built_at, self.dirty = now, False
+                self.version += 1
+                self._json = {}
+            return self.version
+
+    def json_for(self, domain=None):
+        """to_json() of the current build, memoized per domain until the next rebuild."""
+        with self.lock:
+            key = domain or ""
+            if key not in self._json:
+                self._json[key] = to_json(self.sessions, self.events, self.built_at, domain)
+            return self._json[key]
+
+
+_LIVE = {}
+_LIVE_LOCK = threading.Lock()
+
+
+def live(since_secs):
+    """Process-wide LiveState per window, shared by every viewer."""
+    with _LIVE_LOCK:
+        if since_secs not in _LIVE:
+            _LIVE[since_secs] = LiveState(since_secs)
+        return _LIVE[since_secs]
+
+
+def mark_dirty():
+    """Ask every live window to rebuild on its next refresh (e.g. after the server logs an event)."""
+    with _LIVE_LOCK:
+        for lv in _LIVE.values():
+            lv.dirty = True

@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 from niu_events import MANDATORY, agent_source, db_path, project_agents, show_domain  # noqa: E402
-from niu_state import build, dur, load, parse_since, today_stats  # noqa: E402
+from niu_state import build, dur, live, load, parse_since, today_stats  # noqa: E402
 import niu_prs  # noqa: E402
 
 # ---------- rendering: lines of [(text, style)] ----------
@@ -213,12 +213,13 @@ def run_tui(args):
                     x += len(text)
             scr.refresh()
 
+        lv = live(args.since)
         while True:
             now = time.time()
             if now - state["last"] > 60:
                 refresh_prs()
-            events = load(args.since)
-            sessions = build(events, now)
+            lv.refresh()
+            events, sessions = lv.events, lv.sessions
             for d in sorted({s["domain"] for s in sessions.values()}):
                 if d not in domains:
                     domains.append(d)
