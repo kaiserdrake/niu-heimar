@@ -64,6 +64,7 @@ function connect() {
   if (ES) ES.close();
   const q = new URLSearchParams({ since: $("since").value });
   if ($("domain").value) q.set("domain", $("domain").value);
+  if (VIEW === "events") q.set("feed", "250");
   ES = new EventSource(`/api/stream?${q}`);
   ES.onopen = () => { $("conn").className = "dot on"; };
   ES.onerror = () => { $("conn").className = "dot off"; };
@@ -87,7 +88,7 @@ async function loadMe() {
 }
 
 // ---------- menus (hamburger + "needs you") ----------
-const DROPS = { menu: "menubtn", actions: "bellbtn" };
+const DROPS = { menu: "menubtn" };
 function toggleDrop(name, open) {
   for (const [n, btn] of Object.entries(DROPS)) {
     const show = n === name ? (open ?? $(n).hidden) : false;
@@ -98,12 +99,50 @@ function toggleDrop(name, open) {
 }
 const toggleMenu = (open) => toggleDrop("menu", open);
 $("menubtn").addEventListener("click", (e) => { e.stopPropagation(); toggleDrop("menu"); });
-$("bellbtn").addEventListener("click", (e) => { e.stopPropagation(); toggleDrop("actions"); });
+$("bellbtn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleDrawer(true);
+  const panel = document.querySelector(".p-needs");
+  panel.classList.remove("flash"); void panel.offsetWidth; panel.classList.add("flash");
+});
+$("pulltab").addEventListener("click", () => toggleDrawer());
+
+// ---------- drawer + views ----------
+function refit() { if (STATE && VIEW === "agents") { renderGraph(); renderTimeline(); } }
+function toggleDrawer(open) {
+  const on = open ?? !document.body.classList.contains("drawer-open");
+  document.body.classList.toggle("drawer-open", on);
+  $("pulltab").setAttribute("aria-expanded", String(on));
+  store.set("niu.drawer", on);
+  setTimeout(refit, 280);
+}
+let VIEW = "agents";
+function setView(v) {
+  VIEW = v === "events" ? "events" : "agents";
+  $("mcgrid").dataset.view = VIEW;
+  for (const [id, name] of [["tab-agents", "agents"], ["tab-events", "events"]]) {
+    $(id).classList.toggle("on", VIEW === name); $(id).setAttribute("aria-pressed", String(VIEW === name));
+  }
+  store.set("niu.view", VIEW);
+  if (location.hash !== (VIEW === "events" ? "#events" : "")) history.replaceState(null, "", VIEW === "events" ? "#events" : location.pathname);
+  connect();
+  setTimeout(refit, 50);
+}
+$("tab-agents").onclick = () => setView("agents");
+$("tab-events").onclick = () => setView("events");
+function updatePullTab() {
+  const n = ACTIONS.length, high = ACTIONS.some((a) => a.priority >= 3);
+  $("pt-needs").hidden = !n; $("pt-needs").textContent = String(n); $("pt-needs").className = `pt-badge ${high ? "high" : ""}`;
+  const prs = (PRS?.repos || []).reduce((a, r) => a + r.prs.length, 0);
+  $("pt-prs").textContent = `${prs} PR${prs === 1 ? "" : "s"}`;
+  $("pt-llm").innerHTML = (LLM_EPS || []).map((e) => `<i class="${e.up ? (Object.values(e.models || {}).every((m) => m.present) ? "up" : "partial") : ""}" title="${esc(e.label)}"></i>`).join("");
+}
+let LLM_EPS = [];
 document.addEventListener("click", (e) => {
   for (const n of Object.keys(DROPS)) if (!$(n).hidden && !$(n).contains(e.target)) toggleDrop(n, false);
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { toggleDrop("menu", false); toggleDrop("actions", false); $("details").hidden = true; SELECTED = null; }
+  if (e.key === "Escape") { toggleDrop("menu", false); $("details").hidden = true; SELECTED = null; }
 });
 
 // ---------- render ----------
@@ -113,7 +152,8 @@ function render() {
   document.title = `${HOST()} · niu-heimar agents`;
   document.body.classList.toggle("calm", reducedMotion());
   indexActions();
-  renderDomains(); renderCounters(); renderActions(); renderGraph(); renderSessions(); renderTimeline(); renderPRs(); renderToday(); renderFeed();
+  renderDomains(); renderCounters(); renderActions(); renderSessions(); renderPRs(); renderToday(); renderFeed();
+  if (VIEW === "agents") { renderGraph(); renderTimeline(); }
   if (SELECTED) showDetails(SELECTED, true);
 }
 
@@ -130,8 +170,10 @@ function renderCounters() {
   const subs = live.reduce((n, s) => n + s.subagents.filter((a) => !a.stop).length, 0);
   const waiting = live.filter((s) => s.state === "waiting").length;
   const green = (PRS?.repos || []).reduce((n, r) => n + r.prs.filter((p) => p.green).length, 0);
-  $("counters").innerHTML = `<span><b>${live.length}</b> sessions</span><span class="${subs ? "hot" : ""}"><b>${subs}</b> agents running</span>` +
-    `<span class="${waiting ? "wait" : ""}"><b>${waiting}</b> waiting for you</span><span><b>${green}</b> PR${green === 1 ? "" : "s"} ready</span>`;
+  $("counters").innerHTML = `<span title="Live sessions"><b>${live.length}</b> sessions</span>` +
+    `<span class="${subs ? "hot" : ""}" title="Agents running now"><b>${subs}</b> running</span>` +
+    `<span class="${waiting ? "wait" : ""}" title="Sessions waiting for you"><b>${waiting}</b> waiting</span>` +
+    `<span title="Pull requests ready to merge"><b>${green}</b> PR${green === 1 ? "" : "s"} ready</span>`;
 }
 
 function renderSessions() {
@@ -514,6 +556,7 @@ function renderActions() {
   $("bellbtn").title = n ? `${n} item(s) need you` : "Nothing needs you";
   document.title = `${n ? `(${n}) ` : ""}${HOST()} · niu-heimar agents`;
   setFavicon(n, high);
+  updatePullTab();
 
   const sessN = ACT_BY.session.size, prN = ACT_BY.pr.size;
   const sessHigh = [...ACT_BY.session.values()].some((a) => a.priority >= 3), prHigh = [...ACT_BY.pr.values()].some((a) => a.priority >= 3);
@@ -521,8 +564,7 @@ function renderActions() {
   $("prneeds").hidden = !prN; $("prneeds").textContent = `${prN} need${prN === 1 ? "s" : ""} you`; $("prneeds").className = `needs ${prHigh ? "high" : ""}`;
 
   const fresh = SEEN_ACTIONS ? ACTIONS.filter((a) => !SEEN_ACTIONS.has(a.id)) : [];
-  $("actionsub").textContent = n ? `${n} item${n === 1 ? "" : "s"}` : "";
-  $("actionlist").innerHTML = n ? ACTIONS.map((a) => {
+  $("needslist").innerHTML = n ? ACTIONS.map((a) => {
     const isPR = !!a.target.pr, pr = isPR && PRS ? PRS.repos.flatMap((r) => r.prs).find((p) => p.ref === a.target.pr) : null;
     const merge = a.kind === "pr-ready" && pr && pr.green ? `<button class="danger" data-amerge="${esc(a.target.pr)}" ${ME.paired ? "" : `disabled title="Pair this browser (menu) to merge"`}>Merge</button>` : "";
     const open = isPR ? `<button class="ghost" data-aopen="${esc(a.target.url || "")}">${a.kind === "pr-blocked" ? "Merge on GitHub" : "Open"}</button>` : "";
@@ -531,12 +573,11 @@ function renderActions() {
       <span class="b"><button class="ghost" data-ago="${esc(a.id)}">Show</button>${open}${merge}</span>
       <span class="d" title="${esc(a.detail)}">${esc(a.detail)}</span></div>`;
   }).join("") : `<div class="none">Nothing needs you right now.</div>`;
-  $("needslist").innerHTML = $("actionlist").innerHTML;
   $("needscount").hidden = !n; $("needscount").textContent = String(n); $("needscount").className = `needs ${high ? "high" : ""}`;
-  for (const box of [$("actionlist"), $("needslist")]) {
-    for (const b of box.querySelectorAll("[data-ago]")) b.onclick = () => { toggleDrop("actions", false); jumpTo(ACTIONS.find((a) => a.id === b.dataset.ago)); };
+  for (const box of [$("needslist")]) {
+    for (const b of box.querySelectorAll("[data-ago]")) b.onclick = () => { if (VIEW !== "agents") setView("agents"); setTimeout(() => jumpTo(ACTIONS.find((a) => a.id === b.dataset.ago)), 60); };
     for (const b of box.querySelectorAll("[data-aopen]")) b.onclick = () => b.dataset.aopen && window.open(b.dataset.aopen, "_blank", "noopener");
-    for (const b of box.querySelectorAll("[data-amerge]")) b.onclick = () => { toggleDrop("actions", false); openMerge(b.dataset.amerge); };
+    for (const b of box.querySelectorAll("[data-amerge]")) b.onclick = () => openMerge(b.dataset.amerge);
   }
 
   if (SEEN_ACTIONS && fresh.length) notify(fresh);
@@ -587,7 +628,7 @@ function renderTimeline() {
   }
   const t0 = Math.max(Math.min(...lanes.map((l) => l.start)), STATE.now - 6 * 3600), t1 = STATE.now;
   const avail = (box.clientHeight || 300) - 22;
-  const LH = Math.max(12, Math.min(24, Math.floor((avail - 26) / Math.max(1, lanes.length))));
+  const LH = Math.max(14, Math.min(24, Math.floor((avail - 26) / Math.max(1, lanes.length))));
   const LW = 170, W = Math.max(640, (box.clientWidth || 900) - 20), H = lanes.length * LH + 26;
   const x = (t) => LW + ((Math.max(t, t0) - t0) / Math.max(1, t1 - t0)) * (W - LW - 10);
   const root = svg("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Agent timeline" });
@@ -647,23 +688,44 @@ function renderPRs() {
   $("prs").innerHTML = html;
   for (const b of $("prs").querySelectorAll("[data-open]")) b.onclick = () => window.open(b.dataset.open, "_blank", "noopener");
   for (const b of $("prs").querySelectorAll("[data-merge]")) b.onclick = () => openMerge(b.dataset.merge);
+  updatePullTab();
 }
 
 function renderToday() {
   const t = STATE.today;
   const top = t.runs.slice(0, 3).map(([k, v]) => `${k} ${v}`).join(", ");
   $("today").innerHTML = `<span title="Sessions active today"><b>${t.sessions}</b> today</span>` +
-    `<span title="${esc(top || "no subagent runs yet")}"><b>${t.subagent_runs}</b> agent runs</span>` +
+    `<span title="${esc(top || "no subagent runs yet")}"><b>${t.subagent_runs}</b> runs</span>` +
     `<span class="${t.reviewed < t.edited ? "bad" : ""}" title="Editing sessions that ran both mandatory reviewers"><b>${t.reviewed}/${t.edited}</b> reviewed</span>` +
     (t.flagged_projects.length ? `<span class="bad" title="${esc(t.flagged_projects.map((x) => x.replace("(workspace)", HOST())).join(", "))}">⚠ <b>${t.flagged_projects.length}</b> unreviewed</span>` : "");
 }
 
+// Session-start events carry JSON (title, model, local agent); show it as words.
+function feedSummary(e) {
+  const s = e.summary || "";
+  if (!s.startsWith("{")) return s;
+  try {
+    const j = JSON.parse(s);
+    if (j.local) return `local agent ${j.local}${j.task ? ` (${j.task})` : ""}`;
+    return [j.title && `“${j.title}”`, j.model && shortModel(j.model), j.source].filter(Boolean).join(" · ");
+  } catch { return s; }
+}
+
 function renderFeed() {
   const newest = STATE.feed[0]?.ts || 0;
+  const names = new Map(STATE.sessions.map((x) => [x.id, sessName(x)]));
+  const wide = VIEW === "events";
+  $("feedsub").textContent = wide ? `${STATE.feed.length} most recent events` : "";
   $("feed").innerHTML = STATE.feed.map((e) => {
-    const who = e.agent_id ? e.agent_type : `session ${String(e.session_id || "?").slice(0, 4)}`;
-    const detail = [e.tool, e.summary].filter(Boolean).join(" ");
-    return `<div class="${LAST_FEED_TS && e.ts > LAST_FEED_TS ? "new" : ""}" title="${esc(detail)}"><span class="muted">${hhmmss(e.ts)}</span> <span class="d">${esc(dl(e.domain))}</span> ${esc(who)} <span class="muted">${esc(e.event)}</span> ${esc(detail)}</div>`;
+    const who = e.agent_id ? e.agent_type : "session";
+    const sname = names.get(e.session_id) || (e.session_id === "web" ? "dashboard" : `session ${String(e.session_id || "?").slice(0, 4)}`);
+    const detail = [e.tool, feedSummary(e)].filter(Boolean).join(" ");
+    const cls = LAST_FEED_TS && e.ts > LAST_FEED_TS ? "new" : "";
+    if (wide) {
+      return `<div class="${cls}" title="${esc(detail)}"><span class="muted">${hhmmss(e.ts)}</span><span class="d">${esc(dl(e.domain))}</span>` +
+        `<span>${esc(sname)}</span><span>${esc(who)}</span><span class="muted">${esc(e.event)}</span><span>${esc(detail)}</span></div>`;
+    }
+    return `<div class="${cls}" title="${esc(detail)}"><span class="muted">${hhmmss(e.ts)}</span> <span class="d">${esc(dl(e.domain))}</span> ${esc(e.agent_id ? e.agent_type : sname)} <span class="muted">${esc(e.event)}</span> ${esc(detail)}</div>`;
   }).join("") || `<div class="empty">No events yet.</div>`;
   LAST_FEED_TS = newest;
 }
@@ -743,7 +805,7 @@ $("calm").onchange = () => { store.set("niu.calm", $("calm").checked); if (STATE
 $("notify").checked = store.get("niu.notify", false) && typeof Notification !== "undefined" && Notification.permission === "granted";
 $("notify").onchange = () => setNotify($("notify").checked);
 let resizeT = 0;
-window.addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (STATE) { renderGraph(); renderTimeline(); } }, 120); });
+window.addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(refit, 120); });
 function tickClock() {
   const t = new Date(Date.now() + CLOCK_OFFSET * 1000);
   $("clock").textContent = t.toLocaleTimeString([], { hour12: false });
@@ -762,6 +824,7 @@ async function loadLLM(force) {
     return;
   }
   const eps = r.endpoints;
+  LLM_EPS = eps; updatePullTab();
   const state = (e) => !e.up ? "down" : Object.values(e.models || {}).every((m) => m.present) ? "up" : "partial";
   const word = { up: "online", partial: "models missing", down: "offline" };
   box.hidden = false;
@@ -789,8 +852,13 @@ setInterval(() => { if (!document.hidden) loadLLM(); }, 30000);
 setInterval(() => {
   if (!STATE || document.hidden) return;
   STATE.now = Date.now() / 1000 + CLOCK_OFFSET;
-  renderCounters(); renderSessions(); renderGraph(); renderTimeline();
+  renderCounters(); renderSessions();
+  if (VIEW === "agents") { renderGraph(); renderTimeline(); }
 }, 1000);
 
 loadMe();
-connect();
+const drawerParam = new URLSearchParams(location.search).get("drawer");
+document.body.classList.toggle("drawer-open", drawerParam ? drawerParam === "open" : !!store.get("niu.drawer", false));
+$("pulltab").setAttribute("aria-expanded", String(document.body.classList.contains("drawer-open")));
+setView(location.hash === "#events" ? "events" : store.get("niu.view", "agents"));
+requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.add("ready")));

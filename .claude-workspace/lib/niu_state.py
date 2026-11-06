@@ -402,12 +402,12 @@ class LiveState:
                 self._json = {}
             return self.version
 
-    def json_for(self, domain=None):
-        """to_json() of the current build, memoized per domain until the next rebuild."""
+    def json_for(self, domain=None, feed_n=60):
+        """to_json() of the current build, memoized per (domain, feed length) until the next rebuild."""
         with self.lock:
-            key = domain or ""
+            key = (domain or "", feed_n)
             if key not in self._json:
-                self._json[key] = to_json(self.sessions, self.events, self.built_at, domain)
+                self._json[key] = to_json(self.sessions, self.events, self.built_at, domain, feed_n=feed_n)
             return self._json[key]
 
 

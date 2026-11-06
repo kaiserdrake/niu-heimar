@@ -193,11 +193,17 @@ class Handler(BaseHTTPRequestHandler):
             since = 86400
         return since, (q.get("domain", [""])[0] or None)
 
+    def _feed_n(self):
+        try:
+            return max(20, min(500, int(parse_qs(urlparse(self.path).query).get("feed", ["60"])[0])))
+        except ValueError:
+            return 60
+
     def _state(self):
         since, domain = self._args()
         lv = live(since)
         lv.refresh()
-        state = dict(lv.json_for(domain))
+        state = dict(lv.json_for(domain, self._feed_n()))
         state["host"] = host_label()
         state["version"] = lv.version
         state["server_now"] = time.time()
@@ -248,7 +254,7 @@ class Handler(BaseHTTPRequestHandler):
                 prs = prs_json()
                 key = (version, prs.get("fetched"), prs.get("refreshing"))
                 if key != sent:
-                    state = dict(lv.json_for(domain))
+                    state = dict(lv.json_for(domain, self._feed_n()))
                     state.update(host=host_label(), version=version, prs=prs, server_now=time.time())
                     state["actions"] = actions(state, prs)
                     self.wfile.write(b"data: " + json.dumps(state, default=str).encode() + b"\n\n")

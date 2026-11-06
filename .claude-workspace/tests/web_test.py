@@ -112,6 +112,9 @@ try:
     css = req("GET", "/style.css")[3]
     check(b"[hidden] { display: none !important; }" in css, "hidden attribute always wins over display rules")
     check(b'id="menu"' in raw and b'id="pairform"' in raw, "pairing lives in the menu")
+    check(b'id="drawer"' in raw and b'id="pulltab"' in raw and b'id="needslist"' in raw, "needs-you / PRs / LLMs live in the pull-out drawer")
+    check(b'id="tab-events"' in raw and b'id="feed"' in raw, "event feed has its own tab")
+    check(b"mission control" not in raw.lower().replace(b"<title>", b""), "no 'mission control' subtitle")
 
     # State: links between session and subagents, tasks, messages
     st, _, js, _ = req("GET", "/api/state")
@@ -124,6 +127,10 @@ try:
     check(subs.get("test-reviewer", {}).get("current", [None])[0] == "Bash", "subagent current tool")
     check(s and s["messages"] and s["messages"][0]["to"] == "deploy-bot", "message edge")
     check(s and s["state"] == "working" and s["edited"], "session state")
+    short = req("GET", "/api/state?feed=20")[2]["feed"]
+    full = req("GET", "/api/state?feed=500")[2]["feed"]
+    check(len(short) <= 20 and len(full) >= len(short), f"feed length parameter: {len(short)} / {len(full)}")
+    check(req("GET", "/api/state?feed=abc")[0] == 200, "bad feed parameter falls back")
     check(js.get("host") == "Testhost", f"host label in state: {js.get('host')}")
 
     # SSE emits a snapshot
