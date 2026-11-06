@@ -29,6 +29,17 @@ CREATE INDEX IF NOT EXISTS events_session ON events(session_id, ts);
 """
 
 
+def host_label() -> str:
+    """Name shown for the workspace itself (default: this machine's hostname, e.g. Midgard)."""
+    import socket
+    name = os.environ.get("NIU_HOST_LABEL") or socket.gethostname().split(".")[0]
+    return name[:1].upper() + name[1:] if name else "(workspace)"
+
+
+def show_domain(d: str) -> str:
+    return host_label() if d == "(workspace)" else (d or "?")
+
+
 def db_path() -> Path:
     if os.environ.get("NIU_EVENTS_DB"):
         return Path(os.environ["NIU_EVENTS_DB"])

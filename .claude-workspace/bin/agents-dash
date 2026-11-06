@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
-from niu_events import MANDATORY, agent_source, db_path, project_agents  # noqa: E402
+from niu_events import MANDATORY, agent_source, db_path, project_agents, show_domain  # noqa: E402
 from niu_state import build, dur, load, parse_since, today_stats  # noqa: E402
 import niu_prs  # noqa: E402
 
@@ -35,7 +35,7 @@ def tree_lines(sessions, now, domain=None, show_ended=False):
     state_style = {"working": "ok", "waiting": "warn", "idle": "muted", "ended": "muted", "stale": "warn"}
     state_icon = {"working": "● working", "waiting": "◐ waiting for you", "idle": "○ idle", "ended": "✓ ended", "stale": "? stale"}
     for dom, projects in by_dom.items():
-        out.append([(dom, "domain")])
+        out.append([(show_domain(dom), "domain")])
         plist = list(projects.items())
         for pi, (proj, sess) in enumerate(plist):
             plast = pi == len(plist) - 1
@@ -103,7 +103,7 @@ def feed_lines(events, n, domain=None):
         who = e["agent_type"] if e["agent_id"] else f"session {(e['session_id'] or '?')[:4]}"
         detail = " ".join(x for x in (e["tool"], e["summary"]) if x)
         out.append([(datetime.fromtimestamp(e["ts"]).strftime("%H:%M:%S") + " ", "muted"),
-                    (f"{(e['domain'] or '?'):<12}", "domain"), (f"{who:<20} ", ""),
+                    (f"{show_domain(e['domain']):<12}", "domain"), (f"{who:<20} ", ""),
                     (f"{e['event']:<16} ", "muted"), (detail, "")])
         if len(out) >= n:
             break
@@ -143,7 +143,7 @@ def pr_lines(cache, now, domain=None, selected=None, width=200):
                       (f"{title:<{max(20, width - 70)}} ", "sel" if sel else ""),
                       (f"{checks:<12}", "ok" if ok else ("bad" if failed else "warn")),
                       (f" {'● ready' if ok else reason}", "ok" if ok else "muted"),
-                      (f"  {label}", "muted")])
+                      (f"  {show_domain(label)}", "muted")])
         rows.append((label, repo, pr))
     for r in errs:
         lines.append([(f"  {r['repo']}: {r['error']}", "bad")])

@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import niu_prs  # noqa: E402
-from niu_events import connect, db_path  # noqa: E402
+from niu_events import connect, db_path, host_label  # noqa: E402
 from niu_state import build, load, parse_since, to_json  # noqa: E402
 
 WEB = Path(__file__).resolve().parents[1] / "web"
@@ -114,9 +114,11 @@ def prs_json():
                           "author": (pr.get("author") or {}).get("login"), "branch": pr.get("headRefName"),
                           "draft": pr.get("isDraft"), "updated": pr.get("updatedAt"),
                           "checks": {"passed": passed, "failed": failed, "pending": pending},
-                          "green": ok, "reason": reason, "ref": f"{r['repo']}#{pr['number']}"})
+                          "green": ok, "reason": reason, "ref": f"{r['repo']}#{pr['number']}",
+                          "needs_scope": "workflow" if "'workflow' scope" in reason else None})
         repos.append({"label": r["label"], "repo": r["repo"], "error": r.get("error"), "prs": items})
-    return {"fetched": cache.get("fetched", 0), "refreshing": PRS["busy"], "error": cache.get("error"), "repos": repos}
+    return {"fetched": cache.get("fetched", 0), "refreshing": PRS["busy"], "error": cache.get("error"), "repos": repos,
+            "scopes": cache.get("scopes")}
 
 
 def log_merge(ref, label, ok, msg):
@@ -206,7 +208,9 @@ class Handler(BaseHTTPRequestHandler):
         since, domain = self._args()
         now = time.time()
         events = load(since)
-        return to_json(build(events, now), events, now, domain)
+        state = to_json(build(events, now), events, now, domain)
+        state["host"] = host_label()
+        return state
 
     # routes
     def do_GET(self):

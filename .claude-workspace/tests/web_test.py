@@ -15,7 +15,7 @@ WS = Path(__file__).resolve().parents[2]
 SH = WS / ".claude-workspace"
 tmp = Path(tempfile.mkdtemp())
 env = dict(os.environ, NIU_EVENTS_DB=str(tmp / "state" / "events.db"),
-           FAKE_GH_LOG=str(tmp / "gh.log"), FAKE_PR_FILE=str(tmp / "pr_state"))
+           FAKE_GH_LOG=str(tmp / "gh.log"), FAKE_PR_FILE=str(tmp / "pr_state"), NIU_HOST_LABEL="testhost")
 (tmp / "bin").mkdir()
 (tmp / "pr_state").write_text("green")
 gh = tmp / "bin" / "gh"
@@ -109,6 +109,9 @@ try:
     check(st == 200 and b"niu-heimar" in raw, "index page served")
     check("default-src 'self'" in hd.get("Content-Security-Policy", ""), "CSP header")
     check(req("GET", "/../bin/niu-dash")[0] == 404, "no path traversal")
+    css = req("GET", "/style.css")[3]
+    check(b"[hidden] { display: none !important; }" in css, "hidden attribute always wins over display rules")
+    check(b'id="menu"' in raw and b'id="pairform"' in raw, "pairing lives in the menu")
 
     # State: links between session and subagents, tasks, messages
     st, _, js, _ = req("GET", "/api/state")
@@ -121,6 +124,7 @@ try:
     check(subs.get("test-reviewer", {}).get("current", [None])[0] == "Bash", "subagent current tool")
     check(s and s["messages"] and s["messages"][0]["to"] == "deploy-bot", "message edge")
     check(s and s["state"] == "working" and s["edited"], "session state")
+    check(js.get("host") == "Testhost", f"host label in state: {js.get('host')}")
 
     # SSE emits a snapshot
     c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
