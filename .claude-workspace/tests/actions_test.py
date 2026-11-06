@@ -43,7 +43,7 @@ by = {a["id"]: a for a in acts}
 check("wait:s1" in ids and "permission" in by["wait:s1"]["title"], "permission prompt needs you")
 check("wait:s2" in ids and "reply" in by["wait:s2"]["title"], "idle prompt needs your reply")
 check(by.get("wait:s2", {}).get("detail") == "Midgard", "workspace shown as host name")
-check("review:s3" in ids, "edited without reviewers")
+check("review:s3" not in ids, "unreviewed edits are not a needs-you item (reviews run per PR)")
 check(not any(i.endswith(":s4") for i in ids), "ended sessions ignored")
 check(not any(i.endswith(":s5") for i in ids), "working session needs nothing")
 check("ready:o/r#1" in ids, "green PR ready to merge")
