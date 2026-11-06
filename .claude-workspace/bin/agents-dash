@@ -301,7 +301,10 @@ def run_tui(args):
             elif k == curses.KEY_UP:
                 scroll -= 1
 
-    curses.wrapper(main)
+    try:
+        curses.wrapper(main)
+    except KeyboardInterrupt:  # Ctrl+C quits like 'q'
+        pass
 
 
 def main():
