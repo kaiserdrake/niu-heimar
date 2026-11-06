@@ -154,6 +154,8 @@ function renderSessions() {
         <div class="top"><span class="proj" title="${esc(sessName(s))}">${esc(sessName(s))} ${s.local ? `<span class="localtag" title="Agent running on a local Ollama model">local · ${esc(s.local)}</span>` : ""} ${needTag}</span>
         <span class="pill st-${esc(s.state)}">${esc(STATE_LABEL[s.state] || s.state)} · ${dur(STATE.now - s.since)}</span></div>
         <div class="muted small">${esc(projLabel(s))}${s.model ? ` · ${esc(shortModel(s.model))}` : ""}${s.local && s.query ? ` · “${esc(trunc(s.query, 50))}”` : ""} · ${esc(s.id.slice(0, 8))}</div>
+        ${s.pipeline ? `<div class="pipe" aria-label="/develop progress">${s.pipeline.map((p) =>
+          `<span class="stg ${esc(p.status)}" title="${esc(`${p.stage}: ${p.status}${p.at ? ` · ${hhmmss(p.at)}` : ""}`)}">${p.status === "done" ? "✓" : p.status === "active" ? "●" : p.status === "skipped" ? "–" : "○"} ${esc(p.stage)}</span>`).join('<span class="stg-sep">›</span>')}</div>` : ""}
         <div class="cur" title="${esc(cur)}">${esc(cur) || "&nbsp;"}</div>
         <div class="chips">${chips}</div>
         ${s.flagged ? `<div class="flagmsg">⚠ edited files without both reviewers</div>` : ""}</div>`;
@@ -172,7 +174,7 @@ function graphInit() {
   if (G.root) return;
   const root = svg("svg", { role: "img", "aria-label": "Agent interaction graph" });
   const defs = svg("defs");
-  for (const [id, cls] of [["ar", "arrow"], ["ar-active", "arrow active"], ["ar-msg", "arrow msg"], ["ar-local", "arrow local"]]) {
+  for (const [id, cls] of [["ar", "arrow"], ["ar-active", "arrow active"], ["ar-msg", "arrow msg"], ["ar-local", "arrow local"], ["ar-handoff", "arrow handoff"]]) {
     const m = svg("marker", { id, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" });
     m.append(svg("path", { d: "M0,0 L10,5 L0,10 z", class: cls }));
     defs.append(m);
@@ -202,12 +204,25 @@ function graphLayout(list) {
     const kids = {};
     for (const a of s.subagents) (kids[a.parent] ||= []).push(a);
     for (const l of lk[s.id] || []) (kids[s.id] ||= []).push({ localSession: l });
+    // The session's own implement stretches, so the hand-off chain reads design → implement → review.
+    const hasAgents = (kids[s.id] || []).length > 0;
+    if (hasAgents) for (const st of (s.chain?.steps || []).filter((x) => x.kind === "implement")) (kids[s.id] ||= []).push({ implStep: st });
+    const startOf = (c) => c.localSession ? c.localSession.first : c.implStep ? c.implStep.start : c.start;
+    if (kids[s.id]) kids[s.id].sort((a, b) => startOf(a) - startOf(b));
     const place = (id, depth, info) => {
       const node = { id, x: PAD + depth * (NW + XG), y, ...info };
       nodes.push(node);
       const children = kids[id] || [];
       if (!children.length) y += NH + YG;
       for (const c of children) {
+        if (c.implStep) {
+          const st = c.implStep, live = st.end == null;
+          place(st.id, depth + 1, {
+            kind: "step", sid: s.id, label: "Implement", source: "session", running: live && s.state === "working", done: !live,
+            sub: `${st.edits} edit${st.edits === 1 ? "" : "s"} by the session${live ? "" : ` · ${dur(Math.max(0, st.end - st.start))}`}`,
+          });
+          continue;
+        }
         if (c.localSession) {
           const l = c.localSession, live = !l.ended;
           const child = place(l.id, depth + 1, {
@@ -230,6 +245,11 @@ function graphLayout(list) {
       kind: "session", sid: s.id, label: sessName(s), source: s.local ? "local" : "session", running: s.state === "working", waiting: s.state === "waiting",
       sub: sessSub(s), localModel: s.local || null,
     });
+    // Hand-offs: the session passes each finished step's result to the next step(s).
+    for (const h of s.chain?.handoffs || []) {
+      const a = nodes.find((n) => n.id === h.from), b = nodes.find((n) => n.id === h.to);
+      if (a && b) edges.push({ id: `${h.from}=>${h.to}`, a, b, label: h.label, kind: "handoff" });
+    }
     s.messages.forEach((m, i) => {
       const from = nodes.find((n) => n.id === m.from) || root;
       const ext = { id: `msg:${s.id}:${m.to}`, x: from.x + NW + XG, y: from.y + i * 4, kind: "ext", label: `→ ${m.to}`, sub: "message recipient", source: "msg" };
@@ -238,12 +258,20 @@ function graphLayout(list) {
     });
     y += YG;
   }
-  return { nodes, edges, W: Math.max(...nodes.map((n) => n.x + NW), 400) + PAD, H: y + PAD };
+  const extra = edges.some((e) => e.kind === "handoff") ? HB + 120 : 0;
+  return { nodes, edges, W: Math.max(...nodes.map((n) => n.x + NW), 400) + PAD + extra, H: y + PAD };
 }
 
 const edgePath = (a, b) => {
   const x1 = a.x + NW, y1 = a.y + NH / 2, x2 = b.x - 4, y2 = b.y + NH / 2, mx = (x1 + x2) / 2;
   return `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
+};
+// Hand-off between steps stacked in the same column: a bracket on the right-hand side, from one step to the next.
+const HB = 46;
+const handoffPath = (a, b) => {
+  if (a.x !== b.x) return edgePath(a, b);
+  const x = a.x + NW, y1 = a.y + NH * 0.66, y2 = b.y + NH * 0.34;
+  return `M${x},${y1} C${x + HB},${y1} ${x + HB},${y2} ${x + 4},${y2}`;
 };
 
 function graphNode(n) {
@@ -272,7 +300,7 @@ function graphNode(n) {
   g.classList.remove("leave");
   g.dataset.sid = n.sid || ""; g.dataset.aid = n.aid || "";
   const [badge, name, sub, bar, title] = [g.querySelector(".badge"), g.querySelector(".name"), g.querySelector(".sub"), g.querySelector(".bar"), g.querySelector("title")];
-  badge.textContent = n.kind === "session" ? "session" : n.kind === "ext" ? "message" : n.source;
+  badge.textContent = n.kind === "session" ? "session" : n.kind === "ext" ? "message" : n.kind === "step" ? "session step" : n.source;
   badge.setAttribute("class", `badge src-${n.kind === "sub" ? n.source : "session"}`);
   name.textContent = trunc(n.label, 26);
   sub.textContent = trunc(n.sub, 32);
@@ -292,14 +320,21 @@ function graphEdge(e) {
     rec = { pid, base, flow, label };
     G.edges.set(e.id, rec);
   }
-  const d = edgePath(e.a, e.b);
+  const hand = e.kind === "handoff";
+  const d = hand ? handoffPath(e.a, e.b) : edgePath(e.a, e.b);
   rec.base.setAttribute("d", d); rec.flow.setAttribute("d", d);
-  rec.base.setAttribute("class", `gedge ${e.kind === "msg" ? "msg" : ""} ${e.kind === "local" ? "local" : ""} ${e.active ? "active" : ""}`);
+  rec.base.setAttribute("class", `gedge ${e.kind === "msg" ? "msg" : ""} ${e.kind === "local" ? "local" : ""} ${hand ? "handoff" : ""} ${e.active ? "active" : ""}`);
   rec.flow.setAttribute("class", `gflow ${e.active && e.kind !== "msg" ? "active" : ""} ${e.kind === "local" ? "local" : ""}`);
-  rec.base.setAttribute("marker-end", `url(#${e.kind === "msg" ? "ar-msg" : e.kind === "local" ? "ar-local" : e.active ? "ar-active" : "ar"})`);
+  rec.base.setAttribute("marker-end", `url(#${e.kind === "msg" ? "ar-msg" : e.kind === "local" ? "ar-local" : hand ? "ar-handoff" : e.active ? "ar-active" : "ar"})`);
   rec.label.textContent = trunc(e.label, 22);
-  rec.label.setAttribute("x", e.a.x + NW + 8);
-  rec.label.setAttribute("y", e.b.y + NH / 2 - 7);
+  rec.label.setAttribute("class", `elabel ${hand ? "hlabel" : ""}`);
+  if (hand) {
+    rec.label.setAttribute("x", e.a.x + NW + HB + 6);
+    rec.label.setAttribute("y", (e.a.y + e.b.y) / 2 + NH / 2 + 4);
+  } else {
+    rec.label.setAttribute("x", e.a.x + NW + 8);
+    rec.label.setAttribute("y", e.b.y + NH / 2 - 7);
+  }
   rec.alive = true;
   return rec;
 }
@@ -396,6 +431,12 @@ function renderGraph() {
     }
     G.seen.set(k, { tools: now, ended: !!l.ended });
   }
+  // A new hand-off: the finished step's result travels to the next step.
+  edges.filter((e) => e.kind === "handoff").forEach((e, i) => {
+    const k = `h:${e.id}`, rec = recs.get(e.id);
+    if (!G.seen.has(k) && !G.first && rec) packet(rec.pid, "handoff", { delay: i * 150, dur: 1.2 });
+    G.seen.set(k, true);
+  });
   G.first = false;
 }
 

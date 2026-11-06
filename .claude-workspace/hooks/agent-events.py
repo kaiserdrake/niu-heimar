@@ -41,6 +41,8 @@ def summarize(tool, ti, project_dir):
         s = f"{ti.get('subagent_type', '')}: {ti.get('description', '')}".strip(": ")
     elif tool == "WebFetch":
         s = (ti.get("url") or "").split("?")[0]
+    elif tool == "Skill":
+        s = ti.get("skill") or ti.get("command") or ti.get("name") or ""
     elif tool.startswith("mcp__niu-local__"):
         s = ti.get("query") or ti.get("question") or ti.get("focus") or ti.get("base") or ""
     elif tool == "SendMessage":

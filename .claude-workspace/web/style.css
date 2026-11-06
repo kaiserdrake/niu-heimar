@@ -253,3 +253,20 @@ button.linkish { border: 0; padding: 0; color: var(--accent); background: none; 
 .arrow.local { fill: var(--t-local); }
 .gnode .badge.src-local { fill: var(--t-local); }
 .calm .llmpill.up i { animation: none; }
+
+/* hand-offs between steps + /develop progress */
+:root { --handoff: #c2410c; }
+@media (prefers-color-scheme: dark) { :root { --handoff: #fb923c; } }
+.gedge.handoff { stroke: var(--handoff); stroke-width: 1.8; stroke-dasharray: 6 4; opacity: .85; }
+.arrow.handoff { fill: var(--handoff); }
+.elabel.hlabel { fill: var(--handoff); font-weight: 600; }
+.pk-handoff { fill: var(--handoff); color: var(--handoff); }
+.lg-handoff { background: var(--handoff); }
+.gnode .badge.src-session { fill: var(--muted); }
+.pipe { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin: 6px 0 2px; }
+.stg { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+.stg.done { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); background: var(--ok-bg); }
+.stg.active { color: var(--accent); border-color: var(--accent); background: var(--accent-bg); animation: pulse-tag 1.6s ease-in-out infinite; }
+.stg.skipped { text-decoration: line-through; opacity: .7; }
+.stg-sep { color: var(--muted); font-size: 11px; }
+.calm .stg.active { animation: none; }
