@@ -807,11 +807,11 @@ window.addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTi
 
 // Local LLM endpoint health (GPU box / local CPU), refreshed every 30 s
 const EP_NAME = { remote: "Remote GPU", local: "Local CPU" };
-// Claude plan limits (5-hour / weekly), as last reported by Claude Code's status line.
+// Claude plan limits (5-hour / weekly): the status line's last report, or the usage API (default on) when that is older.
 function claudeLimits(c) {
   if (!c || !c.available) {
-    return `<div class="limrow muted small" title="Recorded by the niu-statusline status line of Claude Code terminal sessions">` +
-      `Claude limits: shown once a terminal Claude Code session reports them (the desktop app does not; set NIU_CLAUDE_USAGE_API=1 for the dashboard server to read them directly)</div>`;
+    return `<div class="limrow muted small" title="From the niu-statusline status line of Claude Code terminal sessions, or from Anthropic's usage API (read-only, using your Claude Code login; NIU_CLAUDE_USAGE_API=0 turns it off)">` +
+      `Claude limits: shown once a terminal Claude Code session reports them (the desktop app does not run it; the dashboard also reads usage from Anthropic unless NIU_CLAUDE_USAGE_API=0)</div>`;
   }
   const fmtReset = (ts) => {
     if (!ts) return "";

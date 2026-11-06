@@ -14,6 +14,7 @@ tmp = Path(tempfile.mkdtemp())
 env = dict(os.environ, NIU_EVENTS_DB=str(tmp / "state" / "events.db"))
 sys.path.insert(0, str(SH / "lib"))
 os.environ["NIU_EVENTS_DB"] = env["NIU_EVENTS_DB"]
+os.environ["NIU_CLAUDE_CREDENTIALS"] = "/nonexistent/creds.json"  # tests never touch the real login or network
 passed = failed = 0
 
 
@@ -55,6 +56,7 @@ check(rc == 0, "malformed input does not fail")
 
 # 3. reader: windows, labels, reset parsing, staleness and rollover
 from niu_limits import claude_limits  # noqa: E402
+os.environ["NIU_CLAUDE_USAGE_API"] = "0"  # section 3 tests the status-line source only
 statusline(sample)
 lim = claude_limits()
 w = {x["key"]: x for x in lim["windows"]}
@@ -65,21 +67,29 @@ check(claude_limits(now=now + 20 * 60)["stale"], "older than 15 min -> stale")
 check({x["key"]: x for x in claude_limits(now=now + 7200)["windows"]}["five_hour"]["used"] == 0.0, "5-hour window rolled over")
 check(claude_limits.__module__ and not claude_limits(now=now)["stale"], "fresh again at report time")
 
-# 3b. opt-in usage API source (for the desktop app, which never runs the status line)
+# 3b. usage API source, on by default (for the desktop app, which never runs the status line)
 import niu_limits  # noqa: E402
 api = {"five_hour": {"used_percentage": 12.0, "resets_at": "2099-01-01T00:00:00Z"}}
 calls = []
 fake = lambda: (calls.append(1), api)[1]  # noqa: E731
 (tmp / "state" / "claude-limits.json").write_text(json.dumps({"rate_limits": sample["rate_limits"], "updated": now - 3600}))
-os.environ.pop("NIU_CLAUDE_USAGE_API", None)
-check(claude_limits(now=now, fetch=fake)["source"] == "statusline" and not calls, "API source is off by default")
-os.environ["NIU_CLAUDE_USAGE_API"] = "1"
+os.environ["NIU_CLAUDE_USAGE_API"] = "0"
+check(claude_limits(now=now, fetch=fake)["source"] == "statusline" and not calls, "NIU_CLAUDE_USAGE_API=0 turns the API source off")
+os.environ.pop("NIU_CLAUDE_USAGE_API")
+niu_limits._api.update(at=0.0, rate_limits=None)
 lim = claude_limits(now=now, fetch=fake)
 check(lim["source"] == "api" and not lim["stale"] and lim["windows"][0]["used"] == 12.0, f"stale status line -> API numbers: {lim}")
 claude_limits(now=now + 60, fetch=fake)
 check(len(calls) == 1, "API is polled at most every 5 minutes")
 (tmp / "state" / "claude-limits.json").write_text(json.dumps({"rate_limits": sample["rate_limits"], "updated": now + 100}))
 check(claude_limits(now=now + 120, fetch=fake)["source"] == "statusline", "fresh status line wins over the API")
+# the 2-minute preference boundary
+(tmp / "state" / "claude-limits.json").write_text(json.dumps({"rate_limits": sample["rate_limits"], "updated": now}))
+niu_limits._api.update(at=0.0, rate_limits=None); calls.clear()
+check(claude_limits(now=now + 100, fetch=fake)["source"] == "statusline" and not calls, "status line under 2 min old: API not called")
+niu_limits._api.update(at=0.0, rate_limits=None)
+lim = claude_limits(now=now + 130, fetch=fake)
+check(lim["source"] == "api" and len(calls) == 1, f"status line over 2 min old (not yet stale): API wins: {lim}")
 creds = tmp / "creds.json"
 creds.write_text(json.dumps({"claudeAiOauth": {"accessToken": "tok-secret"}}))
 os.environ["NIU_CLAUDE_CREDENTIALS"] = str(creds)
@@ -89,7 +99,7 @@ check(niu_limits._fetch_usage(url="http://127.0.0.1:1/x", timeout=1) is None, "b
 (tmp / "state" / "claude-limits.json").write_text(json.dumps({"rate_limits": sample["rate_limits"], "updated": "bad"}))
 niu_limits._api.update(at=0.0, rate_limits=None)
 check(claude_limits(now=now + 9999, fetch=lambda: None)["source"] == "statusline", "corrupt 'updated' does not crash; failed fetch keeps status line")
-os.environ.pop("NIU_CLAUDE_USAGE_API"); os.environ.pop("NIU_CLAUDE_CREDENTIALS")
+os.environ["NIU_CLAUDE_USAGE_API"] = "0"; os.environ["NIU_CLAUDE_CREDENTIALS"] = "/nonexistent/creds.json"
 
 # 4. install: sets our status line, never replaces a user's own
 home = tmp / "home"

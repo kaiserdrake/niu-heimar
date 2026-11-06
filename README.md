@@ -164,6 +164,15 @@ expires after 2 minutes, and allows 3 tries. Merges are logged in the event feed
 hook also blocks agents from reading the dashboard's device credentials or calling its merge and pair endpoints. That's a policy guard,
 not a hard security boundary against processes running as your own user.
 
+**Claude plan limits** (5-hour / weekly) come from two sources, newest wins:
+- the `niu-statusline` status line, which terminal Claude Code sessions run (the desktop app doesn't);
+- Anthropic's usage API, **on by default**. The dashboard and `niu-notify` read the OAuth token Claude Code already
+  keeps in `~/.claude/.credentials.json`, call `api.anthropic.com` at most every 5 minutes, and keep only the
+  percentages; the token is never stored, logged or refreshed. It is used when the status line's last report is older
+  than 2 minutes. The endpoint is undocumented, so if it fails the status line's numbers are shown. To turn it off,
+  set `NIU_CLAUDE_USAGE_API=0` in the service's environment (`systemctl --user edit niu-dash`, and the same for
+  `niu-notify`, adding `Environment=NIU_CLAUDE_USAGE_API=0` under `[Service]`).
+
 Service: `systemctl --user status|restart|stop niu-dash`. Logs: `journalctl --user -u niu-dash`.
 
 ## Discord notifications
@@ -179,7 +188,7 @@ Design: `docs/design/2026-11-06-discord-notifications.md`.
 | `#activity` | A long session finished | Muted |
 | `#ci-prs` | PR checks failing, changes requested, ready to merge, blocked on token scope | Mentions only |
 | `#local-llm` | Ollama endpoint down / back up; no GPU endpoint up | Mentions only |
-| `#claude-limits` | 5-hour / weekly usage crossed 80 % / 95 % | All messages |
+| `#claude-limits` | 5-hour / weekly usage crossed 80 % / 95 % (works with the desktop app via the usage API, see above) | All messages |
 | `#alerts` | Notifier started, dashboard down / back, rate-limit summary, webhook rejected, source errors | All messages |
 
 One-time setup (you do the secret parts yourself; never paste webhook URLs into a Claude session):

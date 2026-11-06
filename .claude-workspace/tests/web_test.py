@@ -15,7 +15,8 @@ WS = Path(__file__).resolve().parents[2]
 SH = WS / ".claude-workspace"
 tmp = Path(tempfile.mkdtemp())
 env = dict(os.environ, NIU_EVENTS_DB=str(tmp / "state" / "events.db"),
-           FAKE_GH_LOG=str(tmp / "gh.log"), FAKE_PR_FILE=str(tmp / "pr_state"), NIU_HOST_LABEL="testhost")
+           FAKE_GH_LOG=str(tmp / "gh.log"), FAKE_PR_FILE=str(tmp / "pr_state"), NIU_HOST_LABEL="testhost",
+           NIU_CLAUDE_USAGE_API="0", NIU_CLAUDE_CREDENTIALS="/nonexistent/creds.json")  # never the real login
 (tmp / "bin").mkdir()
 (tmp / "pr_state").write_text("green")
 gh = tmp / "bin" / "gh"
