@@ -22,8 +22,8 @@ def sess(sid, state="working", note=None, flagged=False, ended=False, domain="PE
     return {"id": sid, "state": state, "note": note, "flagged": flagged, "ended": ended, "domain": domain, "project": project}
 
 
-def pr(n, green=False, failed=0, review=None, scope=False, draft=False):
-    return {"number": n, "ref": f"o/r#{n}", "url": f"https://x/{n}", "title": f"t{n}", "green": green, "draft": draft,
+def pr(n, green=False, failed=0, review=None, scope=False, draft=False, release=False):
+    return {"number": n, "release": release, "ref": f"o/r#{n}", "url": f"https://x/{n}", "title": f"t{n}", "green": green, "draft": draft,
             "review": review, "needs_scope": "workflow" if scope else None, "checks": {"passed": 1, "failed": failed, "pending": 0}}
 
 
@@ -35,7 +35,8 @@ state = {"host": "Midgard", "sessions": [
     sess("s5", "working"),
 ]}
 prs = {"repos": [{"prs": [pr(1, green=True), pr(2, failed=2), pr(3, review="CHANGES_REQUESTED"), pr(4, scope=True),
-                          pr(5, draft=True, green=True), pr(6)]}]}
+                          pr(5, draft=True, green=True), pr(6), pr(7, green=True, release=True),
+                          pr(8, failed=1, release=True)]}]}
 acts = actions(state, prs)
 ids = [a["id"] for a in acts]
 by = {a["id"]: a for a in acts}
@@ -52,6 +53,8 @@ check("changes:o/r#3" in ids, "changes requested")
 check("scope:o/r#4" in ids and by["scope:o/r#4"]["priority"] == 3, "scope-blocked PR is high priority")
 check(not any("#5" in i for i in ids), "draft PR ignored")
 check(not any("#6" in i for i in ids), "pending/plain PR ignored")
+check("ready:o/r#7" not in ids, "green release PR is not a needs-you item (releases are batched)")
+check("fail:o/r#8" in ids, "failing release PR still needs you")
 check([a["priority"] for a in acts] == sorted((a["priority"] for a in acts), reverse=True), "sorted by priority")
 check(len(ids) == len(set(ids)), "ids unique")
 check(actions({"sessions": []}, {"repos": []}) == [], "nothing -> empty")

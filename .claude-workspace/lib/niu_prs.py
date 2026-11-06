@@ -15,7 +15,7 @@ from pathlib import Path
 
 from niu_events import WS, db_path
 
-GH_FIELDS = "number,title,author,headRefName,url,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,updatedAt,files"
+GH_FIELDS = "number,title,author,headRefName,url,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,updatedAt,files,isCrossRepository"
 SCOPES = None  # gh token scopes, filled by fetch_all() (None = unknown)
 OK_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 GH_RE = re.compile(r"github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
@@ -193,6 +193,18 @@ def merge(repo, number):
     return f"merged {repo}#{number}: {pr.get('title', '')[:60]}"
 
 
+RELEASE_BOTS = {"app/github-actions", "github-actions[bot]", "app/release-please", "release-please[bot]"}
+
+
+def is_release(pr):
+    """A release-please release PR: opened by the Actions bot from a same-repo branch
+    release-please--branches--<base>[--components--<name>]. The branch name alone is not enough, since a fork PR
+    can pick any name and would then get the trusted "release" tag and skip the "ready" notification."""
+    return ((pr.get("headRefName") or "").startswith("release-please--")
+            and pr.get("isCrossRepository") is False
+            and (pr.get("author") or {}).get("login") in RELEASE_BOTS)
+
+
 def summarize(cache, refreshing=False):
     """JSON-ready PR list with check counts and the green/blocked verdict per PR."""
     cache = cache or {"fetched": 0, "repos": []}
@@ -204,7 +216,7 @@ def summarize(cache, refreshing=False):
             ok, reason = is_green(pr)
             items.append({"number": pr["number"], "title": pr.get("title", ""), "url": pr.get("url"),
                           "author": (pr.get("author") or {}).get("login"), "branch": pr.get("headRefName"),
-                          "draft": pr.get("isDraft"), "updated": pr.get("updatedAt"),
+                          "draft": pr.get("isDraft"), "release": is_release(pr), "updated": pr.get("updatedAt"),
                           "review": pr.get("reviewDecision") or None,
                           "checks": {"passed": passed, "failed": failed, "pending": pending},
                           "green": ok, "reason": reason, "ref": f"{r['repo']}#{pr['number']}",

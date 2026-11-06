@@ -37,7 +37,8 @@ def actions(state, prs, host=None):
             elif p.get("review") == "CHANGES_REQUESTED":
                 out.append({**base, "id": f"changes:{p['ref']}", "kind": "pr-changes", "priority": MEDIUM,
                             "title": "PR has changes requested"})
-            elif p.get("green"):
+            elif p.get("green") and not p.get("release"):
+                # A green release PR just waits to be merged when the user wants to cut a version (batched releases).
                 out.append({**base, "id": f"ready:{p['ref']}", "kind": "pr-ready", "priority": MEDIUM,
                             "title": "PR ready to merge"})
     out.sort(key=lambda a: -a["priority"])
