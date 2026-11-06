@@ -236,3 +236,20 @@ dialog input { width: 100%; font-family: var(--mono); }
   padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); cursor: help; }
 .llmdot i { width: 7px; height: 7px; border-radius: 50%; background: var(--bad); }
 .llmdot.up i { background: var(--t-local); }
+
+/* local LLM status + local agent edges */
+.llmpill { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; padding: 1px 9px; border-radius: 999px;
+  background: var(--bad-bg); color: var(--bad); white-space: nowrap; }
+.llmpill i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.llmpill.up { background: color-mix(in srgb, var(--t-local) 15%, transparent); color: var(--t-local); }
+.llmpill.up i { animation: live 2.4s infinite; }
+.llmpill.partial { background: var(--warn-bg); color: var(--warn); }
+.ep { padding: 10px 0; border-top: 1px solid var(--border); } .ep:first-child { border-top: 0; padding-top: 0; }
+.ep-h { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.ep .hint { margin-top: 8px; font-size: 12px; color: var(--warn); background: var(--warn-bg); border-radius: 8px; padding: 6px 9px; }
+button.linkish { border: 0; padding: 0; color: var(--accent); background: none; font-size: 12px; }
+.gedge.local { stroke: color-mix(in srgb, var(--t-local) 45%, var(--border)); }
+.gflow.local { stroke: var(--t-local); }
+.arrow.local { fill: var(--t-local); }
+.gnode .badge.src-local { fill: var(--t-local); }
+.calm .llmpill.up i { animation: none; }

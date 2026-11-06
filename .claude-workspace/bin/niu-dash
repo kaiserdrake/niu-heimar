@@ -227,7 +227,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/llm":
             try:
                 import niu_ollama
-                self._json({"endpoints": niu_ollama.status()})
+                force = parse_qs(urlparse(self.path).query).get("force") == ["1"]
+                self._json({"endpoints": niu_ollama.status(force=force)})
             except Exception as e:
                 self._json({"endpoints": [], "error": str(e)[:200]})
         elif path == "/healthz":

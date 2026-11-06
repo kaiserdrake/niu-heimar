@@ -1,4 +1,5 @@
 """Shared session/subagent model built from the event store (used by agents-dash and niu-dash)."""
+import json
 import threading
 import time
 from datetime import datetime
@@ -47,10 +48,38 @@ def load(since_secs):
     return [dict(r) for r in rows]
 
 
+SYSTEM_SESSIONS = {"web"}  # events written by the dashboard itself (e.g. PR merges): feed only, not a session
+
+
+def _session_info(summary):
+    """SessionStart/UserPromptSubmit summary: JSON {title, model, local, task} (or the older 'local:<model>')."""
+    summary = summary or ""
+    if summary.startswith("{"):
+        try:
+            return json.loads(summary)
+        except ValueError:
+            return {}
+    if summary.startswith("local:"):
+        return {"local": summary[6:]}
+    return {}
+
+
 def build(events, now):
     sessions = {}
+    open_local = {}  # project_dir -> open niu-local tool calls [{sid, ts, tool, query}]
     for e in events:
         sid = e["session_id"] or "?"
+        if sid in SYSTEM_SESSIONS:
+            continue
+        if e["event"] == "PreToolUse" and (e["tool"] or "").startswith("mcp__niu-local__"):
+            open_local.setdefault(e["project_dir"] or "", []).append(
+                {"sid": sid, "ts": e["ts"], "tool": e["tool"].split("__")[-1], "query": e["summary"] or "", "id": e["tool_use_id"]})
+        elif e["event"] == "PostToolUse" and (e["tool"] or "").startswith("mcp__niu-local__"):
+            calls = open_local.get(e["project_dir"] or "", [])
+            for c in calls:
+                if c["sid"] == sid and (not e["tool_use_id"] or c["id"] == e["tool_use_id"]):
+                    calls.remove(c)
+                    break
         s = sessions.get(sid)
         if s is None:
             s = sessions[sid] = {
@@ -68,10 +97,20 @@ def build(events, now):
             if s["state"] != st:
                 s["state"], s["since"] = st, e["ts"]
 
+        if ev in ("SessionStart", "UserPromptSubmit"):
+            info = _session_info(e["summary"])
+            for k in ("title", "model", "local", "task"):
+                if info.get(k):
+                    s[k] = info[k]
         if ev == "SessionStart":
             s["ended"] = False
-            if (e["summary"] or "").startswith("local:"):
-                s["local"] = e["summary"][6:]
+            if s.get("local"):
+                # A niu-agent run started while a session had a niu-local tool call open in this project:
+                # that session is its caller.
+                for call in reversed(open_local.get(s["project_dir"], [])):
+                    if call["sid"] != sid and e["ts"] >= call["ts"] - 2:
+                        s["parent_session"], s["parent_tool"], s["query"] = call["sid"], call["tool"], call["query"]
+                        break
             set_state("idle")
         elif ev == "UserPromptSubmit":
             set_state("working")
@@ -177,6 +216,8 @@ def to_json(sessions, events, now, domain=None, show_ended=True, feed_n=60):
             "edited": s["edited"], "flagged": s["flagged"], "ran": sorted(s["ran"]),
             "subagents": subs, "pending": pending, "tools": s.get("tools", []),
             "waits": s.get("waits", []), "messages": s.get("messages", []), "local": s.get("local"),
+            "title": s.get("title"), "model": s.get("model"), "task": s.get("task"),
+            "parent_session": s.get("parent_session"), "parent_tool": s.get("parent_tool"), "query": s.get("query"),
         })
     feed = []
     for e in reversed(events):

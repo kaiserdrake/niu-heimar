@@ -90,6 +90,40 @@ lv.dirty = True; lv.built_at = time.time()
 v = lv.refresh()
 check(lv.refresh() == v, "slow builds back off (throttle * cost)")
 
+# ---------- naming, system events, local-agent linking (pure build()) ----------
+import json as _json  # noqa: E402
+T = time.time()
+
+
+def E(dt, event, sid, **kw):
+    return {"id": int(dt * 1000), "ts": T + dt, "event": event, "session_id": sid, "domain": "PERSONAL", "project": "app",
+            "project_dir": "/p/app", "agent_id": kw.get("aid"), "agent_type": kw.get("at"), "tool": kw.get("tool"),
+            "tool_use_id": kw.get("tuid"), "summary": kw.get("s", "")}
+
+
+evs = [
+    E(0, "SessionStart", "main", s=_json.dumps({"title": "Add login page", "model": "claude-opus-5-5"})),
+    E(1, "UserPromptSubmit", "main"),
+    E(2, "PreToolUse", "main", tool="mcp__niu-local__local_search", tuid="t1", s="where is auth handled"),
+    E(3, "SessionStart", "loc1", s=_json.dumps({"local": "gpt-oss:20b", "task": "search"})),
+    E(4, "PreToolUse", "loc1", tool="Grep", s="auth"),
+    E(5, "SessionEnd", "loc1"),
+    E(6, "PostToolUse", "main", tool="mcp__niu-local__local_search", tuid="t1"),
+    E(7, "SessionStart", "loc2", s=_json.dumps({"local": "gpt-oss:20b", "task": "diff"})),  # no open call -> no parent
+    E(8, "PreToolUse", "web", tool="gh", s="o/r#1: merged"),                                   # dashboard's own log entry
+    E(9, "SessionStart", "old", s="local:qwen3:14b"),                                          # pre-upgrade format
+]
+ss = build(evs, T + 10)
+check(ss["main"].get("title") == "Add login page" and ss["main"].get("model") == "claude-opus-5-5", "title and model recorded")
+check(ss["loc1"].get("parent_session") == "main" and ss["loc1"].get("parent_tool") == "local_search", "local run linked to caller")
+check(ss["loc1"].get("query") == "where is auth handled" and ss["loc1"].get("task") == "search", "local run carries query and task")
+check(ss["loc2"].get("parent_session") is None, "no caller -> no link")
+check("web" not in ss, "dashboard system events are not a session")
+check(ss["old"].get("local") == "qwen3:14b", "older local label still understood")
+js = to_json(ss, evs, T + 10)
+check(any(e["session_id"] == "web" for e in js["feed"]), "system events still in the feed")
+check(next(s for s in js["sessions"] if s["id"] == "loc1")["parent_session"] == "main", "link exported to the page")
+
 print(f"live: {passed} passed, {failed} failed")
 os.system(f"rm -rf {tmp}")
 sys.exit(1 if failed else 0)

@@ -107,11 +107,11 @@ def choose(task, domain=None, cfg=None, only=None):
     return None, None, notes
 
 
-def status():
+def status(force=False):
     cfg = load_config()
     out = []
     for ep in sorted(cfg.get("endpoints", {}).values(), key=lambda e: e.get("priority", 99)):
-        h = health(ep)
+        h = health(ep, force=force)
         out.append({"name": ep["name"], "label": ep.get("label", ep["name"]), "url": ep["url"], "mode": ep.get("mode", "agent"),
                     "up": h["up"], "version": h["version"], "error": h["error"],
                     "models": {t: {"name": m, "present": _has_model(h["models"], m)} for t, m in ep.get("models", {}).items()}})
