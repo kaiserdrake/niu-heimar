@@ -2,7 +2,10 @@
 """agents-dash: live terminal view of Claude sessions and subagents in the workspace.
 
 Usage: agents-dash [--once] [--json] [--since 24h] [--domain NAME] [--all]
-Keys:  q quit · d domain filter · e show ended · f pause feed · up/down scroll
+       agents-dash --prs                 list open PRs (workspace repo + linked GitHub projects)
+       agents-dash --merge OWNER/REPO#N  squash-merge a green PR after you type y
+Keys:  q quit · d domain filter · e show ended · f pause feed · up/down or j/k scroll
+       p PR focus · up/down or j/k select PR · m merge (green only, asks y/N) · o open in browser · r refresh PRs
 """
 import argparse
 import json
@@ -12,109 +15,9 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
-from niu_events import EDIT_TOOLS, MANDATORY, agent_source, connect, db_path, project_agents  # noqa: E402
-
-STALE_SECS = 30 * 60
-
-
-def parse_since(s):
-    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-    if s and s[-1] in units:
-        return float(s[:-1]) * units[s[-1]]
-    return float(s)
-
-
-def dur(secs):
-    secs = max(0, int(secs))
-    if secs < 60:
-        return f"{secs}s"
-    if secs < 3600:
-        return f"{secs // 60}m{secs % 60:02d}s"
-    if secs < 86400:
-        return f"{secs // 3600}h{(secs % 3600) // 60:02d}m"
-    return f"{secs // 86400}d{(secs % 86400) // 3600}h"
-
-
-def load(since_secs):
-    try:
-        con = connect(readonly=True)
-    except FileNotFoundError:
-        return []
-    try:
-        rows = con.execute("SELECT * FROM events WHERE ts >= ? ORDER BY ts, id",
-                           (time.time() - since_secs,)).fetchall()
-    finally:
-        con.close()
-    return [dict(r) for r in rows]
-
-
-def build(events, now):
-    sessions = {}
-    for e in events:
-        sid = e["session_id"] or "?"
-        s = sessions.get(sid)
-        if s is None:
-            s = sessions[sid] = {
-                "id": sid, "domain": e["domain"] or "?", "project": e["project"] or "",
-                "project_dir": e["project_dir"] or "", "first": e["ts"], "last": e["ts"],
-                "state": "idle", "since": e["ts"], "current": None, "edited": False,
-                "subagents": {}, "ran": set(), "ended": False,
-            }
-        s["last"] = e["ts"]
-        ev, aid = e["event"], e["agent_id"]
-        sub = s["subagents"].get(aid) if aid else None
-
-        def set_state(st, s=s, e=e):
-            if s["state"] != st:
-                s["state"], s["since"] = st, e["ts"]
-
-        if ev == "SessionStart":
-            s["ended"] = False
-            set_state("idle")
-        elif ev == "UserPromptSubmit":
-            set_state("working")
-        elif ev == "PreToolUse":
-            if aid and sub is None:  # tool call from a subagent we missed the start of
-                sub = s["subagents"][aid] = {"type": e["agent_type"] or "subagent", "start": e["ts"], "stop": None, "current": None}
-            target = sub if sub else s
-            target["current"] = (e["tool"], e["summary"], e["ts"], e["tool_use_id"])
-            if e["tool"] in EDIT_TOOLS:
-                s["edited"] = True
-            if s["state"] in ("idle", "waiting"):
-                set_state("working")
-        elif ev == "PostToolUse":
-            target = sub if sub else s
-            cur = target.get("current")
-            if cur and (not e["tool_use_id"] or cur[3] == e["tool_use_id"]):
-                target["current"] = None
-            if s["state"] == "waiting":
-                set_state("working")
-        elif ev == "SubagentStart" and aid:
-            s["subagents"][aid] = {"type": e["agent_type"] or "subagent", "start": e["ts"], "stop": None, "current": None}
-            set_state("working")
-        elif ev == "SubagentStop" and aid:
-            sub = sub or s["subagents"].setdefault(aid, {"type": e["agent_type"] or "subagent", "start": e["ts"], "stop": None, "current": None})
-            sub["stop"], sub["current"] = e["ts"], None
-            s["ran"].add(sub["type"])
-        elif ev == "Notification":
-            set_state("waiting")
-            s["note"] = e["summary"]
-        elif ev == "Stop":
-            set_state("idle")
-            s["current"] = None
-            for sb in s["subagents"].values():
-                if sb["stop"] is None:
-                    sb["stop"], sb["current"] = e["ts"], None
-                    s["ran"].add(sb["type"])
-        elif ev == "SessionEnd":
-            s["ended"] = True
-            set_state("ended")
-    for s in sessions.values():
-        if not s["ended"] and now - s["last"] > STALE_SECS and s["state"] != "idle":
-            s["state"] = "stale"
-        s["flagged"] = s["edited"] and s["state"] in ("idle", "ended", "stale") and not all(m in s["ran"] for m in MANDATORY)
-    return sessions
-
+from niu_events import MANDATORY, agent_source, db_path, project_agents  # noqa: E402
+from niu_state import build, dur, load, parse_since, today_stats  # noqa: E402
+import niu_prs  # noqa: E402
 
 # ---------- rendering: lines of [(text, style)] ----------
 
@@ -183,22 +86,12 @@ def tree_lines(sessions, now, domain=None, show_ended=False):
 
 
 def today_line(sessions, now):
-    midnight = datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-    today = [s for s in sessions.values() if s["last"] >= midnight]
-    runs = {}
-    for s in today:
-        for sb in s["subagents"].values():
-            if sb["start"] >= midnight:
-                runs[sb["type"]] = runs.get(sb["type"], 0) + 1
-    edited = [s for s in today if s["edited"]]
-    reviewed = [s for s in edited if all(m in s["ran"] for m in MANDATORY)]
-    flagged = [s for s in today if s["flagged"]]
-    top = ", ".join(f"{k} {v}" for k, v in sorted(runs.items(), key=lambda kv: -kv[1])[:5]) or "none"
-    line = [(f" sessions {len(today)} · subagent runs {sum(runs.values())} ({top}) · dual-review ", ""),
-            (f"{len(reviewed)}/{len(edited)} editing sessions", "ok" if len(reviewed) == len(edited) else "warn")]
-    if flagged:
-        names = ", ".join(sorted({f"{s['domain']}/{s['project']}" for s in flagged}))
-        line.append((f" · {len(flagged)} without reviewers: {names}", "bad"))
+    t = today_stats(sessions, now)
+    top = ", ".join(f"{k} {v}" for k, v in t["runs"][:5]) or "none"
+    line = [(f" sessions {t['sessions']} · subagent runs {t['subagent_runs']} ({top}) · dual-review ", ""),
+            (f"{t['reviewed']}/{t['edited']} editing sessions", "ok" if t["reviewed"] == t["edited"] else "warn")]
+    if t["flagged"]:
+        line.append((f" · {len(t['flagged'])} without reviewers: {', '.join(t['flagged_projects'])}", "bad"))
     return line
 
 
@@ -228,12 +121,42 @@ def header(sessions, domain, now):
             (f"{len(live)} sessions · {subs} subagents active · filter: {domain or 'all'} · {datetime.fromtimestamp(now):%H:%M:%S}", "muted")]
 
 
+def pr_lines(cache, now, domain=None, selected=None, width=200):
+    """PR panel lines; returns (lines, rows) where rows[i] is the (label, repo, pr) for selectable line i."""
+    lines, rows = [], []
+    if cache is None:
+        return [[("  PRs not loaded yet (gh)…", "muted")]], rows
+    age = dur(now - cache.get("fetched", now))
+    items = [r for r in niu_prs.flat(cache) if not domain or r[0] == domain or r[0].startswith(domain + "/")]
+    errs = [r for r in cache.get("repos", []) if r.get("error") and (not domain or r["label"].startswith(domain))]
+    if not items and not errs:
+        lines.append([(f"  no open PRs · updated {age} ago", "muted")])
+    for label, repo, pr in items:
+        passed, failed, pending = niu_prs.check_summary(pr)
+        ok, reason = niu_prs.is_green(pr)
+        sel = selected is not None and len(rows) == selected
+        checks = (f"✓ {passed}" if not failed and not pending else
+                  f"✗ {failed} failing" if failed else f"… {pending} pending")
+        title = pr.get("title", "")[: max(20, width - 70)]
+        lines.append([("› " if sel else "  ", "sel" if sel else ""),
+                      (f"{repo.split('/')[-1]}#{pr['number']:<5}", "sel" if sel else "bold"),
+                      (f"{title:<{max(20, width - 70)}} ", "sel" if sel else ""),
+                      (f"{checks:<12}", "ok" if ok else ("bad" if failed else "warn")),
+                      (f" {'● ready' if ok else reason}", "ok" if ok else "muted"),
+                      (f"  {label}", "muted")])
+        rows.append((label, repo, pr))
+    for r in errs:
+        lines.append([(f"  {r['repo']}: {r['error']}", "bad")])
+    return lines, rows
+
+
 def snapshot(args):
     now = time.time()
     events = load(args.since)
     sessions = build(events, now)
     lines = [header(sessions, args.domain, now), [("─" * 60, "muted")]]
     lines += tree_lines(sessions, now, args.domain, args.all)
+    lines += [[("── pull requests ", "muted")]] + pr_lines(niu_prs.load_cache(), now, args.domain, width=110)[0]
     lines += [[("── today ", "muted")], today_line(sessions, now), [("── events ", "muted")]]
     lines += feed_lines(events, 15, args.domain)
     return lines, sessions
@@ -242,39 +165,41 @@ def snapshot(args):
 def run_tui(args):
     import curses
     import locale
+    import subprocess
+    import threading
     locale.setlocale(locale.LC_ALL, "")
+
+    state = {"cache": niu_prs.load_cache(), "busy": False, "last": 0.0}
+
+    def refresh_prs():
+        if state["busy"]:
+            return
+        state["busy"] = True
+
+        def work():
+            try:
+                state["cache"] = niu_prs.fetch_all()
+            except Exception as e:  # keep the dashboard alive
+                state["cache"] = {"fetched": time.time(), "repos": [], "error": str(e)}
+            finally:
+                state["busy"], state["last"] = False, time.time()
+        threading.Thread(target=work, daemon=True).start()
 
     def main(scr):
         curses.curs_set(0)
         curses.use_default_colors()
         pal = {"ok": curses.COLOR_GREEN, "warn": curses.COLOR_YELLOW, "bad": curses.COLOR_RED,
                "domain": curses.COLOR_CYAN, "tag": curses.COLOR_MAGENTA}
-        attrs = {"": curses.A_NORMAL, "bold": curses.A_BOLD, "muted": curses.A_DIM}
+        attrs = {"": curses.A_NORMAL, "bold": curses.A_BOLD, "muted": curses.A_DIM, "sel": curses.A_REVERSE}
         for i, (k, c) in enumerate(pal.items(), start=1):
             curses.init_pair(i, c, -1)
             attrs[k] = curses.color_pair(i) | (curses.A_BOLD if k in ("domain", "bad") else 0)
         scr.timeout(1000)
         domains, di, scroll, paused, frozen = [None], 0, 0, False, None
-        while True:
-            now = time.time()
-            events = load(args.since)
-            sessions = build(events, now)
-            for d in sorted({s["domain"] for s in sessions.values()}):
-                if d not in domains:
-                    domains.append(d)
-            dom = args.domain or domains[di % len(domains)]
-            h, w = scr.getmaxyx()
-            top = [header(sessions, dom, now), [("─" * (w - 1), "muted")]]
-            tree = tree_lines(sessions, now, dom, args.all)
-            bottom = [[("── today " + "─" * max(0, w - 10), "muted")], today_line(sessions, now),
-                      [("── events " + ("(paused) " if paused else "") + "─" * max(0, w - 20), "muted")]]
-            keys = [[("q quit · d domain · e ended · f pause feed · ↑↓ scroll", "muted")]]
-            feed_n = max(3, min(12, h // 3))
-            if not paused or frozen is None:
-                frozen = feed_lines(events, feed_n, dom)
-            tree_h = max(1, h - len(top) - len(bottom) - len(frozen) - len(keys))
-            scroll = max(0, min(scroll, max(0, len(tree) - tree_h)))
-            view = top + tree[scroll:scroll + tree_h] + [[]] * max(0, tree_h - len(tree)) + bottom + frozen + keys
+        pr_focus, pr_sel, msg = False, 0, ("", "")
+        refresh_prs()
+
+        def draw(view, h, w):
             scr.erase()
             for y, ln in enumerate(view[:h]):
                 x = 0
@@ -287,8 +212,41 @@ def run_tui(args):
                         pass
                     x += len(text)
             scr.refresh()
+
+        while True:
+            now = time.time()
+            if now - state["last"] > 60:
+                refresh_prs()
+            events = load(args.since)
+            sessions = build(events, now)
+            for d in sorted({s["domain"] for s in sessions.values()}):
+                if d not in domains:
+                    domains.append(d)
+            dom = args.domain or domains[di % len(domains)]
+            h, w = scr.getmaxyx()
+            top = [header(sessions, dom, now), [("─" * (w - 1), "muted")]]
+            tree = tree_lines(sessions, now, dom, args.all)
+            prl, prrows = pr_lines(state["cache"], now, dom, pr_sel if pr_focus else None, w)
+            pr_sel = max(0, min(pr_sel, len(prrows) - 1))
+            prl = prl[: max(3, h // 4)]
+            prhead = [[("── pull requests " + ("(refreshing…) " if state["busy"] else "") +
+                        ("[focus] " if pr_focus else "") + "─" * max(0, w - 40), "muted")]]
+            bottom = [[("── today " + "─" * max(0, w - 10), "muted")], today_line(sessions, now),
+                      [("── events " + ("(paused) " if paused else "") + "─" * max(0, w - 20), "muted")]]
+            keys = [[(msg[0], msg[1])] if msg[0] else
+                    [("q quit · d domain · e ended · f pause · ↑↓/jk move · p PRs · m merge · o open · r refresh", "muted")]]
+            feed_n = max(3, min(10, h // 4))
+            if not paused or frozen is None:
+                frozen = feed_lines(events, feed_n, dom)
+            tree_h = max(1, h - len(top) - len(prhead) - len(prl) - len(bottom) - len(frozen) - len(keys))
+            scroll = max(0, min(scroll, max(0, len(tree) - tree_h)))
+            view = (top + tree[scroll:scroll + tree_h] + [[]] * max(0, tree_h - len(tree)) +
+                    prhead + prl + bottom + frozen + keys)
+            draw(view, h, w)
             k = scr.getch()
-            if k in (ord("q"), 27):
+            if k != -1:
+                msg = ("", "")
+            if k == ord("q"):
                 return
             if k == ord("d") and not args.domain:
                 di += 1
@@ -296,12 +254,77 @@ def run_tui(args):
                 args.all = not args.all
             elif k == ord("f"):
                 paused = not paused
-            elif k == curses.KEY_DOWN:
-                scroll += 1
-            elif k == curses.KEY_UP:
-                scroll -= 1
+            elif k == ord("p"):
+                pr_focus = not pr_focus
+            elif k == ord("r"):
+                refresh_prs()
+                msg = ("refreshing pull requests…", "muted")
+            elif k in (curses.KEY_DOWN, ord("j")):
+                if pr_focus:
+                    pr_sel += 1
+                else:
+                    scroll += 1
+            elif k in (curses.KEY_UP, ord("k")):
+                if pr_focus:
+                    pr_sel -= 1
+                else:
+                    scroll -= 1
+            elif k in (ord("o"), ord("m")):
+                if not pr_focus or not prrows:
+                    msg = ("press p to select a pull request first", "warn")
+                    continue
+                label, repo, pr = prrows[pr_sel]
+                if k == ord("o"):
+                    subprocess.Popen(["xdg-open", pr["url"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    msg = (f"opened {pr['url']}", "muted")
+                    continue
+                ok, reason = niu_prs.is_green(pr)
+                if not ok:
+                    msg = (f"{repo}#{pr['number']} can't be merged: {reason}", "bad")
+                    continue
+                prompt = f"Squash-merge {repo}#{pr['number']} \"{pr.get('title', '')[:50]}\" and delete its branch? [y/N] "
+                draw(view[:-1] + [[(prompt, "warn")]], h, w)
+                scr.timeout(-1)
+                ans = scr.getch()
+                scr.timeout(1000)
+                if ans not in (ord("y"), ord("Y")):
+                    msg = ("merge cancelled", "muted")
+                    continue
+                draw(view[:-1] + [[(f"merging {repo}#{pr['number']} (re-checking status)…", "muted")]], h, w)
+                try:
+                    msg = (niu_prs.merge(repo, pr["number"]), "ok")
+                except Exception as e:
+                    msg = (str(e)[: w - 2], "bad")
+                refresh_prs()
 
-    curses.wrapper(main)
+    try:
+        curses.wrapper(main)
+    except KeyboardInterrupt:  # Ctrl+C quits like 'q'
+        pass
+
+
+def cli_merge(ref):
+    try:
+        repo, number = niu_prs.parse_ref(ref)
+    except ValueError as e:
+        sys.exit(f"agents-dash: {e}")
+    if not niu_prs.can_prompt():
+        sys.exit("agents-dash: --merge needs an interactive terminal (you confirm each merge yourself)")
+    try:
+        pr = niu_prs.fresh(repo, number)
+    except Exception as e:
+        sys.exit(f"agents-dash: {e}")
+    ok, reason = niu_prs.is_green(pr)
+    passed, failed, pending = niu_prs.check_summary(pr)
+    print(f"{repo}#{number}  {pr.get('title', '')}\n  checks: {passed} passed, {failed} failing, {pending} pending · {reason}")
+    if not ok:
+        sys.exit(f"agents-dash: not merging: {reason}")
+    if input("Squash-merge and delete the branch? [y/N] ").strip().lower() != "y":
+        sys.exit("merge cancelled")
+    try:
+        print(niu_prs.merge(repo, number))
+    except Exception as e:
+        sys.exit(f"agents-dash: {e}")
 
 
 def main():
@@ -311,8 +334,20 @@ def main():
     ap.add_argument("--since", default="24h", help="history window, e.g. 1h, 24h, 7d (default 24h)")
     ap.add_argument("--domain", help="only show one domain (WORK, PERSONAL, HOBBY …)")
     ap.add_argument("--all", action="store_true", help="include ended sessions")
+    ap.add_argument("--prs", action="store_true", help="fetch and list open PRs, then exit")
+    ap.add_argument("--merge", metavar="OWNER/REPO#N", help="squash-merge a green PR after confirming")
     args = ap.parse_args()
     args.since = parse_since(args.since)
+    if args.merge:
+        cli_merge(args.merge)
+        return
+    if args.prs:
+        try:
+            cache = niu_prs.fetch_all()
+        except Exception as e:
+            sys.exit(f"agents-dash: {e}")
+        print(plain([[("── pull requests ", "muted")]] + pr_lines(cache, time.time(), args.domain, width=110)[0]))
+        return
     if args.json:
         sessions = build(load(args.since), time.time())
         for s in sessions.values():

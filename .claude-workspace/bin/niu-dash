@@ -1,0 +1,384 @@
+#!/usr/bin/env python3
+"""niu-dash: web dashboard for Claude sessions, subagents and pull requests in the workspace.
+
+Usage:
+  niu-dash serve [--port 8765]      serve on 127.0.0.1 only (publish it with `tailscale serve`)
+  niu-dash pair [--name laptop]     show a one-time code to pair a browser (interactive terminal only)
+  niu-dash devices                  list paired browsers
+  niu-dash revoke ID|all            remove paired browsers
+"""
+import argparse
+import hashlib
+import hmac
+import json
+import os
+import secrets
+import sys
+import threading
+import time
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import niu_prs  # noqa: E402
+from niu_events import connect, db_path  # noqa: E402
+from niu_state import build, load, parse_since, to_json  # noqa: E402
+
+WEB = Path(__file__).resolve().parents[1] / "web"
+STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
+          "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+          "/style.css": ("style.css", "text/css; charset=utf-8")}
+COOKIE = "niu_session"
+PAIR_TTL = 300
+PAIR_MAX_ATTEMPTS = 5
+PR_REFRESH_SECS = 60
+LOCK = threading.Lock()
+
+
+# ---------- paired-device store (only hashes are kept) ----------
+
+def auth_path() -> Path:
+    return db_path().parent / "web-sessions.json"
+
+
+def _sha(s: str) -> str:
+    return hashlib.sha256(s.encode()).hexdigest()
+
+
+def load_auth():
+    try:
+        return json.loads(auth_path().read_text())
+    except (OSError, ValueError):
+        return {"devices": [], "pair": None}
+
+
+def save_auth(data):
+    p = auth_path()
+    p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=1))
+    os.chmod(tmp, 0o600)
+    tmp.replace(p)
+
+
+def device_for(token):
+    if not token:
+        return None
+    h = _sha(token)
+    with LOCK:
+        data = load_auth()
+        for d in data["devices"]:
+            if hmac.compare_digest(d["hash"], h):
+                if time.time() - d.get("last_seen", 0) > 300:
+                    d["last_seen"] = time.time()
+                    save_auth(data)
+                return d
+    return None
+
+
+# ---------- PR cache with background refresh ----------
+
+PRS = {"cache": None, "busy": False}
+
+
+def refresh_prs(force=False):
+    cache = PRS["cache"] or niu_prs.load_cache()
+    PRS["cache"] = cache
+    stale = not cache or time.time() - cache.get("fetched", 0) > PR_REFRESH_SECS
+    if PRS["busy"] or not (force or stale):
+        return
+
+    def work():
+        try:
+            PRS["cache"] = niu_prs.fetch_all()
+        except Exception as e:
+            PRS["cache"] = {"fetched": time.time(), "repos": [], "error": str(e)}
+        finally:
+            PRS["busy"] = False
+    PRS["busy"] = True
+    threading.Thread(target=work, daemon=True).start()
+
+
+def prs_json():
+    refresh_prs()
+    cache = PRS["cache"] or {"fetched": 0, "repos": []}
+    repos = []
+    for r in cache.get("repos", []):
+        items = []
+        for pr in r.get("prs", []):
+            passed, failed, pending = niu_prs.check_summary(pr)
+            ok, reason = niu_prs.is_green(pr)
+            items.append({"number": pr["number"], "title": pr.get("title", ""), "url": pr.get("url"),
+                          "author": (pr.get("author") or {}).get("login"), "branch": pr.get("headRefName"),
+                          "draft": pr.get("isDraft"), "updated": pr.get("updatedAt"),
+                          "checks": {"passed": passed, "failed": failed, "pending": pending},
+                          "green": ok, "reason": reason, "ref": f"{r['repo']}#{pr['number']}"})
+        repos.append({"label": r["label"], "repo": r["repo"], "error": r.get("error"), "prs": items})
+    return {"fetched": cache.get("fetched", 0), "refreshing": PRS["busy"], "error": cache.get("error"), "repos": repos}
+
+
+def log_merge(ref, label, ok, msg):
+    try:
+        con = connect()
+        with con:
+            con.execute("INSERT INTO events(ts,event,session_id,domain,project,tool,summary) VALUES(?,?,?,?,?,?,?)",
+                        (time.time(), "PRMerge" if ok else "PRMergeRefused", "web",
+                         label.split("/")[0] if label else "", "", "gh", f"{ref}: {msg}"[:120]))
+        con.close()
+    except Exception:
+        pass
+
+
+# ---------- HTTP ----------
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "niu-dash"
+    sys_version = ""
+
+    def log_message(self, fmt, *args):
+        if os.environ.get("NIU_DASH_DEBUG"):
+            super().log_message(fmt, *args)
+
+    # helpers
+    def _headers(self, status, ctype, extra=None):
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy",
+                         "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; "
+                         "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+
+    def _json(self, obj, status=200, extra=None):
+        body = json.dumps(obj, default=str).encode()
+        self._headers(status, "application/json", {"Content-Length": str(len(body)), **(extra or {})})
+        self.wfile.write(body)
+
+    def _err(self, status, msg):
+        self._json({"error": msg}, status)
+
+    def _cookie(self):
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == COOKIE:
+                return v
+        return None
+
+    def _is_https(self):
+        host = (self.headers.get("Host") or "").split(":")[0]
+        return self.headers.get("X-Forwarded-Proto") == "https" or host not in ("127.0.0.1", "localhost")
+
+    def _post_ok(self):
+        """Same-origin + custom header checks for every POST."""
+        if self.headers.get("X-Niu-CSRF") != "1":
+            self._err(403, "missing CSRF header")
+            return False
+        origin = self.headers.get("Origin")
+        hosts = {self.headers.get("Host"), self.headers.get("X-Forwarded-Host")} - {None}
+        if not origin or urlparse(origin).netloc not in hosts:
+            self._err(403, "cross-origin request refused")
+            return False
+        return True
+
+    def _body(self):
+        try:
+            n = min(int(self.headers.get("Content-Length") or 0), 10_000)
+            return json.loads(self.rfile.read(n) or b"{}")
+        except (ValueError, OSError):
+            return {}
+
+    def _args(self):
+        q = parse_qs(urlparse(self.path).query)
+        try:
+            since = parse_since(q.get("since", ["24h"])[0])
+        except ValueError:
+            since = 86400
+        return since, (q.get("domain", [""])[0] or None)
+
+    def _state(self):
+        since, domain = self._args()
+        now = time.time()
+        events = load(since)
+        return to_json(build(events, now), events, now, domain)
+
+    # routes
+    def do_GET(self):
+        path = urlparse(self.path).path
+        if path in STATIC:
+            name, ctype = STATIC[path]
+            try:
+                body = (WEB / name).read_bytes()
+            except OSError:
+                return self._err(404, "missing page")
+            self._headers(200, ctype, {"Content-Length": str(len(body))})
+            self.wfile.write(body)
+        elif path == "/api/state":
+            self._json(self._state())
+        elif path == "/api/prs":
+            self._json(prs_json())
+        elif path == "/api/me":
+            d = device_for(self._cookie())
+            self._json({"paired": bool(d), "device": d and {"id": d["id"], "name": d["name"]}})
+        elif path == "/api/stream":
+            self._stream()
+        elif path == "/healthz":
+            self._json({"ok": True})
+        else:
+            self._err(404, "not found")
+
+    def _stream(self):
+        self._headers(200, "text/event-stream", {"Connection": "keep-alive", "X-Accel-Buffering": "no"})
+        last, beat = None, time.time()
+        try:
+            while True:
+                state = self._state()
+                state["prs"] = prs_json()
+                key = _sha(json.dumps({**state, "now": 0}, default=str, sort_keys=True))
+                if key != last:
+                    self.wfile.write(b"data: " + json.dumps(state, default=str).encode() + b"\n\n")
+                    self.wfile.flush()
+                    last, beat = key, time.time()
+                elif time.time() - beat > 15:
+                    self.wfile.write(b": keep-alive\n\n")
+                    self.wfile.flush()
+                    beat = time.time()
+                time.sleep(1)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        if not self._post_ok():
+            return
+        if path == "/api/pair":
+            return self._pair()
+        device = device_for(self._cookie())
+        if path == "/api/prs/refresh":
+            refresh_prs(force=True)
+            return self._json({"ok": True})
+        if path == "/api/unpair":
+            if device:
+                with LOCK:
+                    data = load_auth()
+                    data["devices"] = [d for d in data["devices"] if d["id"] != device["id"]]
+                    save_auth(data)
+            return self._json({"ok": True}, extra={"Set-Cookie": f"{COOKIE}=; Max-Age=0; Path=/"})
+        if path == "/api/prs/merge":
+            if not device:
+                return self._err(401, "pair this browser first: run `niu-dash pair` on the host")
+            b = self._body()
+            repo, number = str(b.get("repo", "")), b.get("number")
+            if not isinstance(number, int) or "/" not in repo:
+                return self._err(400, "repo and number required")
+            ref = f"{repo}#{number}"
+            if str(b.get("confirm", "")).strip() != ref:
+                return self._err(400, f"type {ref} to confirm")
+            label = next((r["label"] for r in (PRS["cache"] or {}).get("repos", []) if r["repo"] == repo), "")
+            try:
+                msg = niu_prs.merge(repo, number)
+            except Exception as e:
+                log_merge(ref, label, False, str(e))
+                return self._err(409, str(e))
+            log_merge(ref, label, True, f"merged from {device['name']}")
+            refresh_prs(force=True)
+            return self._json({"ok": True, "message": msg})
+        self._err(404, "not found")
+
+    def _pair(self):
+        b = self._body()
+        code = str(b.get("code", "")).strip()
+        name = str(b.get("name") or "browser")[:40]
+        with LOCK:
+            data = load_auth()
+            p = data.get("pair")
+            if not p or time.time() > p["expires"]:
+                return self._err(400, "no pairing in progress: run `niu-dash pair` on the host")
+            p["attempts"] += 1
+            if p["attempts"] > PAIR_MAX_ATTEMPTS:
+                data["pair"] = None
+                save_auth(data)
+                return self._err(429, "too many attempts: run `niu-dash pair` again")
+            if not hmac.compare_digest(p["code_hash"], _sha(code)):
+                save_auth(data)
+                return self._err(403, "wrong code")
+            token = secrets.token_urlsafe(32)
+            dev = {"id": secrets.token_hex(4), "name": p.get("name") or name, "hash": _sha(token),
+                   "created": time.time(), "last_seen": time.time()}
+            data["devices"].append(dev)
+            data["pair"] = None
+            save_auth(data)
+        cookie = f"{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000"
+        if self._is_https():
+            cookie += "; Secure"
+        self._json({"ok": True, "device": {"id": dev["id"], "name": dev["name"]}}, extra={"Set-Cookie": cookie})
+
+
+# ---------- CLI ----------
+
+def cmd_serve(args):
+    srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    srv.daemon_threads = True
+    refresh_prs(force=True)
+    print(f"niu-dash: serving on http://127.0.0.1:{args.port} (publish with: tailscale serve --bg --https=8443 http://127.0.0.1:{args.port})", flush=True)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+def cmd_pair(args):
+    if not niu_prs.can_prompt():
+        sys.exit("niu-dash: pair needs an interactive terminal (you pair each browser yourself)")
+    code = f"{secrets.randbelow(10**6):06d}"
+    with LOCK:
+        data = load_auth()
+        data["pair"] = {"code_hash": _sha(code), "expires": time.time() + PAIR_TTL, "attempts": 0, "name": args.name}
+        save_auth(data)
+    print(f"Pairing code: {code[:3]} {code[3:]}   (valid 5 minutes, {PAIR_MAX_ATTEMPTS} attempts)")
+    print("Open the dashboard in the browser you want to pair and enter this code.")
+
+
+def cmd_devices(_args):
+    data = load_auth()
+    if not data["devices"]:
+        print("no paired browsers")
+    for d in data["devices"]:
+        seen = time.strftime("%Y-%m-%d %H:%M", time.localtime(d.get("last_seen", 0)))
+        print(f"{d['id']}  {d['name']:<20} last seen {seen}")
+
+
+def cmd_revoke(args):
+    with LOCK:
+        data = load_auth()
+        before = len(data["devices"])
+        data["devices"] = [] if args.id == "all" else [d for d in data["devices"] if d["id"] != args.id]
+        save_auth(data)
+    print(f"revoked {before - len(data['devices'])} device(s)")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("serve")
+    s.add_argument("--port", type=int, default=int(os.environ.get("NIU_DASH_PORT", "8765")))
+    s.set_defaults(fn=cmd_serve)
+    p = sub.add_parser("pair")
+    p.add_argument("--name", default="")
+    p.set_defaults(fn=cmd_pair)
+    sub.add_parser("devices").set_defaults(fn=cmd_devices)
+    r = sub.add_parser("revoke")
+    r.add_argument("id")
+    r.set_defaults(fn=cmd_revoke)
+    args = ap.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

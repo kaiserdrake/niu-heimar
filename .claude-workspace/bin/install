@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # Install/refresh the niu-heimar workspace: render templates, merge user settings,
 # add bin/ to PATH, and re-link existing projects. Safe to run repeatedly.
-# Usage: install [--no-user-settings] [--no-shell]
+# Usage: install [--no-user-settings] [--no-shell] [--web]
 set -euo pipefail
 
 WS="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd -P)"
 SHARED="$WS/.claude-workspace"
-user_settings=true shell=true
+user_settings=true shell=true web=false
 for a in "$@"; do
   case "$a" in
     --no-user-settings) user_settings=false ;;
     --no-shell) shell=false ;;
+    --web) web=true ;;
     *) echo "unknown option $a" >&2; exit 1 ;;
   esac
 done
@@ -88,4 +89,37 @@ for d in "${domains[@]}"; do
     "$SHARED/bin/claude-init" -q "$p" || true
   done
 done
+if $web; then
+  unit="$HOME/.config/systemd/user/niu-dash.service"
+  mkdir -p "$(dirname "$unit")"
+  cat >"$unit" <<UNIT
+[Unit]
+Description=niu-heimar web dashboard (127.0.0.1:8765)
+After=network.target
+
+[Service]
+ExecStart=$SHARED/bin/niu-dash serve --port 8765
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
+UNIT
+  systemctl --user daemon-reload
+  systemctl --user enable --now niu-dash.service
+  systemctl --user restart niu-dash.service
+  if [[ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != "yes" ]]; then
+    loginctl enable-linger "$USER" 2>/dev/null && echo "enabled linger: niu-dash keeps running after logout and starts at boot" \
+      || echo "note: run 'sudo loginctl enable-linger $USER' so niu-dash runs without an active login"
+  fi
+  echo "niu-dash running: http://127.0.0.1:8765  (systemctl --user status niu-dash)"
+  cat <<'TS'
+To reach it from your other tailnet devices (one-time, run these yourself):
+  sudo tailscale set --operator=$USER
+  tailscale serve --bg --https=8443 http://127.0.0.1:8765
+  tailscale serve status
+Then pair each browser: run `niu-dash pair` here and enter the code on that device.
+TS
+fi
 echo "niu-heimar installed at $WS"

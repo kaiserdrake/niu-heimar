@@ -18,6 +18,14 @@ while IFS= read -r -d '' py; do python3 -m py_compile "$py" 2>/dev/null || err "
   < <(grep -rlZE '^#!.*python' .claude-workspace/bin .claude-workspace/hooks; find .claude-workspace/lib -name '*.py' -print0)
 find .claude-workspace -name __pycache__ -type d -prune -exec rm -rf {} +
 
+node_bin="$(command -v node 2>/dev/null)"; [[ -x "$node_bin" ]] || node_bin="$(command ls -d "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null | tail -1)"
+if [[ -x "$node_bin" ]]; then
+  for js in .claude-workspace/web/*.js; do "$node_bin" --check "$js" || err "js: $js"; done
+else
+  echo "warn: node not found, skipping JS syntax check"
+fi
+if grep -nE 'style=' .claude-workspace/web/*.html .claude-workspace/web/*.js; then err "inline style= is blocked by the dashboard CSP"; fi
+
 while IFS= read -r -d '' j; do jq empty "$j" 2>/dev/null || err "invalid JSON: $j"; done \
   < <(find . -maxdepth 1 -name '*.json' -print0
       find .claude-workspace .github .claude ./*/.claude -maxdepth 2 -name '*.json' -not -path '*/memory/*' -print0 2>/dev/null)

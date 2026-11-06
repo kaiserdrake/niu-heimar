@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""End-to-end tests for niu-dash (web dashboard). Uses a temp event store and a fake gh; never touches GitHub."""
+import http.client
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+WS = Path(__file__).resolve().parents[2]
+SH = WS / ".claude-workspace"
+tmp = Path(tempfile.mkdtemp())
+env = dict(os.environ, NIU_EVENTS_DB=str(tmp / "state" / "events.db"),
+           FAKE_GH_LOG=str(tmp / "gh.log"), FAKE_PR_FILE=str(tmp / "pr_state"))
+(tmp / "bin").mkdir()
+(tmp / "pr_state").write_text("green")
+gh = tmp / "bin" / "gh"
+gh.write_text(r'''#!/usr/bin/env bash
+echo "$*" >>"$FAKE_GH_LOG"
+st="$(cat "$FAKE_PR_FILE")"
+case "$st" in
+  green)   roll='[{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"SUCCESS"}]' ;;
+  failing) roll='[{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"FAILURE"}]' ;;
+esac
+pr='{"number":7,"title":"feat: thing","url":"https://github.com/o/r/pull/7","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","updatedAt":"2026-11-06T00:00:00Z","headRefName":"feat/x","author":{"login":"me"},"statusCheckRollup":'"$roll"'}'
+case "$1 $2" in
+  "pr list") echo "[$pr]" ;;
+  "pr view") echo "$pr" ;;
+  "pr merge") echo merged ;;
+  *) exit 1 ;;
+esac
+''')
+gh.chmod(0o755)
+env["PATH"] = f"{tmp / 'bin'}:{env['PATH']}"
+CWD = str(WS / "PERSONAL" / ".niu-test-web" / "app")
+Path(CWD).mkdir(parents=True, exist_ok=True)
+(Path(CWD) / ".git").mkdir(exist_ok=True)
+
+passed = failed = 0
+
+
+def check(cond, msg):
+    global passed, failed
+    if cond:
+        passed += 1
+    else:
+        failed += 1
+        print(f"FAIL: {msg}")
+
+
+def ev(event, **kw):
+    data = {"hook_event_name": event, "session_id": "sess-web1", "cwd": CWD, **kw}
+    subprocess.run([str(SH / "hooks" / "agent-events.py")], input=json.dumps(data), text=True, env=env, check=True)
+
+
+# Seed: session spawns two reviewers in parallel, one sends a message
+ev("SessionStart"); ev("UserPromptSubmit")
+ev("PreToolUse", tool_name="Edit", tool_input={"file_path": f"{CWD}/a.py"}, tool_use_id="t1")
+ev("PreToolUse", tool_name="Agent", tool_input={"subagent_type": "security-reviewer", "description": "Review auth change"}, tool_use_id="t2")
+ev("PreToolUse", tool_name="Agent", tool_input={"subagent_type": "test-reviewer", "description": "Run the tests"}, tool_use_id="t3")
+ev("SubagentStart", agent_id="ag1", agent_type="security-reviewer")
+ev("SubagentStart", agent_id="ag2", agent_type="test-reviewer")
+ev("PreToolUse", agent_id="ag2", agent_type="test-reviewer", tool_name="Bash", tool_input={"command": "pytest -q"}, tool_use_id="t4")
+ev("PreToolUse", tool_name="SendMessage", tool_input={"to": "deploy-bot", "message": "hi"}, tool_use_id="t5")
+
+port = (lambda s: (s.bind(("127.0.0.1", 0)), s.getsockname()[1], s.close())[1])(socket.socket())
+srv = subprocess.Popen([str(SH / "bin" / "niu-dash"), "serve", "--port", str(port)], env=env,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+ORIGIN = f"http://127.0.0.1:{port}"
+
+
+def req(method, path, body=None, headers=None):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    h = {"Host": f"127.0.0.1:{port}", **(headers or {})}
+    data = json.dumps(body).encode() if body is not None else None
+    if data:
+        h["Content-Type"] = "application/json"
+    c.request(method, path, body=data, headers=h)
+    r = c.getresponse()
+    raw = r.read()
+    try:
+        js = json.loads(raw)
+    except ValueError:
+        js = None
+    return r.status, dict(r.getheaders()), js, raw
+
+
+POSTH = {"X-Niu-CSRF": "1", "Origin": ORIGIN}
+
+try:
+    for _ in range(50):
+        try:
+            if req("GET", "/healthz")[0] == 200:
+                break
+        except OSError:
+            time.sleep(0.1)
+
+    # Server only listens on loopback
+    out = subprocess.run(["ss", "-ltnH", f"sport = :{port}"], capture_output=True, text=True).stdout
+    local = [ln.split()[3] for ln in out.splitlines() if ln.strip()]
+    check(local and all(a.startswith("127.0.0.1:") for a in local), f"binds loopback only: {out}")
+
+    # Page + security headers
+    st, hd, _, raw = req("GET", "/")
+    check(st == 200 and b"niu-heimar" in raw, "index page served")
+    check("default-src 'self'" in hd.get("Content-Security-Policy", ""), "CSP header")
+    check(req("GET", "/../bin/niu-dash")[0] == 404, "no path traversal")
+
+    # State: links between session and subagents, tasks, messages
+    st, _, js, _ = req("GET", "/api/state")
+    s = next((x for x in js["sessions"] if x["id"] == "sess-web1"), None)
+    check(s is not None, "session in state")
+    subs = {a["type"]: a for a in s["subagents"]} if s else {}
+    check(subs.get("security-reviewer", {}).get("task") == "Review auth change", "spawn task linked (security)")
+    check(subs.get("test-reviewer", {}).get("task") == "Run the tests", "spawn task linked (tests)")
+    check(subs.get("test-reviewer", {}).get("parent") == "sess-web1", "parent is the session")
+    check(subs.get("test-reviewer", {}).get("current", [None])[0] == "Bash", "subagent current tool")
+    check(s and s["messages"] and s["messages"][0]["to"] == "deploy-bot", "message edge")
+    check(s and s["state"] == "working" and s["edited"], "session state")
+
+    # SSE emits a snapshot
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    c.request("GET", "/api/stream", headers={"Host": f"127.0.0.1:{port}"})
+    r = c.getresponse()
+    line = r.fp.readline()
+    check(r.status == 200 and line.startswith(b"data: ") and b"sess-web1" in line, "SSE snapshot")
+    c.close()
+
+    # PRs from fake gh
+    time.sleep(1.5)
+    st, _, js, _ = req("GET", "/api/prs")
+    prs = [p for r in js["repos"] for p in r["prs"]]
+    check(any(p["green"] for p in prs) or js["repos"] == [], "PR list shape")
+
+    # Merge guards
+    body = {"repo": "o/r", "number": 7, "confirm": "o/r#7"}
+    check(req("POST", "/api/prs/merge", body, {"Origin": ORIGIN})[0] == 403, "merge without CSRF header -> 403")
+    check(req("POST", "/api/prs/merge", body, {"X-Niu-CSRF": "1", "Origin": "https://evil.example"})[0] == 403, "cross-origin -> 403")
+    check(req("POST", "/api/prs/merge", body, POSTH)[0] == 401, "merge without pairing -> 401")
+
+    # Pairing: refused without a terminal, works with a code from a real tty
+    r = subprocess.run([str(SH / "bin" / "niu-dash"), "pair"], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    check(r.returncode != 0, "pair refused without tty")
+    check(req("POST", "/api/pair", {"code": "000000"}, POSTH)[0] == 400, "pair without pairing in progress")
+    r = subprocess.run(["script", "-qec", f"{SH / 'bin' / 'niu-dash'} pair --name test-laptop", "/dev/null"],
+                       env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    m = re.search(r"Pairing code: (\d{3}) (\d{3})", r.stdout)
+    check(m is not None, f"pair prints a code: {r.stdout!r}")
+    code = "".join(m.groups()) if m else ""
+    wrong = "111111" if code != "111111" else "222222"
+    check(req("POST", "/api/pair", {"code": wrong}, POSTH)[0] == 403, "wrong code -> 403")
+    st, hd, js, _ = req("POST", "/api/pair", {"code": code}, POSTH)
+    cookie = hd.get("Set-Cookie", "")
+    check(st == 200 and "HttpOnly" in cookie and "SameSite=Strict" in cookie, f"pair ok + cookie flags: {cookie}")
+    tok = cookie.split(";")[0]
+    auth = {**POSTH, "Cookie": tok}
+    store = json.loads((tmp / "state" / "web-sessions.json").read_text())
+    check(tok.split("=", 1)[1] not in json.dumps(store), "only token hash stored")
+    check(oct((tmp / "state" / "web-sessions.json").stat().st_mode)[-3:] == "600", "credential file mode 600")
+    check(req("GET", "/api/me", headers={"Cookie": tok})[2]["paired"] is True, "/api/me paired")
+
+    # Merge with pairing
+    open(env["FAKE_GH_LOG"], "w").close()
+    check(req("POST", "/api/prs/merge", {**body, "confirm": "o/r#8"}, auth)[0] == 400, "wrong confirm -> 400")
+    (tmp / "pr_state").write_text("failing")
+    st, _, js, _ = req("POST", "/api/prs/merge", body, auth)
+    check(st == 409 and "failing" in js.get("error", ""), f"failing PR refused: {st} {js}")
+    check("pr merge" not in Path(env["FAKE_GH_LOG"]).read_text(), "no gh merge for failing PR")
+    (tmp / "pr_state").write_text("green")
+    st, _, js, _ = req("POST", "/api/prs/merge", body, auth)
+    check(st == 200, f"green PR merged: {st} {js}")
+    check("pr merge 7 -R o/r --squash --delete-branch" in Path(env["FAKE_GH_LOG"]).read_text(), "gh merge called correctly")
+    st, _, js, _ = req("GET", "/api/state")
+    check(any(e["event"] == "PRMerge" for e in js["feed"]), "merge logged in feed")
+
+    # Revoke + rate limit
+    subprocess.run([str(SH / "bin" / "niu-dash"), "revoke", "all"], env=env, capture_output=True)
+    check(req("POST", "/api/prs/merge", body, auth)[0] == 401, "revoked cookie -> 401")
+    subprocess.run(["script", "-qec", f"{SH / 'bin' / 'niu-dash'} pair", "/dev/null"], env=env, capture_output=True, stdin=subprocess.DEVNULL)
+    codes = [req("POST", "/api/pair", {"code": "999999" if code != "999999" else "888888"}, POSTH)[0] for _ in range(6)]
+    check(codes[-1] == 429, f"pairing rate limit: {codes}")
+finally:
+    srv.terminate()
+    try:
+        srv.wait(5)
+    except subprocess.TimeoutExpired:
+        srv.kill()
+    subprocess.run(["rm", "-rf", str(tmp), str(WS / "PERSONAL" / ".niu-test-web")])
+
+print(f"web: {passed} passed, {failed} failed")
+sys.exit(1 if failed else 0)

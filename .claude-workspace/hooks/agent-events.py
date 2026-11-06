@@ -41,6 +41,8 @@ def summarize(tool, ti, project_dir):
         s = f"{ti.get('subagent_type', '')}: {ti.get('description', '')}".strip(": ")
     elif tool == "WebFetch":
         s = (ti.get("url") or "").split("?")[0]
+    elif tool == "SendMessage":
+        s = f"to: {ti.get('to') or ti.get('recipient') or ''}"
     elif tool == "WebSearch":
         s = ti.get("query", "")
     else:

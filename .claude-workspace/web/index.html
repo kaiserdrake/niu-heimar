@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>niu-heimar agents</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand"><span id="conn" class="dot" title="connection"></span> niu-heimar <span class="muted">agents</span></div>
+  <div id="counters" class="counters"></div>
+  <div class="controls">
+    <select id="domain" aria-label="Domain filter"><option value="">All domains</option></select>
+    <select id="since" aria-label="Time window">
+      <option value="1h">1 hour</option><option value="24h" selected>24 hours</option><option value="7d">7 days</option>
+    </select>
+    <label class="check"><input type="checkbox" id="ended"> ended</label>
+    <span id="me" class="muted"></span>
+  </div>
+</header>
+
+<section id="pairbox" class="card pair" hidden>
+  <div><strong>Pair this browser</strong> to enable merge buttons. On the host, run <code>niu-dash pair</code> and enter the code.</div>
+  <form id="pairform" class="row">
+    <input id="paircode" inputmode="numeric" autocomplete="one-time-code" placeholder="123 456" aria-label="Pairing code">
+    <input id="pairname" placeholder="This device's name" aria-label="Device name">
+    <button type="submit">Pair</button>
+    <span id="pairmsg" class="msg"></span>
+  </form>
+</section>
+
+<main class="grid">
+  <section class="card span2">
+    <h2>Live sessions</h2>
+    <div id="sessions" class="sessions"></div>
+  </section>
+
+  <section class="card span2">
+    <div class="head"><h2>Agent interactions</h2><span class="muted small">session → subagents it spawned · dashed = messages</span></div>
+    <div id="graph" class="scroll-x"></div>
+  </section>
+
+  <section class="card span2">
+    <div class="head"><h2>Timeline</h2>
+      <div class="legend small" id="legend"></div></div>
+    <div id="timeline" class="scroll-x"></div>
+  </section>
+
+  <section class="card">
+    <div class="head"><h2>Pull requests</h2><button id="prrefresh" class="ghost">Refresh</button></div>
+    <div id="prs"></div>
+  </section>
+
+  <section class="card">
+    <h2>Today</h2>
+    <div id="today"></div>
+    <h2 class="mt">Recent events</h2>
+    <div id="feed" class="feed"></div>
+  </section>
+</main>
+
+<div id="details" class="card details" hidden></div>
+
+<dialog id="mergedlg">
+  <form method="dialog" id="mergeform">
+    <h2>Merge pull request</h2>
+    <p id="mergetitle"></p>
+    <p class="small muted">Squash merge and delete the branch. The status is re-checked on the host first. Type <code id="mergeref"></code> to confirm.</p>
+    <input id="mergeconfirm" autocomplete="off" aria-label="Type the PR reference to confirm">
+    <p id="mergemsg" class="msg"></p>
+    <div class="row end">
+      <button value="cancel" formnovalidate class="ghost">Cancel</button>
+      <button id="mergego" value="merge" class="danger">Merge</button>
+    </div>
+  </form>
+</dialog>
+<script src="/app.js"></script>
+</body>
+</html>

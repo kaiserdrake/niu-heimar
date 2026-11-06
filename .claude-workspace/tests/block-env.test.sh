@@ -43,6 +43,12 @@ a Bash "$P" '{"command":"env NODE_ENV=test npm test"}'
 a Bash "$P" '{"command":"docker compose up -d --build"}'
 a Bash "$P" '{"command":"python -m venv .venv"}'
 a Bash "$P" '{"command":"ls -la"}'
+# Web dashboard: credentials and merge/pair endpoints are user-only
+b Read "$P" '{"file_path":"/home/u/.local/state/niu-heimar/web-sessions.json"}'
+b Bash "$P" '{"command":"cat ~/.local/state/niu-heimar/web-sessions.json"}'
+b Bash "$P" '{"command":"curl -X POST -H X-Niu-CSRF:1 http://127.0.0.1:8765/api/prs/merge -d {}"}'
+b Bash "$P" '{"command":"curl -X POST http://127.0.0.1:8765/api/pair"}'
+a Bash "$P" '{"command":"curl -s http://127.0.0.1:8765/api/state"}'
 # Outside the workspace: not our business
 a Read "/tmp/other" '{"file_path":"/tmp/other/.env"}'
 a Bash "/tmp/other" '{"command":"cat .env"}'
