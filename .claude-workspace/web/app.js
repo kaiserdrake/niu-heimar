@@ -197,6 +197,43 @@ function renderSessions() {
   for (const el of $("sessions").querySelectorAll(".sess")) el.onclick = () => showDetails({ sid: el.dataset.sid });
 }
 
+// ---------- themed hover tooltip (graph + timeline; native SVG <title> tooltips can't be styled) ----------
+const TIP = Object.assign(document.createElement("div"), { className: "gtip", hidden: true });
+TIP.setAttribute("role", "tooltip");
+document.body.append(TIP);
+function placeTip(e) {
+  const r = TIP.getBoundingClientRect(), gap = 14;
+  let x = e.clientX + gap, y = e.clientY + gap;
+  if (x + r.width > innerWidth - 8) x = Math.max(8, e.clientX - r.width - gap);
+  if (y + r.height > innerHeight - 8) y = Math.max(8, e.clientY - r.height - gap);
+  TIP.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+}
+for (const id of ["graph", "timeline"]) {
+  const box = $(id);
+  box.addEventListener("pointerover", (e) => {
+    const t = e.target.closest?.("[data-tip]");
+    if (!t || e.pointerType === "touch") return;
+    const [head, ...rest] = t.getAttribute("data-tip").split("\n");
+    TIP.replaceChildren(Object.assign(document.createElement("b"), { textContent: head }),
+      ...rest.filter(Boolean).map((line) => Object.assign(document.createElement("div"), { textContent: line })));
+    TIP.dataset.owner = id;
+    TIP.hidden = false;
+    placeTip(e);
+  });
+  box.addEventListener("pointermove", (e) => {
+    if (TIP.hidden) return;
+    // a re-render can remove the hovered node without a pointerout: hide once the pointer is off any tip target
+    if (!e.target.closest?.("[data-tip]") || !e.target.isConnected) { TIP.hidden = true; return; }
+    placeTip(e);
+  });
+  box.addEventListener("pointerout", (e) => {
+    const t = e.target.closest?.("[data-tip]");
+    if (t && !t.contains(e.relatedTarget)) TIP.hidden = true;
+  });
+  box.addEventListener("pointerleave", () => { TIP.hidden = true; });
+}
+addEventListener("scroll", () => { TIP.hidden = true; }, true);
+
 // ---------- animated interaction graph ----------
 // The SVG is built once and updated in place, so transitions and flows keep running between updates.
 const G = { root: null, layers: {}, nodes: new Map(), edges: new Map(), seen: new Map(), first: true, ids: 0 };
@@ -364,7 +401,6 @@ function graphNode(n) {
     g.append(svg("text", { class: "name", x: 12, y: 32 }));
     g.append(svg("text", { class: "lbl sub", x: 12, y: 46 }));
     g.append(svg("rect", { class: "bar", x: 10, y: NH - 4, width: NW - 20, height: 2, rx: 1 }));
-    g.append(svg("title"));
     g.addEventListener("click", () => g.dataset.sid && showDetails({ sid: g.dataset.sid, aid: g.dataset.aid || undefined }));
     G.layers.nodes.append(g);
     G.nodes.set(n.id, g);
@@ -378,7 +414,7 @@ function graphNode(n) {
   g.classList.toggle("done", !!n.done);
   g.classList.remove("leave");
   g.dataset.sid = n.sid || ""; g.dataset.aid = n.aid || "";
-  const [badge, name, sub, bar, title] = [g.querySelector(".badge"), g.querySelector(".name"), g.querySelector(".sub"), g.querySelector(".bar"), g.querySelector("title")];
+  const [badge, name, sub, bar] = [g.querySelector(".badge"), g.querySelector(".name"), g.querySelector(".sub"), g.querySelector(".bar")];
   badge.textContent = n.kind === "session" ? "session" : n.kind === "ext" ? "message" : n.kind === "step" ? "session step" : n.source;
   badge.setAttribute("class", `badge src-${n.kind === "sub" ? n.source : "session"}`);
   name.textContent = trunc(n.label, 26);
@@ -389,7 +425,7 @@ function graphNode(n) {
   const mshort = n.model ? shortModel(n.model) : "";
   mdl.textContent = trunc(mshort, 18);
   mdl.classList.toggle("guess", !!n.model && n.modelSrc !== "actual");
-  title.textContent = `${n.label}\n${n.sub}`;
+  g.setAttribute("data-tip", `${n.label}\n${n.sub}`);
   n.el = g;
 }
 
@@ -617,6 +653,7 @@ async function setNotify(on) {
 
 // ---------- timeline ----------
 function renderTimeline() {
+  if (TIP.dataset.owner === "timeline") TIP.hidden = true;  // the timeline is rebuilt from scratch
   const box = $("timeline"); box.textContent = "";
   const list = visible().slice(0, 8);
   if (!list.length) { box.innerHTML = `<div class="empty">Nothing on the timeline yet.</div>`; return; }
@@ -642,13 +679,13 @@ function renderTimeline() {
     root.append(svg("text", { x: l.session ? 0 : 12, y: y + Math.min(14, LH - 4), class: l.session ? "" : "muted", "font-size": LH < 18 ? 10.5 : 12 }, trunc(l.label, l.session ? 22 : 20)));
     if (!l.session) {
       const bar = svg("rect", { x: x(l.start), y: y + 1, width: Math.max(3, x(l.stop || t1) - x(l.start)), height: Math.max(3, LH - 7), rx: 2, class: `bar-sub ${l.stop ? "" : "running"}` });
-      bar.append(svg("title", {}, `${l.label}: ${hhmmss(l.start)} → ${l.stop ? hhmmss(l.stop) : "running"}`));
+      bar.setAttribute("data-tip", `${l.label}\n${hhmmss(l.start)} → ${l.stop ? hhmmss(l.stop) : "running"}`);
       root.append(bar);
     }
     for (const [ts, tool] of l.tools || []) {
       if (ts < t0) continue;
       const tick = svg("rect", { x: x(ts) - 1, y: y + 1, width: 2.5, height: Math.max(4, LH - 7), class: `tk-${TOOL_CLASS(tool)}` });
-      tick.append(svg("title", {}, `${hhmmss(ts)} ${tool}`));
+      tick.setAttribute("data-tip", `${tool}\n${hhmmss(ts)}`);
       root.append(tick);
     }
     for (const ts of l.waits || []) if (ts >= t0) root.append(svg("circle", { cx: x(ts), cy: y + (LH - 4) / 2, r: Math.min(4, LH / 3), class: "wait" }));
