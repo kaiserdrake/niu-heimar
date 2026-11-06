@@ -116,7 +116,8 @@ This requires MagicDNS and HTTPS certificates to be enabled in the Tailscale adm
 **Pairing and merging:** anyone on your tailnet can view the dashboard. Merge buttons work only in a *paired* browser:
 run `niu-dash pair` here (an interactive terminal is required), then enter the 6-digit code on that device. List or remove paired
 browsers with `niu-dash devices` and `niu-dash revoke ID|all`. A merge uses the same rule as the TUI (green only, re-checked live,
-squash merge that deletes the branch), and you confirm by typing `owner/repo#N`. Merges are logged in the event feed. The dotenv guard
+squash merge that deletes the branch). You confirm by typing the 4-digit code the dialog shows. The code is single-use,
+expires after 2 minutes, and allows 3 tries. Merges are logged in the event feed. The dotenv guard
 hook also blocks agents from reading the dashboard's device credentials or calling its merge and pair endpoints. That's a policy guard,
 not a hard security boundary against processes running as your own user.
 

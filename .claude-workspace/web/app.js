@@ -536,28 +536,38 @@ function showDetails(sel, refresh) {
 }
 
 // ---------- actions ----------
-function openMerge(ref) {
+async function openMerge(ref) {
   const [repo, num] = ref.split("#");
   const pr = PRS.repos.flatMap((r) => r.prs).find((p) => p.ref === ref);
   $("mergetitle").textContent = `${ref}: ${pr ? pr.title : ""}`;
-  $("mergeref").textContent = ref;
+  $("mergecode").textContent = "····";
   $("mergeconfirm").value = ""; $("mergemsg").textContent = ""; $("mergemsg").className = "msg";
-  $("mergego").disabled = false;
+  $("mergego").disabled = true;
   $("mergedlg").dataset.repo = repo; $("mergedlg").dataset.num = num;
   $("mergedlg").showModal();
+  // The host issues a single-use 4-digit code; typing it back confirms the merge.
+  const r = await POST("/api/prs/merge-code", { repo, number: Number(num) });
+  if (!r.ok) {
+    $("mergemsg").textContent = r.data.error || `Couldn't start the merge (${r.status})`; $("mergemsg").className = "msg err";
+    if (r.status === 401) loadMe();
+    return;
+  }
+  $("mergecode").textContent = r.data.code;
+  $("mergego").disabled = false;
   $("mergeconfirm").focus();
 }
 
 $("mergeform").addEventListener("submit", async (ev) => {
   if (ev.submitter && ev.submitter.value !== "merge") return;
   ev.preventDefault();
-  const dlg = $("mergedlg"), ref = `${dlg.dataset.repo}#${dlg.dataset.num}`, typed = $("mergeconfirm").value.trim();
-  if (typed !== ref) { $("mergemsg").textContent = `Type ${ref} exactly to confirm.`; $("mergemsg").className = "msg err"; return; }
+  const dlg = $("mergedlg"), typed = $("mergeconfirm").value.replace(/\D/g, "");
+  if (typed.length !== 4) { $("mergemsg").textContent = "Type the 4-digit code shown."; $("mergemsg").className = "msg err"; return; }
   $("mergego").disabled = true; $("mergemsg").textContent = "Merging (re-checking status)…"; $("mergemsg").className = "msg";
   const r = await POST("/api/prs/merge", { repo: dlg.dataset.repo, number: Number(dlg.dataset.num), confirm: typed });
   if (r.ok) { $("mergemsg").textContent = r.data.message || "Merged."; $("mergemsg").className = "msg ok"; setTimeout(() => dlg.close(), 1200); }
   else {
-    $("mergemsg").textContent = r.data.error || `Failed (${r.status})`; $("mergemsg").className = "msg err"; $("mergego").disabled = false;
+    $("mergemsg").textContent = r.data.error || `Failed (${r.status})`; $("mergemsg").className = "msg err";
+    if (r.status === 400 && /wrong code/.test(r.data.error || "")) { $("mergego").disabled = false; $("mergeconfirm").select(); }
     if (r.status === 401) loadMe();
   }
 });

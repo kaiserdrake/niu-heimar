@@ -99,8 +99,12 @@
   <form method="dialog" id="mergeform">
     <h2>Merge pull request</h2>
     <p id="mergetitle"></p>
-    <p class="small muted">Squash merge and delete the branch. The status is re-checked on the host first. Type <code id="mergeref"></code> to confirm.</p>
-    <input id="mergeconfirm" autocomplete="off" aria-label="Type the PR reference to confirm">
+    <p class="small muted">Squash merge and delete the branch. The status is re-checked on the host first.</p>
+    <div class="pinrow">
+      <div><div class="small muted">Code</div><div id="mergecode" class="pin" aria-live="polite">····</div></div>
+      <div><label class="small muted" for="mergeconfirm">Type it to confirm</label>
+        <input id="mergeconfirm" class="pin-in" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off"></div>
+    </div>
     <p id="mergemsg" class="msg"></p>
     <div class="row end">
       <button value="cancel" formnovalidate class="ghost">Cancel</button>

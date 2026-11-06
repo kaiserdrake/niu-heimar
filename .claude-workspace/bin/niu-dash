@@ -36,6 +36,9 @@ PAIR_TTL = 300
 PAIR_MAX_ATTEMPTS = 5
 PR_REFRESH_SECS = 60
 LOCK = threading.Lock()
+MERGE_CODE_TTL = 120          # seconds a merge confirmation code stays valid
+MERGE_CODE_ATTEMPTS = 3
+MERGE_CODES = {}              # (device id, owner/repo#N) -> {code, expires, attempts}; memory only
 
 
 # ---------- paired-device store (only hashes are kept) ----------
@@ -269,7 +272,7 @@ class Handler(BaseHTTPRequestHandler):
                     data["devices"] = [d for d in data["devices"] if d["id"] != device["id"]]
                     save_auth(data)
             return self._json({"ok": True}, extra={"Set-Cookie": f"{COOKIE}=; Max-Age=0; Path=/"})
-        if path == "/api/prs/merge":
+        if path in ("/api/prs/merge-code", "/api/prs/merge"):
             if not device:
                 return self._err(401, "pair this browser first: run `niu-dash pair` on the host")
             b = self._body()
@@ -277,8 +280,24 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(number, int) or "/" not in repo:
                 return self._err(400, "repo and number required")
             ref = f"{repo}#{number}"
-            if str(b.get("confirm", "")).strip() != ref:
-                return self._err(400, f"type {ref} to confirm")
+            key = (device["id"], ref)
+            if path == "/api/prs/merge-code":
+                code = f"{secrets.randbelow(10_000):04d}"
+                with LOCK:
+                    MERGE_CODES[key] = {"code": code, "expires": time.time() + MERGE_CODE_TTL, "attempts": 0}
+                return self._json({"code": code, "expires_in": MERGE_CODE_TTL})
+            with LOCK:
+                pending = MERGE_CODES.get(key)
+                if not pending or time.time() > pending["expires"]:
+                    MERGE_CODES.pop(key, None)
+                    return self._err(400, "confirmation code expired: open the merge dialog again")
+                pending["attempts"] += 1
+                if not hmac.compare_digest(pending["code"], str(b.get("confirm", "")).strip()):
+                    if pending["attempts"] >= MERGE_CODE_ATTEMPTS:
+                        MERGE_CODES.pop(key, None)
+                        return self._err(429, "too many wrong codes: open the merge dialog again")
+                    return self._err(400, "wrong code: type the 4 digits shown")
+                MERGE_CODES.pop(key, None)  # single use
             label = next((r["label"] for r in (PRS["cache"] or {}).get("repos", []) if r["repo"] == repo), "")
             try:
                 msg = niu_prs.merge(repo, number)
