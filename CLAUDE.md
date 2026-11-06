@@ -10,6 +10,8 @@ these rules but never relax them.
   A hook enforces this; do not try to work around it.
 - Work from `.env.example` / `.env.sample` / `.env.template` to learn which variables
   exist. When a real value is needed, ask the user to set it.
+- The same applies to anything listed in a project's `.claude/protected-paths` (passphrase files, personal
+  data, real ledgers and so on): don't read, list, copy or edit those paths, and don't try to work around the block.
 - Never commit secrets, tokens, or private hostnames. If you find one, stop and say so.
 
 ## 2. Two reviewers are mandatory
