@@ -214,6 +214,18 @@ try:
     st, _, js, _ = req("GET", "/api/state")
     check(any(e["event"] == "PRMerge" for e in js["feed"]), "merge logged in feed")
 
+    # Front-end smoke run: app.js renders sessions, graph and timeline from this state without a runtime error
+    import glob, shutil  # noqa: E401
+    node = shutil.which("node") or next(iter(sorted(glob.glob(os.path.expanduser("~/.nvm/versions/node/*/bin/node")))), None)
+    if node:
+        st_path = tmp / "state.json"
+        st_path.write_text(json.dumps(req("GET", "/api/state")[2]))
+        r = subprocess.run([node, str(SH / "tests" / "web_smoke.js"), str(SH / "web" / "app.js"), str(st_path)],
+                           capture_output=True, text=True, timeout=60)
+        check(r.returncode == 0 and "rendered" in r.stdout, f"app.js renders without errors: {r.stdout.strip()} {r.stderr.strip()[:300]}")
+    else:
+        print("web: node not found, front-end smoke run skipped")
+
     # Revoke + rate limit
     subprocess.run([str(SH / "bin" / "niu-dash"), "revoke", "all"], env=env, capture_output=True)
     check(req("POST", "/api/prs/merge", body, auth)[0] == 401, "revoked cookie -> 401")

@@ -423,7 +423,7 @@ function graphNode(n) {
   sub.textContent = trunc(n.sub, 32);
   bar.classList.toggle("anim", !!n.running && n.kind === "sub");
   let mdl = g.querySelector(".mdl");
-  if (!mdl) { mdl = svg("text", { class: "lbl mdl", x: NW - 10, y: 16, "text-anchor": "end" }); g.insertBefore(mdl, title); }
+  if (!mdl) { mdl = svg("text", { class: "lbl mdl", x: NW - 10, y: 16, "text-anchor": "end" }); g.append(mdl); }
   const mshort = n.model ? shortModel(n.model) : "";
   mdl.textContent = trunc(mshort, 18);
   mdl.classList.toggle("guess", !!n.model && n.modelSrc !== "actual");
