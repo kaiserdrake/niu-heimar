@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import sys
 import threading
@@ -24,7 +25,9 @@ from urllib.parse import parse_qs, urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import niu_prs  # noqa: E402
 from niu_events import connect, db_path, host_label  # noqa: E402
-from niu_state import live, mark_dirty, parse_since  # noqa: E402
+from niu_state import SYSTEM_SESSIONS, live, mark_dirty, parse_since  # noqa: E402
+
+RE_SID = re.compile(r"[A-Za-z0-9_-]{1,80}")
 from niu_actions import actions  # noqa: E402
 
 WEB = Path(__file__).resolve().parents[1] / "web"
@@ -286,6 +289,40 @@ class Handler(BaseHTTPRequestHandler):
                     data["devices"] = [d for d in data["devices"] if d["id"] != device["id"]]
                     save_auth(data)
             return self._json({"ok": True}, extra={"Set-Cookie": f"{COOKIE}=; Max-Age=0; Path=/"})
+        if path == "/api/sessions/dismiss":
+            # Mark a session the hooks never saw end (closed or archived desktop session) as ended, for every device.
+            if not device:
+                return self._err(401, "pair this browser first: run `niu-dash pair` on the host")
+            b = self._body()
+            sid = str(b.get("session", "")) if isinstance(b, dict) else ""
+            if not RE_SID.fullmatch(sid) or sid in SYSTEM_SESSIONS:
+                return self._err(400, "session id required")
+            try:
+                con = connect(readonly=True)
+                try:
+                    row = con.execute("SELECT event, summary, domain, project, project_dir FROM events WHERE session_id = ?"
+                                      " ORDER BY id DESC LIMIT 1", (sid,)).fetchone()
+                finally:
+                    con.close()
+            except Exception:
+                row = None
+            if not row:
+                return self._err(404, "unknown session")
+            if row["event"] == "SessionEnd" and (row["summary"] or "").startswith("dismissed"):
+                return self._json({"ok": True})  # already dismissed: don't add another row
+            try:
+                con = connect()
+                try:
+                    with con:
+                        con.execute("INSERT INTO events(ts,event,session_id,domain,project,project_dir,summary) VALUES(?,?,?,?,?,?,?)",
+                                    (time.time(), "SessionEnd", sid, row["domain"], row["project"], row["project_dir"],
+                                     f"dismissed: {device['name']}"[:120]))
+                finally:
+                    con.close()
+            except Exception:
+                return self._err(500, "could not record the dismissal")
+            mark_dirty()
+            return self._json({"ok": True})
         if path in ("/api/prs/merge-code", "/api/prs/merge"):
             if not device:
                 return self._err(401, "pair this browser first: run `niu-dash pair` on the host")

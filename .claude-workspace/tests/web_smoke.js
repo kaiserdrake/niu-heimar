@@ -39,7 +39,9 @@ ctx.window = ctx; ctx.self = ctx; ctx.globalThis = ctx;
 vm.createContext(ctx);
 const src = fs.readFileSync(process.argv[2], "utf8") + `
 ;STATE = ${fs.readFileSync(process.argv[3], "utf8")}; STATE.prs = undefined;
-renderGraph(); renderTimeline(); renderSessions && renderSessions();
+renderGraph(); renderTimeline(); renderSessions();
+ME = { paired: true }; ARMED.sid = "smoke-wait"; ARMED.until = Date.now() + 4000; renderSessions();
+if (!$("sessions").innerHTML.includes("Confirm dismiss") || !$("sessions").innerHTML.includes('data-dismiss="smoke-wait"')) throw new Error("dismiss buttons not rendered");
 "rendered";`;
 try { console.log(vm.runInContext(src, ctx, { filename: "app.js" })); }
 catch (e) { console.log("ERROR:", e.message, (e.stack || "").split("\n")[1]); process.exit(1); }

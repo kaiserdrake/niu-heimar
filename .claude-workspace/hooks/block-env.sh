@@ -51,8 +51,8 @@ if grep -Eq 'web-sessions\.json' <<<"$targets"; then
   echo "BLOCKED by workspace policy: dashboard device credentials are off-limits to agents." >&2
   exit 2
 fi
-if [[ "$tool" == "Bash" ]] && grep -Eq '/api/(prs/merge|pair|unpair)' <<<"$targets"; then
-  echo "BLOCKED by workspace policy: merging or pairing through the web dashboard is reserved for the user. Ask the user to merge." >&2
+if [[ "$tool" == "Bash" ]] && grep -Eq '/api/(prs/merge|pair|unpair|sessions/dismiss)' <<<"$targets"; then
+  echo "BLOCKED by workspace policy: merging, pairing or dismissing sessions through the web dashboard is reserved for the user. Ask the user." >&2
   exit 2
 fi
 
