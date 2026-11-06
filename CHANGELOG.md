@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.7.0...niu-heimar-v0.8.0) (2026-11-06)
+
+
+### Features
+
+* Claude usage API by default, themed graph tooltips, hide stale sessions ([#26](https://github.com/kaiserdrake/niu-heimar/issues/26)) ([ccbd06c](https://github.com/kaiserdrake/niu-heimar/commit/ccbd06c58490f7e3bb0f123023e0ffd240fdbeda))
+
 ## [0.7.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.6.0...niu-heimar-v0.7.0) (2026-11-06)
 
 
