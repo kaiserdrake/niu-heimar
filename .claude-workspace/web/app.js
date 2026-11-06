@@ -246,7 +246,7 @@ function graphLayout(list, cw, ch) {
     const startOf = (c) => c.localSession ? c.localSession.first : c.implStep ? c.implStep.start : c.start;
     if (kids[s.id]) kids[s.id].sort((a, b) => startOf(a) - startOf(b));
     // Steps of the session stair-step to the right in pipeline order: design, implement, local review, review.
-    const IND = 24, STAGE = { designer: 0, implement: 1, local: 2, "security-reviewer": 3, "test-reviewer": 3 };
+    const IND = 24, STAGE = { designer: 0, implement: 1, implementer: 1, local: 2, "security-reviewer": 3, "test-reviewer": 3 };
     const place = (id, depth, info) => {
       const node = { id, col: depth, x: PAD + depth * (NW + XG) + (info.stage || 0) * IND, y, ...info };
       nodes.push(node);
@@ -273,7 +273,7 @@ function graphLayout(list, cw, ch) {
         }
         const child = place(c.id, depth + 1, {
           kind: "sub", sid: s.id, aid: c.id, label: c.type, source: c.source, running: !c.stop, done: !!c.stop,
-          stage: id === s.id ? (STAGE[c.type] ?? 0) : 0,
+          stage: id === s.id ? (STAGE[c.type] ?? 0) : 0, model: c.model, modelSrc: c.model_src,
           sub: (rounds.get(c.id) ? `round ${rounds.get(c.id)} · ` : "") + (c.stop ? `done in ${dur(c.stop - c.start)}` : c.current ? `${c.current[0]}: ${c.current[1]}` : `running ${dur(STATE.now - c.start)}`),
         });
         edges.push({ id: `${id}>${c.id}`, a: node, b: child, label: c.task, active: !c.stop, kind: "spawn" });
@@ -384,6 +384,11 @@ function graphNode(n) {
   name.textContent = trunc(n.label, 26);
   sub.textContent = trunc(n.sub, 32);
   bar.classList.toggle("anim", !!n.running && n.kind === "sub");
+  let mdl = g.querySelector(".mdl");
+  if (!mdl) { mdl = svg("text", { class: "lbl mdl", x: NW - 10, y: 16, "text-anchor": "end" }); g.insertBefore(mdl, title); }
+  const mshort = n.model ? shortModel(n.model) : "";
+  mdl.textContent = trunc(mshort, 18);
+  mdl.classList.toggle("guess", !!n.model && n.modelSrc !== "actual");
   title.textContent = `${n.label}\n${n.sub}`;
   n.el = g;
 }
@@ -579,6 +584,7 @@ function renderActions() {
 
 function jumpTo(a) {
   if (!a) return;
+  if (a.target.pr && VIEW !== "events") setView("events");  // the PR panel lives on the Events tab
   const sel = a.target.session ? `.sess[data-sid="${CSS.escape(a.target.session)}"]` : `.pr[data-ref="${CSS.escape(a.target.pr)}"]`;
   const el = document.querySelector(sel);
   if (el) {

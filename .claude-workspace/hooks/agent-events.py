@@ -12,6 +12,38 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 
+import re  # noqa: E402
+
+RE_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,59}")
+TAIL_BYTES = 256 * 1024
+
+
+def model_from_transcript(path):
+    """Model of the last assistant message in a Claude Code transcript (JSONL under ~/.claude), or None."""
+    if not isinstance(path, str) or not path.endswith(".jsonl"):
+        return None
+    try:
+        p = Path(path).resolve()
+        root = (Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")).resolve()
+        if root not in p.parents or not p.is_file():  # no FIFOs / devices: never block the hook
+            return None
+        with open(p, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - TAIL_BYTES))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        if '"model"' not in line:
+            continue
+        try:
+            m = (json.loads(line).get("message") or {}).get("model")
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(m, str) and RE_MODEL.fullmatch(m) and m != "<synthetic>":
+            return m
+    return None
+
 
 def summarize(tool, ti, project_dir):
     from niu_events import redact
@@ -38,7 +70,9 @@ def summarize(tool, ti, project_dir):
     elif tool == "Glob":
         s = ti.get("pattern", "")
     elif tool in ("Agent", "Task"):
-        s = f"{ti.get('subagent_type', '')}: {ti.get('description', '')}".strip(": ")
+        m = ti.get("model")
+        want = f"@{m}" if isinstance(m, str) and RE_MODEL.fullmatch(m) else ""  # per-spawn model override
+        s = f"{ti.get('subagent_type', '')}{want}: {ti.get('description', '')}".strip(": ")
     elif tool == "WebFetch":
         s = (ti.get("url") or "").split("?")[0]
     elif tool == "Skill":
@@ -89,6 +123,10 @@ def main():
         summary = json.dumps(info, separators=(",", ":")) if info else ""
     elif event == "SessionEnd":
         summary = str(data.get("reason") or "")
+    elif event in ("Stop", "SubagentStop"):
+        # Model actually used (last assistant message): the session's current model, or the subagent's.
+        m = model_from_transcript(data.get("agent_transcript_path") if event == "SubagentStop" else data.get("transcript_path"))
+        summary = json.dumps({"model": m}, separators=(",", ":")) if m else ""
 
     con = connect()
     with con:

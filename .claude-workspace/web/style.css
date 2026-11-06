@@ -7,6 +7,7 @@
   --spawn: #7b55e0; --result: #23863a; --msg: #e0569a;
   --grid-dot: rgba(0,0,0,.07);
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color-scheme: light dark;  /* native controls and scrollbars follow the theme */
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -91,6 +92,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .flagmsg { color: var(--bad); font-size: 12px; margin-top: 6px; }
 
 /* interaction graph */
+.gnode .mdl { font-size: 10px; fill: var(--muted); font-family: var(--mono); }
+.gnode .mdl.guess { font-style: italic; opacity: .8; }
 .graph { overflow: auto; border-radius: 10px; background-color: var(--bg2);
   background-image: radial-gradient(var(--grid-dot) 1px, transparent 1px); background-size: 18px 18px; min-height: 120px; }
 .graph svg { display: block; }
@@ -273,8 +276,8 @@ button.linkish { border: 0; padding: 0; color: var(--accent); background: none; 
 .calm .stg.active { animation: none; }
 
 /* =====================================================================
-   One-screen layout (≥ 900×600): left column (sessions, needs you, PRs, LLMs) | graph over timeline
-   Events tab: the feed takes the main area. Panels scroll on their own.
+   One-screen layout (≥ 900×600): left column (sessions, needs you, LLMs) | graph over timeline
+   Events tab: pull requests over the feed in the main area. Panels scroll on their own.
    ===================================================================== */
 @media (prefers-color-scheme: dark) {
   :root {
@@ -311,17 +314,18 @@ body.ctrl .wspill { display: inline-block; }
   grid-template-columns: minmax(250px, 24%) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr) minmax(140px, 30%);
   grid-template-areas: "left graph" "left time"; }
-.p-sessions { grid-area: sess; } .p-graph { grid-area: graph; } .p-timeline { grid-area: time; } .p-feed { grid-area: feed; }
-.mcgrid .panel.p-feed { display: none; }
-.mcgrid[data-view="events"] { grid-template-areas: "left feed" "left feed"; }
+.p-sessions { grid-area: sess; } .p-graph { grid-area: graph; } .p-timeline { grid-area: time; } .p-feed { grid-area: feed; } .p-prs { grid-area: prs; }
+.mcgrid .panel.p-feed, .mcgrid .panel.p-prs { display: none; }
+/* Events tab: pull requests over the feed */
+.mcgrid[data-view="events"] { grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "left prs" "left feed"; }
 .mcgrid[data-view="events"] .panel.p-graph, .mcgrid[data-view="events"] .panel.p-timeline { display: none; }
 .mcgrid[data-view="events"] .panel.p-feed { display: flex; }
+.mcgrid[data-view="events"] .panel.p-prs { display: flex; max-height: 42vh; }
 
 /* left column: sessions take what the status panels don't need; empty panels shrink to their header */
 .leftcol { grid-area: left; display: flex; flex-direction: column; gap: 10px; min-height: 0; min-width: 0; }
-.leftcol .p-sessions { flex: 1 1 45%; min-height: 160px; }
+.leftcol .p-sessions { flex: 1 1 60%; min-height: 200px; }
 .leftcol .p-needs { flex: 0 1 auto; max-height: 28%; }
-.leftcol .p-prs { flex: 0 1 auto; max-height: 22%; }
 .leftcol .p-llm { flex: 0 0 auto; }
 .leftcol .panel .pb:has(> .none:only-child), .leftcol .panel .pb:has(> .empty:only-child) { padding: 6px 10px; }
 .leftcol .panel.flash { animation: hl 1.4s ease-out; }
@@ -340,7 +344,13 @@ body.ctrl .wspill { display: inline-block; }
 .ph .legend { margin-left: auto; gap: 8px; font-size: 11px; flex-wrap: nowrap; overflow: hidden; min-width: 0; }
 .ph > .small { margin-left: auto; font-size: 11px; }
 .ph .tiny { margin-left: auto; padding: 1px 8px; font-size: 11.5px; }
-.pb { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 10px; scrollbar-width: thin; }
+.pb { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 10px; scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted) 45%, transparent) transparent; }
+.pb::-webkit-scrollbar { width: 8px; height: 8px; }
+.pb::-webkit-scrollbar-track { background: transparent; }
+.pb::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--muted) 45%, transparent); border-radius: 999px; border: 2px solid var(--card); }
+.pb::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+.pb::-webkit-scrollbar-corner { background: transparent; }
 .p-llm .pb { padding: 6px 10px; }
 
 .mc .sessions { display: flex; flex-direction: column; gap: 6px; }
