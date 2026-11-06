@@ -192,11 +192,31 @@ function renderSessions() {
           `<span class="stg ${esc(p.status)}" title="${esc(`${p.stage}: ${p.status}${p.at ? ` · ${hhmmss(p.at)}` : ""}`)}">${p.status === "done" ? "✓" : p.status === "active" ? "●" : p.status === "skipped" ? "–" : "○"} ${esc(p.stage)}</span>`).join('<span class="stg-sep">›</span>')}</div>` : ""}
         <div class="cur" title="${esc(cur)}">${esc(cur) || "&nbsp;"}</div>
         <div class="chips">${chips}</div>
-        ${s.flagged ? `<div class="flagmsg">⚠ edited files without both reviewers</div>` : ""}</div>`;
+        ${s.flagged ? `<div class="flagmsg">⚠ edited files without both reviewers</div>` : ""}
+        ${canDismiss(s) ? `<div class="sessacts"><span class="small muted">quiet ${dur(STATE.now - s.last)} · closed or archived?</span>
+          <button class="ghost tiny" data-dismiss="${esc(s.id)}" ${ME.paired ? "" : `disabled title="Pair this browser (menu) to dismiss"`}>${ARMED.sid === s.id && Date.now() < ARMED.until ? "Confirm dismiss" : "Dismiss"}</button></div>` : ""}</div>`;
     }
   }
   $("sessions").innerHTML = html;
   for (const el of $("sessions").querySelectorAll(".sess")) el.onclick = () => showDetails({ sid: el.dataset.sid });
+  for (const b of $("sessions").querySelectorAll("[data-dismiss]")) b.onclick = (e) => { e.stopPropagation(); dismissSession(b); };
+}
+
+// Dismiss: a session the hooks never saw end (closed or archived in the desktop app). Two clicks, paired browsers only.
+const ARMED = { sid: null, until: 0 };
+const canDismiss = (s) => !s.ended && (s.state === "stale" || (s.state === "waiting" && STATE.now - s.last > 1800));
+async function dismissSession(btn) {
+  const sid = btn.dataset.dismiss;
+  if (ARMED.sid !== sid || Date.now() > ARMED.until) {
+    Object.assign(ARMED, { sid, until: Date.now() + 4000 });
+    btn.textContent = "Confirm dismiss";
+    setTimeout(() => { if (btn.isConnected && ARMED.sid === sid && Date.now() >= ARMED.until) btn.textContent = "Dismiss"; }, 4100);
+    return;
+  }
+  ARMED.sid = null;
+  btn.disabled = true;
+  const r = await POST("/api/sessions/dismiss", { session: sid });
+  btn.textContent = r.ok ? "Dismissed" : (r.data.error || "Failed");
 }
 
 // ---------- themed hover tooltip (graph + timeline; native SVG <title> tooltips can't be styled) ----------
