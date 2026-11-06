@@ -60,6 +60,14 @@ CLAUDE.md                     common rules (inherited by every project)
   `env.ANTHROPIC_DEFAULT_OPUS_MODEL` / `env.ANTHROPIC_DEFAULT_SONNET_MODEL`, then run `install`.
 - **Add a domain agent**: put `<DOMAIN>/.claude/agents/<name>.md` (with frontmatter `name`, `description`,
   `model`) in place, then run `install`.
+- **Protect a project's own secrets or personal data**: list them in `<project>/.claude/protected-paths`, one path or
+  glob per line, relative to the project root. A directory protects everything inside it. The guard hook then blocks
+  agents from reading or editing them, and from naming them in Bash commands, just like `.env`. Example:
+  ```
+  .vault.pass
+  config/*.secret.json
+  data/personal/
+  ```
 - **Add a domain**: create `<NAME>/CLAUDE.md` and `<NAME>/.claude/settings.domain.template.json`, then run `install`.
 
 ## Maintenance

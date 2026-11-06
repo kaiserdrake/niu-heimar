@@ -56,5 +56,30 @@ a Bash "/tmp/other" '{"command":"cat .env"}'
 b Read "/tmp/other" "{\"file_path\":\"$P/.env\"}"
 b Bash "/tmp/other" "{\"command\":\"cat $P/.env\"}"
 
+# ---------- per-project .claude/protected-paths ----------
+Q="$WS/PERSONAL/.niu-test-protected/svc"
+mkdir -p "$Q/.claude" "$Q/var/worker/private" "$Q/src"
+printf '# test\n.vault.pass\n.app_cfg.ini\nvar/worker/private/\n*.secret.json\n' >"$Q/.claude/protected-paths"
+trap 'rm -rf "$WS/PERSONAL/.niu-test-protected"' EXIT
+b Read "$Q" "{\"file_path\":\"$Q/.vault.pass\"}"
+b Read "$Q" '{"file_path":".app_cfg.ini"}'
+b Edit "$Q" "{\"file_path\":\"$Q/.app_cfg.ini\"}"
+b Read "$Q" "{\"file_path\":\"$Q/var/worker/private/2026-10/report.csv\"}"
+b Read "$Q/src" '{"file_path":"../var/worker/private/people.csv"}'
+b Read "$Q" "{\"file_path\":\"$Q/config/prod.secret.json\"}"
+b Grep "$Q" '{"pattern":"total","path":"var/worker/private"}'
+b Bash "$Q" '{"command":"cat .vault.pass"}'
+b Bash "$Q" '{"command":"gpg --passphrase-file ./.vault.pass -d backup.gpg"}'
+b Bash "$Q" '{"command":"ls var/worker/private/"}'
+b Bash "$Q" '{"command":"head -5 worker/private/people.csv"}'
+b Bash "/tmp" "{\"command\":\"cat $Q/.app_cfg.ini\"}"
+b Read "/tmp" "{\"file_path\":\"$Q/.vault.pass\"}"
+a Read "$Q" "{\"file_path\":\"$Q/src/app.py\"}"
+a Read "$Q" "{\"file_path\":\"$Q/.claude/protected-paths\"}"
+a Bash "$Q" '{"command":"docker compose ps"}'
+a Bash "$Q" '{"command":"ls src data"}'
+a Bash "$Q" '{"command":"grep -r total src/"}'
+a Read "$P" "{\"file_path\":\"$P/.vault.pass\"}"   # other projects: not protected unless listed
+
 echo "block-env: $pass passed, $fail failed"
 ((fail == 0))
