@@ -1,0 +1,30 @@
+{
+  "_comment": "niu-notify routing. Copy to discord.json (gitignored; bin/install --notify does it). Webhook URLs never go here: routes name environment variables, which you set in the workspace secrets file (names in .env.example).",
+  "poll_secs": 30,
+  "routes": {
+    "needs-you": "DISCORD_WEBHOOK_NEEDS_YOU",
+    "activity": "DISCORD_WEBHOOK_ACTIVITY",
+    "ci": "DISCORD_WEBHOOK_CI",
+    "llm": "DISCORD_WEBHOOK_LLM",
+    "limits": "DISCORD_WEBHOOK_LIMITS",
+    "alerts": "DISCORD_WEBHOOK_ALERTS"
+  },
+  "silent_routes": ["activity", "ci", "llm"],
+  "domains": {"PERSONAL": "full", "HOBBY": "full", "(workspace)": "full", "WORK": "full"},
+  "_endpoints": "Keys are the endpoint names from ollama.json. notify: on | silent | off. Set an endpoint that is not always on to silent (with a larger down_after_polls) or off. display overrides the label shown in Discord.",
+  "endpoints": {
+    "remote": {"notify": "on"},
+    "local": {"notify": "on"}
+  },
+  "wait_delay_secs": 60,
+  "wait_cooldown_secs": 120,
+  "done_min_secs": 600,
+  "down_after_polls": 2,
+  "limit_thresholds": [80, 95],
+  "pr_refresh_secs": 300,
+  "cooldown_secs": 900,
+  "max_per_hour": 30,
+  "dash_check": "auto",
+  "dash_port": 8765,
+  "quiet_hours": null
+}

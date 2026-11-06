@@ -14,18 +14,32 @@ these rules but never relax them.
   data, real ledgers and so on): don't read, list, copy or edit those paths, and don't try to work around the block.
 - Never commit secrets, tokens, or private hostnames. If you find one, stop and say so.
 
-## 2. Two reviewers are mandatory
-A task that changes code is **not done** until both reviewers have run on the change:
+## 2. Two reviewers are mandatory before a PR (reviews run per PR, not per edit)
+No pull request / merge request is opened, and no branch is pushed for review, until both reviewers
+have run on the **whole PR diff** (branch vs. its base, plus anything uncommitted):
 1. `security-reviewer`: security-focused review.
 2. `test-reviewer`: static analysis plus running the tests (dynamic).
 
-Run them **in parallel** with the `dual-review` skill (`/dual-review`).
-Fix every blocking finding, or get the user's explicit waiver and record it in your
-final message. Domains may add more reviewers but never remove these two.
+- **While developing**, work in batches: several features or fixes can go on one branch and into one PR.
+  After each change, run the tests for what you touched (and `local_diff_review` if you want a cheap first look),
+  but do **not** run `security-reviewer` / `test-reviewer` per edit. Report such work as *done, not yet reviewed*.
+- **At PR time**, run them once, in parallel, with the `dual-review` skill (`/dual-review`); `/workspace-sync`
+  does this for the workspace repo. Fix every blocking finding and re-run only the reviewer(s) that blocked,
+  or get the user's explicit waiver and record it in the PR description.
+- A direct commit to a protected branch never skips this: it doesn't happen (see §6 and the domain rules).
+- Domains may add more reviewers but never remove these two.
 
-## 3. Models
-Sessions use `opusplan`: the top Opus model in plan mode and Sonnet for execution.
-For non-trivial work, plan first (plan mode).
+## 3. Models: Opus orchestrates, cheaper agents do the work
+Settings use `opusplan` (Opus in plan mode, Sonnet for execution). A model picked in the Claude desktop app's model
+selector overrides that for the session, so pick Sonnet (or `opusplan`) there for routine work.
+For non-trivial work, plan first (plan mode). Whatever the main session runs on, keep its own work to
+planning, deciding, integrating and talking to the user, and hand the bulk work to cheaper agents:
+- **Building:** give each well-scoped piece of an approved plan to the `implementer` agent (Sonnet). Run several in
+  parallel when their files don't overlap. Do small edits (a few lines in one or two files) yourself.
+- **Searching and reading widely:** the built-in `Explore` agent or the `niu-local` tools (`local_search`, `local_ask`),
+  not reading many files in the main session.
+- **Opus agents** only where judgment pays: `designer` (design docs). Both reviewers run on Sonnet; `/dual-review`
+  switches `security-reviewer` to Opus for risky PRs (hooks/guard, secrets, auth, CI/deploy, very large diffs).
 
 ## 4. Memory and learning are per domain
 - Auto-memory for every project in a domain is shared under `<DOMAIN>/.claude/memory/`.
@@ -40,7 +54,7 @@ tell the user to run `claude-init` in it and restart the session.
 
 ## 5b. Design first, and local agents for cheap work
 - For any non-trivial feature or change, use `/develop <task>`. The `designer` agent (Opus) writes a design under
-  `docs/design/`, the user approves it, you implement, then a local diff review runs, then the two mandatory reviewers.
+  `docs/design/`, the user approves it, you implement and run the tests. The two mandatory reviewers run later, once per PR (§2).
 - For broad codebase lookups ("where/how is X done", "what uses Y"), prefer the `niu-local` MCP tools
   (`local_search`, `local_diff_review`, `local_ask`). They run read-only agents on the user's Ollama machines (GPU box
   first, local CPU as fallback) and save Claude tokens. Treat their answers as leads, and confirm with Read before you rely on them.

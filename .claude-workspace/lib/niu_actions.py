@@ -21,10 +21,8 @@ def actions(state, prs, host=None):
             what = "needs your permission" if "permission" in note else "is waiting for your reply" if "idle" in note else "is waiting for you"
             out.append({"id": f"wait:{s['id']}", "kind": "waiting", "priority": HIGH,
                         "title": f"Session {what}", "detail": where, "target": {"session": s["id"]}})
-        if s.get("flagged"):
-            out.append({"id": f"review:{s['id']}", "kind": "review", "priority": MEDIUM,
-                        "title": "Edited files without both reviewers",
-                        "detail": f"{where}: run /dual-review", "target": {"session": s["id"]}})
+        # Unreviewed edits are not a "needs you" item: the mandatory reviewers run once per PR (CLAUDE.md §2).
+        # Session cards still show the passive "not yet reviewed" marker (niu_state 'flagged').
     for r in prs.get("repos", []):
         for p in r.get("prs", []):
             if p.get("draft"):

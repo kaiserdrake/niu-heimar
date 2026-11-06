@@ -135,6 +135,36 @@ def agent_source(project_dir: str, agent_type: str) -> str:
     return "builtin"
 
 
+_MODEL_CACHE = {}
+
+
+def agent_model(project_dir: str, agent_type: str):
+    """The `model:` frontmatter of an agent definition (project, then user agents), or None."""
+    if not agent_type or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", agent_type):
+        return None
+    for d in ([Path(project_dir) / ".claude" / "agents"] if project_dir else []) + [Path.home() / ".claude" / "agents"]:
+        f = d / f"{agent_type}.md"
+        try:
+            mt = f.stat().st_mtime
+        except OSError:
+            continue
+        hit = _MODEL_CACHE.get(str(f))
+        if hit and hit[0] == mt:
+            return hit[1]
+        model = None
+        try:
+            head = f.read_text(errors="replace")[:4000]
+        except OSError:
+            head = ""
+        if head.startswith("---"):
+            fm = head.split("\n---", 1)[0]
+            m = re.search(r"(?m)^model:\s*[\"']?([A-Za-z0-9._:\[\]-]{1,60})", fm)
+            model = m.group(1) if m else None
+        _MODEL_CACHE[str(f)] = (mt, model)
+        return model
+    return None
+
+
 def project_agents(project_dir: str):
     d = Path(project_dir) / ".claude" / "agents" if project_dir else None
     if not d or not d.is_dir():

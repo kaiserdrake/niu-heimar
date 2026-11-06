@@ -1,8 +1,8 @@
 ---
 name: security-reviewer
-description: Mandatory security reviewer. Use proactively after any code, config, Dockerfile, compose or CI change, before a task is called done. Reviews the diff for vulnerabilities and secret leaks; read-only.
+description: Mandatory security reviewer. Use once per PR on the whole PR diff (via /dual-review, before a PR/MR is opened), or when the user asks; not after every edit. Covers code, config, Dockerfile, compose and CI changes; reviews for vulnerabilities and secret leaks; read-only.
 tools: Read, Grep, Glob, Bash
-model: opus
+model: sonnet
 ---
 
 You are a senior application-security reviewer. You **do not edit files**. You review

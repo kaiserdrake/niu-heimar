@@ -1,17 +1,18 @@
 """Shared session/subagent model built from the event store (used by agents-dash and niu-dash)."""
 import json
+import re
 import threading
 import time
 from datetime import datetime
 
-from niu_events import EDIT_TOOLS, MANDATORY, agent_source, connect, project_agents
+from niu_events import EDIT_TOOLS, MANDATORY, agent_model, agent_source, connect, project_agents
 
 MAX_TICKS = 400
 
 
 def new_sub(e):
     return {"type": e["agent_type"] or "subagent", "start": e["ts"], "stop": None, "current": None,
-            "tools": [], "task": "", "parent": None}
+            "tools": [], "task": "", "parent": None, "model": None, "model_req": None, "model_ctx": None}
 
 
 STALE_SECS = 30 * 60
@@ -125,7 +126,9 @@ def build(events, now):
                 ticks.append((e["ts"], e["tool"]))
             if e["tool"] in ("Agent", "Task"):
                 stype, _, desc = (e["summary"] or "").partition(": ")
-                s["pending_spawns"].setdefault(stype or "general-purpose", []).append((desc, aid))
+                stype, _, want = stype.rpartition("@") if "@" in stype else (stype, "", "")
+                want = want if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,59}", want or "") else None
+                s["pending_spawns"].setdefault(stype or "general-purpose", []).append((desc, aid, want or None))
             elif e["tool"] == "SendMessage":
                 s["messages"].append({"ts": e["ts"], "from": aid or sid, "to": (e["summary"] or "").removeprefix("to: ")})
             target["current"] = (e["tool"], e["summary"], e["ts"], e["tool_use_id"])
@@ -144,18 +147,21 @@ def build(events, now):
             sub = s["subagents"][aid] = new_sub(e)
             queue = s["pending_spawns"].get(sub["type"]) or s["pending_spawns"].get("general-purpose") or []
             if queue:
-                sub["task"], sub["parent"] = queue.pop(0)
+                sub["task"], sub["parent"], sub["model_req"] = queue.pop(0)
+            sub["model_ctx"] = s.get("model")  # what an agent that inherits the model runs on
             set_state("working")
         elif ev == "SubagentStop" and aid:
             sub = sub or s["subagents"].setdefault(aid, new_sub(e))
             sub["stop"], sub["current"] = e["ts"], None
             s["ran"].add(sub["type"])
+            sub["model"] = _session_info(e["summary"]).get("model") or sub.get("model")
         elif ev == "Notification":
             set_state("waiting")
             s["waits"].append(e["ts"])
             s["note"] = e["summary"]
         elif ev == "Stop":
             set_state("idle")
+            s["model"] = _session_info(e["summary"]).get("model") or s.get("model")
             s["current"] = None
             for sb in s["subagents"].values():
                 if sb["stop"] is None:
@@ -265,7 +271,8 @@ def develop_stages(s, ch):
     else:
         d_end = max(st["end"] for st in designers)
         add("design", "done", d_end)
-    impl = [st for st in after(d_end or t0) if st["kind"] == "implement"] if d_end else []
+    is_impl = lambda st: st["kind"] == "implement" or st["name"] == "implementer"  # noqa: E731 - own edits or Sonnet workers
+    impl = [st for st in after(d_end or t0) if is_impl(st)] if d_end else []
     asked = [ts for ts, t in s.get("tools", []) if t == "AskUserQuestion" and d_end and ts >= d_end]
     if not d_end:
         add("approve", "pending")
@@ -274,26 +281,43 @@ def develop_stages(s, ch):
     else:
         add("approve", "active", asked[0] if asked else d_end)
     i_start = impl[0]["start"] if impl else None
-    later = [st for st in after(i_start) if st["kind"] != "implement"] if i_start else []
+    later = [st for st in after(i_start) if not is_impl(st)] if i_start else []
     if not impl:
         add("implement", "pending")
     else:
-        add("implement", "done" if later or any(st["end"] for st in impl) and s["state"] != "working" else "active", i_start)
+        running = any(st["end"] is None for st in impl if st["name"] == "implementer")
+        add("implement", "done" if later or (not running and any(st["end"] for st in impl) and s["state"] != "working") else "active", i_start)
     localrev = [st for st in later if st["kind"] == "local" and st["name"] == "diff"]
     revs = [st for st in later if st["name"] in REVIEWERS]
     if localrev:
         add("local review", "active" if any(st["end"] is None for st in localrev) else "done", localrev[0]["start"])
     else:
         add("local review", "skipped" if revs else "pending")
+    idle = s["state"] in ("idle", "ended")
     if not revs:
-        add("review", "pending")
+        # reviewers run once per PR (CLAUDE.md §2): a finished build without them is not "pending"
+        built = next(st["status"] for st in stages if st["stage"] == "implement") == "done"
+        add("review", "skipped" if built and idle else "pending")
     elif any(st["end"] is None for st in revs) or not all(any(r["name"] == n for r in revs) for n in REVIEWERS):
         add("review", "active", revs[0]["start"])
     else:
         add("review", "done", max(st["end"] for st in revs))
-    review_done = stages[-1]["status"] == "done"
-    add("report", "done" if review_done and s["state"] in ("idle", "ended") else "active" if review_done else "pending")
+    review_done = stages[-1]["status"] in ("done", "skipped")
+    add("report", "done" if review_done and idle else "active" if review_done else "pending")
     return stages
+
+
+def agent_model_for(s, sb):
+    """{model, model_src}: actual (from its transcript) > spawn override > agent definition > inherited."""
+    if sb.get("model"):
+        return {"model": sb["model"], "model_src": "actual"}
+    if sb.get("model_req"):
+        return {"model": sb["model_req"], "model_src": "requested"}
+    m = agent_model(s["project_dir"], sb["type"])
+    if m and m != "inherit":
+        return {"model": m, "model_src": "definition"}
+    m = sb.get("model_ctx") or s.get("model")
+    return {"model": m, "model_src": "inherited"} if m else {"model": None, "model_src": None}
 
 
 def to_json(sessions, events, now, domain=None, show_ended=True, feed_n=60):
@@ -316,6 +340,7 @@ def to_json(sessions, events, now, domain=None, show_ended=True, feed_n=60):
                 "parent": sb.get("parent") or s["id"],
                 "current": list(sb["current"][:3]) if sb["current"] else None,
                 "tools": sb.get("tools", []),
+                **agent_model_for(s, sb),
             })
         ran_or_running = s["ran"] | {sb["type"] for sb in s["subagents"].values()}
         pending = [] if s["ended"] else [

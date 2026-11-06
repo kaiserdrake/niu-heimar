@@ -70,10 +70,6 @@
       <div class="ph"><h2>Needs you</h2><span id="needscount" class="needs" hidden></span></div>
       <div id="needslist" class="pb"></div>
     </section>
-    <section class="panel p-prs" aria-label="Pull requests">
-      <div class="ph"><h2>Pull requests</h2><span id="prneeds" class="needs" hidden></span><button id="prrefresh" class="ghost tiny">Refresh</button></div>
-      <div id="prs" class="pb"></div>
-    </section>
     <section class="panel p-llm" aria-label="LLMs">
       <div class="ph"><h2>LLMs</h2></div>
       <div id="llmcard" class="pb"><div class="empty">Checking…</div></div>
@@ -93,6 +89,11 @@
   <section class="panel p-timeline" aria-label="Timeline">
     <div class="ph"><h2>Timeline</h2><span class="small muted">one lane per agent · ticks are tool calls</span></div>
     <div id="timeline" class="pb timeline"></div>
+  </section>
+
+  <section class="panel p-prs" aria-label="Pull requests">
+    <div class="ph"><h2>Pull requests</h2><span id="prneeds" class="needs" hidden></span><button id="prrefresh" class="ghost tiny">Refresh</button></div>
+    <div id="prs" class="pb"></div>
   </section>
 
   <section class="panel p-feed" aria-label="Event feed">

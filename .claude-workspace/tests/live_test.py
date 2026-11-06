@@ -177,6 +177,61 @@ check(dev["chain"]["review_rounds"] == 1 and {st["id"]: st.get("round") for st i
 plain = [E(0, "SessionStart", "p"), E(1, "PreToolUse", "p", tool="Edit")]
 check(to_json(build(plain, T + 2), plain, T + 2)["sessions"][0]["pipeline"] is None, "no /develop -> no progress strip")
 
+# Model per agent: actual (SubagentStop transcript) > spawn override > agent definition > inherited
+import importlib.util, json as _json  # noqa: E401,E402
+pdir = Path(tmp) / "proj"
+(pdir / ".claude" / "agents").mkdir(parents=True)
+(pdir / ".claude" / "agents" / "designer.md").write_text("---\nname: designer\ndescription: d\nmodel: opus\n---\nbody\n")
+(pdir / ".claude" / "agents" / "helper.md").write_text("---\nname: helper\ndescription: d\nmodel: inherit\n---\n")
+M = lambda ts, ev, **kw: {**E(ts, ev, "m", **kw), "project_dir": str(pdir)}  # noqa: E731
+mrun = [M(0, "SessionStart", s='{"model":"claude-opus-5-5"}'), M(1, "UserPromptSubmit"),
+        M(2, "PreToolUse", tool="Agent", s="designer: plan it"), M(3, "SubagentStart", aid="d1", at="designer"),
+        M(4, "PreToolUse", tool="Agent", s="helper@haiku: quick look"), M(5, "SubagentStart", aid="h1", at="helper"),
+        M(6, "PreToolUse", tool="Agent", s="helper: inherit"), M(7, "SubagentStart", aid="h2", at="helper"),
+        M(8, "SubagentStop", aid="d1", at="designer", s='{"model":"claude-opus-5-5"}'),
+        M(9, "Stop", s='{"model":"claude-sonnet-5-5"}')]
+ms = to_json(build(mrun, T + 10), mrun, T + 10)["sessions"][0]
+mm = {x["id"]: (x["model"], x["model_src"]) for x in ms["subagents"]}
+check(mm["d1"] == ("claude-opus-5-5", "actual"), f"actual model from transcript: {mm}")
+check(mm["h1"] == ("haiku", "requested"), f"spawn override: {mm}")
+check(mm["h2"] == ("claude-opus-5-5", "inherited"), f"inherit -> session model at spawn time: {mm}")
+check(ms["model"] == "claude-sonnet-5-5", f"session model follows the latest turn: {ms['model']}")
+check({x["id"]: x["task"] for x in ms["subagents"]}["h1"] == "quick look", "task text without the @model part")
+mrun2 = [M(0, "SessionStart"), M(2, "PreToolUse", tool="Agent", s="designer: plan"), M(3, "SubagentStart", aid="d9", at="designer")]
+check(to_json(build(mrun2, T + 4), mrun2, T + 4)["sessions"][0]["subagents"][0]["model_src"] == "definition", "agent definition model")
+
+# Hook: model of the last assistant message, only from transcripts under the Claude config dir
+spec = importlib.util.spec_from_file_location("agent_events", Path(__file__).resolve().parents[1] / "hooks" / "agent-events.py")
+ae = importlib.util.module_from_spec(spec); spec.loader.exec_module(ae)
+cdir = Path(tmp) / "claudecfg" / "projects" / "x"
+cdir.mkdir(parents=True)
+os.environ["CLAUDE_CONFIG_DIR"] = str(Path(tmp) / "claudecfg")
+tr = cdir / "t.jsonl"
+tr.write_text("\n".join(_json.dumps(o) for o in (
+    {"type": "assistant", "message": {"model": "claude-opus-5-5"}}, {"type": "user", "message": {"content": "hi"}},
+    {"type": "assistant", "message": {"model": "claude-sonnet-5-5"}}, {"type": "assistant", "message": {"model": "<synthetic>"}})) + "\n")
+check(ae.model_from_transcript(str(tr)) == "claude-sonnet-5-5", "last real assistant model")
+outside = Path(tmp) / "elsewhere.jsonl"
+outside.write_text(tr.read_text())
+check(ae.model_from_transcript(str(outside)) is None, "transcripts outside the Claude config dir are ignored")
+bad = cdir / "b.jsonl"
+bad.write_text(_json.dumps({"message": {"model": "x y <script>"}}) + "\n")
+check(ae.model_from_transcript(str(bad)) is None and ae.model_from_transcript(None) is None, "invalid model strings rejected")
+check(ae.summarize("Agent", {"subagent_type": "helper", "description": "d", "model": "haiku"}, "") == "helper@haiku: d", "spawn summary carries model")
+check(ae.summarize("Agent", {"subagent_type": "helper", "description": "d", "model": "a b"}, "") == "helper: d", "bad override dropped")
+
+# /develop with Sonnet implementer agents and no reviewers (they run per PR): implement done, review skipped, report done
+drun = [E(0, "SessionStart", "dv"), E(1, "UserPromptSubmit", "dv"), E(2, "SubagentStart", "dv", aid="ds", at="designer"),
+        E(10, "SubagentStop", "dv", aid="ds", at="designer"), E(12, "PreToolUse", "dv", tool="AskUserQuestion"),
+        E(20, "SubagentStart", "dv", aid="i1", at="implementer"), E(21, "SubagentStart", "dv", aid="i2", at="implementer"),
+        E(40, "SubagentStop", "dv", aid="i1", at="implementer")]
+dv = to_json(build(drun, T + 41), drun, T + 41)["sessions"][0]
+check({p["stage"]: p["status"] for p in dv["pipeline"]}["implement"] == "active", f"implement active while a worker runs: {dv['pipeline']}")
+drun += [E(45, "SubagentStop", "dv", aid="i2", at="implementer"), E(50, "Stop", "dv")]
+dv = to_json(build(drun, T + 51), drun, T + 51)["sessions"][0]
+st = {p["stage"]: p["status"] for p in dv["pipeline"]}
+check((st["implement"], st["review"], st["report"]) == ("done", "skipped", "done"), f"build-only /develop run: {st}")
+
 print(f"live: {passed} passed, {failed} failed")
 os.system(f"rm -rf {tmp}")
 sys.exit(1 if failed else 0)

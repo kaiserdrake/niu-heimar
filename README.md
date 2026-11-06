@@ -10,7 +10,7 @@ Only config is tracked here. Projects inside `WORK/`, `PERSONAL/` and `HOBBY/` a
 | Rule | How it's enforced |
 |---|---|
 | Agents can't read `.env` | `permissions.deny` in `~/.claude/settings.json`, plus the `hooks/block-env.sh` PreToolUse hook (also catches `cat .env`, `printenv`, `docker compose config` …). Applies only under this folder. |
-| Two mandatory reviewers | `security-reviewer` and `test-reviewer` agents, the `/dual-review` skill that runs both in parallel, and a rule in `CLAUDE.md`. |
+| Two mandatory reviewers | `security-reviewer` and `test-reviewer` agents, the `/dual-review` skill that runs both in parallel, and a rule in `CLAUDE.md`. They run once per PR on the whole batch, not after every edit. |
 | Top model for planning | `"model": "opusplan"` in every domain (Opus in plan mode, Sonnet for execution). |
 | Memory per domain | `autoMemoryDirectory` → `<DOMAIN>/.claude/memory/`, plus curated `<DOMAIN>/.claude/LEARNINGS.md`. |
 | Local MCPs and agents | `<DOMAIN>/.claude/mcp.json` + `enabledMcpjsonServers` allow-list. See `.claude-workspace/mcp/README.md`. |
@@ -40,7 +40,7 @@ config are only read from the folder the session starts in**.
 ```
 CLAUDE.md                     common rules (inherited by every project)
 .claude-workspace/
-  agents/                     shared agents (security-reviewer, test-reviewer)
+  agents/                     shared agents (designer, implementer, security-reviewer, test-reviewer)
   skills/                     dual-review, workspace-sync
   hooks/block-env.sh          .env guard
   bin/                        install, claude-init, workspace-status/update/lint
@@ -83,8 +83,11 @@ CLAUDE.md                     common rules (inherited by every project)
 ## Design-first development and local Ollama agents
 ```
 /develop <task>
-  designer (Opus) → docs/design/<date>-<slug>.md → you approve → implement →
-  local_diff_review (Ollama) → security-reviewer + test-reviewer (Claude) → fix loop (≤3) → report
+  designer (Opus) → docs/design/<date>-<slug>.md → you approve → implementer agents (Sonnet, parallel) → tests
+  (→ optional local_diff_review, Ollama) → report "done, not yet reviewed"
+
+/workspace-sync  (or the domain's PR/MR flow)          # once per batch of features
+  lint → security-reviewer + test-reviewer on the whole PR diff (Claude) → fix loop (≤3) → branch, commit, PR
 ```
 - **designer** (`agents/designer.md`, Opus): researches, compares options, and writes the design document. It never edits code.
 - **Local agents** (`bin/niu-agent`, exposed to sessions by the `niu-local` MCP server): `local_search`, `local_diff_review`,
@@ -120,7 +123,7 @@ agents-dash --once   # plain-text snapshot; --json for scripts; --domain WORK; -
 - Shows a live tree (domain → project → session → subagents), with each agent's state, how long it has been running, and its current tool.
   Each agent has a tag showing where it comes from (`project`, `domain`, `shared`, `user`, `builtin`). A project's agents that haven't run yet
   show as `not yet run`.
-- The "today" line counts sessions and subagent runs. It also flags any session that edited files without running both mandatory reviewers.
+- The "today" line counts sessions and subagent runs. It also marks sessions whose edits haven't been reviewed yet (informational: the mandatory reviewers run once per PR).
 - Nested projects (e.g. `HOBBY/games/voxel-mod`) work: the project is the nearest folder with `.claude/` or `.git`.
   Its own agents in `.claude/agents/` sit next to the linked shared reviewers.
 - **Pull requests**: a panel lists open PRs for niu-heimar and for every linked project whose origin is on GitHub
@@ -162,3 +165,37 @@ hook also blocks agents from reading the dashboard's device credentials or calli
 not a hard security boundary against processes running as your own user.
 
 Service: `systemctl --user status|restart|stop niu-dash`. Logs: `journalctl --user -u niu-dash`.
+
+## Discord notifications
+`niu-notify` is a small background service that posts to your own Discord server when something changes, so you hear about
+it even when you can't reach the dashboard. It is **outbound only**: Discord webhooks, no bot, and no commands are accepted
+from Discord. Every message is a fixed template. Endpoint URLs, error text and this machine's hostname are never sent,
+secrets are redacted, mentions and link previews are off, and it alerts only on changes, with cooldowns and an hourly cap.
+Design: `docs/design/2026-11-06-discord-notifications.md`.
+
+| Channel | What lands there | Suggested notification setting |
+|---|---|---|
+| `#needs-you` | A session is waiting for your permission or reply (after 60 s) | All messages |
+| `#activity` | A long session finished | Muted |
+| `#ci-prs` | PR checks failing, changes requested, ready to merge, blocked on token scope | Mentions only |
+| `#local-llm` | Ollama endpoint down / back up; no GPU endpoint up | Mentions only |
+| `#claude-limits` | 5-hour / weekly usage crossed 80 % / 95 % | All messages |
+| `#alerts` | Notifier started, dashboard down / back, rate-limit summary, webhook rejected, source errors | All messages |
+
+One-time setup (you do the secret parts yourself; never paste webhook URLs into a Claude session):
+1. In Discord: **Create a server** → *Create My Own* → *For me and my friends* (e.g. `niu-heimar`). Don't create invites. Turn on 2FA for your account.
+2. Create a category `niu-heimar` with the six text channels above.
+3. For each channel: *Edit Channel* → *Integrations* → *Webhooks* → *New Webhook*, name it `niu-heimar`, *Copy Webhook URL*.
+4. Copy `.claude-workspace/.env.example` to the secrets file beside it (same name without `.example`), paste each URL after its
+   `DISCORD_WEBHOOK_*` name, and `chmod 600` it. A route whose variable is empty is off; `needs-you` falls back to the alerts webhook.
+5. Install the service: `.claude-workspace/bin/install --notify` (writes `niu-notify.service`, creates `discord.json` from the
+   template, enables linger). In `.claude-workspace/discord.json`, list your `ollama.json` endpoint names under `endpoints`:
+   set an endpoint that isn't always on to `"notify": "silent"` (with e.g. `"down_after_polls": 10`) or `"off"`; `display`
+   changes the name shown.
+6. `niu-notify check` shows each route as `ok` / `missing` / `invalid`. `systemctl --user restart niu-notify` posts
+   "notifier started" in `#alerts`. (`niu-notify test` sends a test message, but needs the variables in its environment, which only the service has.)
+7. Discord notification settings: server → *Only @mentions*, suppress @everyone and roles; then per channel as in the table. Allow push on your phone.
+
+Tuning in `discord.json`: `wait_delay_secs` (60) before a wait is pushed, `wait_cooldown_secs` (120) between pushes for the same session, `cooldown_secs` (900) for other alerts, `max_per_hour` (30), `quiet_hours`. Per-domain detail is set in `discord.json` → `domains` (`full`, `minimal` = domain name only and no PR messages, or `off`).
+Rotate a webhook by deleting it in Discord, creating a new one, updating the secrets file and restarting the service.
+Service: `systemctl --user status|restart|stop niu-notify`. Logs: `journalctl --user -u niu-notify` (route names and HTTP codes only).
