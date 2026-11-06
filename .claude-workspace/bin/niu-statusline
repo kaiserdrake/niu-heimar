@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""niu-statusline: Claude Code status line that also records plan usage limits for the dashboard.
+
+Claude Code pipes a JSON object to the status line command on each update. When the account has plan limits,
+it includes rate_limits.five_hour / rate_limits.seven_day (used_percentage, resets_at). This script saves
+that block (nothing else, no tokens) to ~/.local/state/niu-heimar/claude-limits.json, and prints a short
+status line: "<model> · 5h 23% · 7d 41%".
+"""
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+
+
+def state_file():
+    from niu_events import db_path
+    return db_path().parent / "claude-limits.json"
+
+
+def pct(block):
+    try:
+        return float((block or {}).get("used_percentage"))
+    except (TypeError, ValueError):
+        return None
+
+
+def save(limits):
+    p = state_file()
+    try:
+        old = json.loads(p.read_text())
+    except (OSError, ValueError):
+        old = {}
+    now = time.time()
+    # write when the numbers change, or at most every 30 s to keep "updated" fresh
+    if old.get("rate_limits") == limits and now - old.get("updated", 0) < 30:
+        return
+    p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"rate_limits": limits, "updated": now}))
+    os.chmod(tmp, 0o600)
+    tmp.replace(p)
+
+
+def main():
+    try:
+        data = json.load(sys.stdin)
+    except ValueError:
+        data = {}
+    limits = data.get("rate_limits")
+    keep = ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet")
+    if isinstance(limits, dict) and any(limits.get(k) for k in keep):
+        try:
+            save({k: limits.get(k) for k in keep if limits.get(k)})
+        except OSError:
+            pass
+    model = ((data.get("model") or {}).get("display_name") or "").strip()
+    bits = [model] if model else []
+    if isinstance(limits, dict):
+        for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
+            v = pct(limits.get(key))
+            if v is not None:
+                bits.append(f"{label} {v:.0f}%")
+    print(" · ".join(bits))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:  # a status line must never break the session
+        print("")

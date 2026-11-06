@@ -1,0 +1,7 @@
+{
+  "statusLine": {
+    "type": "command",
+    "command": "${WORKSPACE}/.claude-workspace/bin/niu-statusline",
+    "padding": 0
+  }
+}

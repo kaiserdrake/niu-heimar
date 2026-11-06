@@ -388,3 +388,17 @@ body.mc { height: 100vh; height: 100dvh; display: grid; grid-template-rows: auto
 .leftcol .pr .acts { grid-row: auto; }
 .leftcol .pr .acts button { padding: 1px 9px; font-size: 11.5px; }
 .needs { white-space: nowrap; }
+
+/* Claude plan limits in the LLMs panel */
+.limrow { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 12px; min-width: 0; }
+.limrow .nm { font-weight: 600; min-width: 52px; } .limrow .mdl { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.llmpill.claude { background: color-mix(in srgb, #d97757 16%, transparent); color: #d97757; }
+progress.lim { flex: 1 1 60px; min-width: 40px; height: 6px; border: 0; border-radius: 999px; background: var(--bg); appearance: none; overflow: hidden; }
+progress.lim::-webkit-progress-bar { background: var(--bg); border-radius: 999px; }
+progress.lim::-webkit-progress-value { border-radius: 999px; background: var(--ok); }
+progress.lim::-moz-progress-bar { border-radius: 999px; background: var(--ok); }
+progress.lim.warn::-webkit-progress-value { background: var(--warn); } progress.lim.warn::-moz-progress-bar { background: var(--warn); }
+progress.lim.bad::-webkit-progress-value { background: var(--bad); } progress.lim.bad::-moz-progress-bar { background: var(--bad); }
+.limpct { font-variant-numeric: tabular-nums; font-weight: 700; min-width: 34px; text-align: right; }
+.limpct.ok { color: var(--ok); } .limpct.warn { color: var(--warn); } .limpct.bad { color: var(--bad); }
+.limrow + .llmrow { border-top: 1px solid var(--border); margin-top: 3px; padding-top: 6px; }

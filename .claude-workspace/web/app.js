@@ -798,22 +798,51 @@ setInterval(tickClock, 1000);
 
 // Local LLM endpoint health (GPU box / local CPU), refreshed every 30 s
 const EP_NAME = { remote: "Remote GPU", local: "Local CPU" };
+// Claude plan limits (5-hour / weekly), as last reported by Claude Code's status line.
+function claudeLimits(c) {
+  if (!c || !c.available) {
+    return `<div class="limrow muted small" title="Recorded by the niu-statusline status line of Claude Code terminal sessions">` +
+      `Claude limits: shown once a Claude Code session in a terminal reports them</div>`;
+  }
+  const fmtReset = (ts) => {
+    if (!ts) return "";
+    const d = new Date(ts * 1000), today = new Date().toDateString() === d.toDateString();
+    return `resets ${today ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
+      : d.toLocaleDateString([], { weekday: "short" }) + " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`;
+  };
+  const shortReset = (ts) => {
+    if (!ts) return "";
+    const d = new Date(ts * 1000);
+    return "↻ " + (new Date().toDateString() === d.toDateString()
+      ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
+      : d.toLocaleDateString([], { weekday: "short" }));
+  };
+  const rows = c.windows.filter((w) => w.key === "five_hour" || w.key === "seven_day" || w.used >= 50).map((w) => {
+    const lvl = w.used >= 90 ? "bad" : w.used >= 70 ? "warn" : "ok";
+    return `<div class="limrow" title="${esc(`Claude ${w.label}: ${w.used}% used${w.resets_at ? ` · ${fmtReset(w.resets_at)}` : ""}`)}">` +
+      `<span class="llmpill up claude"><i></i>Claude</span><span class="nm">${esc(w.label)}</span>` +
+      `<progress class="lim ${lvl}" max="100" value="${Math.min(100, w.used)}"></progress>` +
+      `<span class="limpct ${lvl}">${Math.round(w.used)}%</span><span class="mdl">${esc(shortReset(w.resets_at))}</span></div>`;
+  }).join("");
+  const age = Date.now() / 1000 - (c.updated || 0);
+  return rows + (c.stale ? `<div class="llmfoot">Claude limits as of ${hhmmss(c.updated)} (${dur(age)} ago)</div>` : "");
+}
 async function loadLLM(force) {
   const r = await fetch(`/api/llm${force ? "?force=1" : ""}`, { credentials: "same-origin" }).then((x) => x.json()).catch(() => null);
   const box = $("llm"), card = $("llmcard");
-  if (!r || !r.endpoints || !r.endpoints.length) {
+  if (!r) {
     box.hidden = true;
-    card.innerHTML = `<div class="msg err">Can't read the local LLM status from the dashboard server.</div>`;
+    card.innerHTML = `<div class="msg err">Can't read the LLM status from the dashboard server.</div>`;
     return;
   }
-  const eps = r.endpoints;
+  const eps = r.endpoints || [];
   LLM_EPS = eps;
   const state = (e) => !e.up ? "down" : Object.values(e.models || {}).every((m) => m.present) ? "up" : "partial";
   const word = { up: "online", partial: "models missing", down: "offline" };
   box.hidden = false;
   box.innerHTML = eps.map((e) => `<span class="llmpill ${state(e)}" title="${esc(`${EP_NAME[e.name] || e.label} ${e.url}: ${word[state(e)]}`)}">` +
     `<i></i>${esc(e.label)} ${word[state(e)]}</span>`).join("");
-  card.innerHTML = eps.map((e) => {
+  card.innerHTML = claudeLimits(r.claude) + eps.map((e) => {
     const st = state(e);
     const models = [...new Set(Object.values(e.models || {}).map((m) => `${m.present ? "" : "✗ "}${m.name}`))].join(", ");
     const tip = `${EP_NAME[e.name] || e.label} ${e.url} · ${e.up ? `Ollama ${e.version}` : `down: ${e.error || "unreachable"}`} · ${e.mode} mode`;

@@ -64,6 +64,14 @@ if $user_settings; then
     | .hooks |= with_entries(select(.value | length > 0))
   ' "$US" >"$US.tmp" && mv "$US.tmp" "$US"
   echo "merged niu-heimar rules into $US (backup in ~/.claude/backups/)"
+  # Status line: records Claude plan limits for the dashboard. Never replaces a status line you set yourself.
+  sl="$(render "$SHARED/statusline.template.json")"
+  if jq -e --arg ws "$WS" '(.statusLine == null) or ((.statusLine.command // "") | contains($ws))' "$US" >/dev/null; then
+    jq --argjson sl "$sl" '.statusLine = $sl.statusLine' "$US" >"$US.tmp" && mv "$US.tmp" "$US"
+    echo "status line set to niu-statusline (shows and records Claude 5-hour / weekly limits)"
+  else
+    echo "note: you have your own statusLine; leaving it. To feed Claude limits to the dashboard, pipe its input to $SHARED/bin/niu-statusline"
+  fi
 fi
 
 if $shell; then

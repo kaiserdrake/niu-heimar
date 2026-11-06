@@ -234,7 +234,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 import niu_ollama
                 force = parse_qs(urlparse(self.path).query).get("force") == ["1"]
-                self._json({"endpoints": niu_ollama.status(force=force)})
+                import niu_limits
+                self._json({"endpoints": niu_ollama.status(force=force), "claude": niu_limits.claude_limits()})
             except Exception as e:
                 self._json({"endpoints": [], "error": str(e)[:200]})
         elif path == "/healthz":
