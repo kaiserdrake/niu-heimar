@@ -14,7 +14,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage unavailable */ } },
 };
 
-let STATE = null, PRS = null, ME = { paired: false }, ES = null, SELECTED = null, LAST_FEED_TS = 0;
+let STATE = null, PRS = null, ME = { paired: false }, ES = null, SELECTED = null, LAST_FEED_TS = 0, CLOCK_OFFSET = 0;
 const STATE_LABEL = { working: "working", waiting: "waiting for you", idle: "idle", ended: "ended", stale: "stale" };
 const TOOL_CLASS = (t) => t === "Bash" ? "bash" : ["Read", "Grep", "Glob"].includes(t) ? "read"
   : ["Edit", "MultiEdit", "Write", "NotebookEdit"].includes(t) ? "edit" : ["Agent", "Task", "SendMessage"].includes(t) ? "agent"
@@ -52,6 +52,9 @@ function connect() {
   ES.onmessage = (ev) => {
     const s = JSON.parse(ev.data);
     PRS = s.prs; delete s.prs; STATE = s;
+    // The server only pushes on change; keep durations moving with a local clock aligned to the host.
+    if (s.server_now) CLOCK_OFFSET = s.server_now - Date.now() / 1000;
+    STATE.now = Date.now() / 1000 + CLOCK_OFFSET;
     render();
   };
 }
@@ -479,6 +482,12 @@ $("calm").checked = store.get("niu.calm", false);
 $("ended").onchange = () => { store.set("niu.ended", $("ended").checked); if (STATE) render(); };
 $("calm").onchange = () => { store.set("niu.calm", $("calm").checked); if (STATE) render(); };
 window.addEventListener("resize", () => STATE && renderTimeline());
+
+setInterval(() => {
+  if (!STATE || document.hidden) return;
+  STATE.now = Date.now() / 1000 + CLOCK_OFFSET;
+  renderCounters(); renderSessions(); renderGraph(); renderTimeline();
+}, 1000);
 
 loadMe();
 connect();
