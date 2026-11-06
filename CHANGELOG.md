@@ -1,0 +1,21 @@
+# Changelog
+
+## [0.2.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.1.0...niu-heimar-v0.2.0) (2026-11-06)
+
+
+### Features
+
+* **dashboard:** "needs you" action badges + 4-digit merge confirmation ([#9](https://github.com/kaiserdrake/niu-heimar/issues/9)) ([04e3ed5](https://github.com/kaiserdrake/niu-heimar/commit/04e3ed5adf86de408af38339e642002597075072))
+* **dashboard:** menu-based pairing, host name, animated agent graph, clearer PR blocks ([#7](https://github.com/kaiserdrake/niu-heimar/issues/7)) ([aa1c773](https://github.com/kaiserdrake/niu-heimar/commit/aa1c7738e58bb9b3a790dc5856c424c18f5f18a9))
+* **dashboard:** mission control layout that fits one 1080p screen ([#13](https://github.com/kaiserdrake/niu-heimar/issues/13)) ([00a590c](https://github.com/kaiserdrake/niu-heimar/commit/00a590cfe4091fad7219d16d92bac226b18560ac))
+* **dashboard:** Ollama status, real session names, agent hand-off chain ([#12](https://github.com/kaiserdrake/niu-heimar/issues/12)) ([62e59f1](https://github.com/kaiserdrake/niu-heimar/commit/62e59f14c54b9a272d50c6611ae30fd6a06d6825))
+* **dashboard:** pull-out drawer, Events tab, one-screen layout down to 900x600 ([#14](https://github.com/kaiserdrake/niu-heimar/issues/14)) ([0cbab9e](https://github.com/kaiserdrake/niu-heimar/commit/0cbab9e2e7c3d64f847ecb2e2af0319335e8fb12))
+* **guard:** per-project .claude/protected-paths ([#10](https://github.com/kaiserdrake/niu-heimar/issues/10)) ([0bb2010](https://github.com/kaiserdrake/niu-heimar/commit/0bb2010083d949a5176e68644b8a68934d68e392))
+* initial niu-heimar Claude Code workspace setup ([75dc973](https://github.com/kaiserdrake/niu-heimar/commit/75dc97382d1183d4bc5a53fce15d55f569b32b23))
+* local Ollama agents and design-first /develop workflow ([#11](https://github.com/kaiserdrake/niu-heimar/issues/11)) ([ffc5f97](https://github.com/kaiserdrake/niu-heimar/commit/ffc5f97c4a6cde4df2b5a7767ddc10f3cfc7102a))
+* web dashboard (niu-dash) with interaction graph, timeline and PR merge ([#6](https://github.com/kaiserdrake/niu-heimar/issues/6)) ([44b3dcd](https://github.com/kaiserdrake/niu-heimar/commit/44b3dcdf78a8d36cb3c5aff7fefcaa231020eeb6))
+
+
+### Performance Improvements
+
+* **dashboard:** shared incremental state cache with adaptive throttle ([#8](https://github.com/kaiserdrake/niu-heimar/issues/8)) ([f51ddf3](https://github.com/kaiserdrake/niu-heimar/commit/f51ddf3a24985258a0ff96bf29fd89e7581a9a0e))
