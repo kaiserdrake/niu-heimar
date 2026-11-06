@@ -30,6 +30,16 @@
         ]
       },
       {
+        "matcher": "Bash|Edit|MultiEdit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${WORKSPACE}/.claude-workspace/hooks/live-stack.py --guard",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "*",
         "hooks": [
           {
@@ -48,6 +58,15 @@
             "type": "command",
             "command": "${WORKSPACE}/.claude-workspace/bin/workspace-status --hook",
             "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${WORKSPACE}/.claude-workspace/hooks/live-stack.py --session-start",
+            "timeout": 10
           }
         ]
       },

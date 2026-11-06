@@ -11,6 +11,7 @@ description: Run the two mandatory reviewers (security-reviewer and test-reviewe
    - `security-reviewer`, given the target and any context about what the change is meant to do.
    - `test-reviewer`, given the same target.
    Also launch any domain-specific reviewers listed in the domain CLAUDE.md.
+   If `.claude/deploy-mode` exists, tell both reviewers the folder is the live deployment.
 3. When both return, write a combined report:
    - `SECURITY: …` and `TESTS: …` verdict lines, as returned.
    - Blocking findings first, deduplicated, each with `file:line`.

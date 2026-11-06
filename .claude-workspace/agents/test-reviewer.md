@@ -26,6 +26,8 @@ Report new issues in changed files separately from issues that were already ther
 - If there's a compose file and the change touches runtime behaviour, smoke-test it:
   `docker compose up -d --build`, check health/logs, then `docker compose down`.
   Never use `docker compose config` (it prints secrets).
+- If the project has `.claude/deploy-mode` (live-dev-same-dir), never run `docker compose up/down` there; use the project
+  CLAUDE.md test recipe and report what would need a rebuild/restart to apply.
 - Long commands: use timeouts. Don't leave containers running.
 
 ## Output
