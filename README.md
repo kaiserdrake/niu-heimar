@@ -210,6 +210,11 @@ A **Status | Topics** switch in the Research panel header opens the Topics view:
 archive/restore the research topics held by valkyrie-dispatch. Design:
 `.claude-workspace/docs/design/2026-11-07-dashboard-topics-panel.md`.
 
+- **Fuzzy search.** The search box matches across name, keywords and excluded terms and tolerates typos ("dutrte" finds
+  Duterte), accents, initials ("ff reso" finds Final Fantasy Resonance) and dropped letters ("ollama mdls"). Every word
+  you type must match, best matches come first, the name's matching letters are highlighted, Escape clears it. It runs
+  in the browser on the loaded list, so it makes no requests. Excluded terms are searched too (a topic can be found by
+  a term it excludes), and a "Matches keyword …" / "Matches excluded …" line under the row shows what matched.
 - **Pairing is required, even to look.** Topic text is personal and untrusted, so `GET /api/topics` and every write route
   need the paired-browser cookie (a local `curl` can fake the CSRF header, not the cookie). An unpaired browser sees "Pair
   this browser" and no topic data. Pair with `niu-dash pair`.

@@ -1373,6 +1373,127 @@ const tpLen = (s) => [...s].length;
 const TP_BAD_CHAR = /[<>`{}\u2028\u2029\p{C}]/u;
 const tpAgentLabel = (a) => TP_AGENT_LABEL[a] || "That agent";
 
+// ----- fuzzy search (pure functions; web_smoke.js calls them directly) -----
+// Matching rules, per query token (case and accent folded via NFKD, split on anything that is not a letter or digit):
+//   exact word 100 | word prefix 70-90 | substring of a word 70 (token >= 3 chars) | initials of the field's words 65 (token >= 2)
+//   | typo of a word or of a word's prefix: Damerau-Levenshtein (adjacent swap = 1) <= 1 for 4-6 chars, <= 2 for 7+, never under 4 (60/55 minus 10 per edit)
+//   | in-order subsequence of a word starting at its first letter, 3+ chars, small gaps (50 minus 4 per gap, min 10).
+// Under 3 chars only exact, prefix and initials count. Every token must match (AND); a token's score is the best over name (x1),
+// keywords (x0.85) and excluded terms (x0.6); the topic score is the mean, plus 15 when the whole phrase sits in the name.
+const FZ_MAXQ = 80, FZ_MAXTOK = 8, FZ_MAXTXT = 300, FZ_MAXWORD = 40, FZ_MAXTERMS = 100;
+const FZ_W = { name: 1, keywords: 0.85, excluded: 0.6 };
+function fzFold(s) {   // folded text, plus for every folded char the index of the original code point it came from
+  let f = "", i = 0;
+  const map = [];
+  for (const ch of String(s)) {
+    if (i >= FZ_MAXTXT) break;
+    const g = ch.toLowerCase().normalize("NFKD").replace(/\p{M}/gu, "");
+    for (let k = 0; k < g.length; k++) map.push(i);
+    f += g; i++;
+  }
+  return { f, map };
+}
+function fzWords(f) {
+  const out = [], re = /[\p{L}\p{N}]+/gu;
+  let m;
+  while ((m = re.exec(f))) out.push({ w: m[0], at: m.index });
+  return out;
+}
+function fzPrep(text) {
+  const { f, map } = fzFold(text), words = fzWords(f);
+  return { f, map, words, init: words.map((x) => x.w[0]).join(""), initAt: words.map((x) => x.at) };
+}
+function fzDist(a, b, max) {   // Damerau-Levenshtein (adjacent transposition = 1), max + 1 when clearly farther
+  const n = a.length, m = b.length;
+  if (Math.abs(n - m) > max) return max + 1;
+  let p2 = null, p1 = Array.from({ length: m + 1 }, (_, j) => j);
+  for (let i = 1; i <= n; i++) {
+    const cur = [i];
+    for (let j = 1; j <= m; j++) {
+      let v = Math.min(p1[j] + 1, cur[j - 1] + 1, p1[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) v = Math.min(v, p2[j - 2] + 1);
+      cur.push(v);
+    }
+    p2 = p1; p1 = cur;
+  }
+  return p1[m];
+}
+function fzTok(tok, fd) {   // best match of one token inside one prepared field: { s: score (0 = none), idx: folded char indexes }
+  const L = tok.length, maxd = L >= 7 ? 2 : L >= 4 ? 1 : 0;
+  let best = { s: 0, idx: [] };
+  const take = (s, idx) => { if (s > best.s) best = { s, idx }; };
+  const rng = (at, n) => Array.from({ length: n }, (_, k) => at + k);
+  for (const { w, at } of fd.words) {
+    if (w === tok) { take(100, rng(at, L)); continue; }
+    if (w.startsWith(tok)) { take(Math.max(70, 90 - (w.length - L) * 0.5), rng(at, L)); continue; }
+    if (L < 3) continue;
+    const p = w.indexOf(tok);
+    if (p > 0) { take(70, rng(at + p, L)); continue; }
+    if (w[0] === tok[0]) {
+      const hit = [];
+      for (let k = 0, j = 0; k < w.length && j < L; k++) if (w[k] === tok[j]) { hit.push(at + k); j++; }
+      if (hit.length === L && hit[L - 1] - hit[0] + 1 - L <= Math.max(2, L >> 1)) take(Math.max(10, 50 - (hit[L - 1] - hit[0] + 1 - L) * 4), hit);
+    }
+    if (maxd && L <= FZ_MAXWORD && w.length <= FZ_MAXWORD) {
+      const d = fzDist(tok, w, maxd);
+      if (d <= maxd) take(60 - 10 * d, rng(at, w.length));
+      for (const pl of [L - 1, L, L + 1]) {
+        if (pl < 3 || pl >= w.length) continue;
+        const dp = fzDist(tok, w.slice(0, pl), maxd);
+        if (dp <= maxd) take(55 - 10 * dp, rng(at, pl));
+      }
+    }
+  }
+  if (L >= 2) {
+    const p = fd.init.indexOf(tok);
+    if (p >= 0) take(p ? 60 : 65, fd.initAt.slice(p, p + L));
+  }
+  return best;
+}
+function fzQuery(query) { return fzWords(fzFold(String(query).slice(0, FZ_MAXQ)).f).map((x) => x.w).slice(0, FZ_MAXTOK); }
+// parts: [{ key, i, fd }]; returns null unless every token matches somewhere.
+function fzRun(tokens, parts) {
+  let total = 0;
+  const hits = [];
+  for (const tok of tokens) {
+    let best = null;
+    for (const p of parts) {
+      const r = fzTok(tok, p.fd), s = r.s * FZ_W[p.key];
+      if (r.s && (!best || s > best.s)) best = { s, key: p.key, i: p.i, idx: r.idx, fd: p.fd };
+    }
+    if (!best) return null;
+    total += best.s; hits.push(best);
+  }
+  return { score: total / tokens.length, hits };
+}
+// Score of one text against a query: 0 = no match, higher = better. An empty query matches everything (1).
+function fuzzyScore(query, text) {
+  if (!String(query).trim()) return 1;
+  const tokens = fzQuery(query);
+  if (!tokens.length) return 0;
+  const r = fzRun(tokens, [{ key: "name", i: 0, fd: fzPrep(text) }]);
+  return r ? r.score : 0;
+}
+// Topic against a query: null = no match, else { score, name: Set of name code-point indexes to highlight (or null), kw: Set, ex: Set }.
+function tpMatch(t, query) {
+  const none = { score: 1, name: null, kw: new Set(), ex: new Set() };
+  if (!String(query).trim()) return none;
+  const tokens = fzQuery(query);
+  if (!tokens.length) return null;
+  const nameFd = fzPrep(t.name), parts = [{ key: "name", i: 0, fd: nameFd }];
+  (Array.isArray(t.keywords) ? t.keywords : []).slice(0, FZ_MAXTERMS).forEach((k, i) => parts.push({ key: "keywords", i, fd: fzPrep(k) }));
+  (Array.isArray(t.excluded_terms) ? t.excluded_terms : []).slice(0, FZ_MAXTERMS).forEach((k, i) => parts.push({ key: "excluded", i, fd: fzPrep(k) }));
+  const r = fzRun(tokens, parts);
+  if (!r) return null;
+  const out = { score: r.score, name: null, kw: new Set(), ex: new Set() };
+  if (tokens.length > 1 && nameFd.f.includes(tokens.join(" "))) out.score += 15;
+  for (const x of r.hits) {
+    if (x.key === "name") { out.name = out.name || new Set(); for (const k of x.idx) out.name.add(x.fd.map[k]); }
+    else (x.key === "keywords" ? out.kw : out.ex).add(x.i);
+  }
+  return out;
+}
+
 // Client-side mirror of the server's allowlist (the server and valkyrie-dispatch stay authoritative).
 function tpTerms(text, lo, hi) {
   const out = [], seen = new Set();
@@ -1437,12 +1558,6 @@ async function loadTopics(force) {
 
 // ----- rendering -----
 function tpWritable() { return !!TP.data && TP.data.state === "ok" && !TP.data.stale && ME.paired; }
-function tpMatches(t) {
-  const q = TP.filter.trim().toLowerCase();
-  if (TP.agent !== "all" && t.agent_type !== TP.agent) return false;
-  if (!q) return true;
-  return t.name.toLowerCase().includes(q) || t.keywords.some((k) => k.toLowerCase().includes(q)) || t.excluded_terms.some((k) => k.toLowerCase().includes(q));
-}
 function renderTopics() {
   if (VIEW !== "research" || RSVIEW !== "topics") return;
   const r = TP.data || { state: "loading", topics: [] };
@@ -1471,28 +1586,38 @@ function renderTopics() {
   add.setAttribute("title", ME.paired ? (ok ? "" : "Unavailable right now") : "Pair this browser to edit");
   $("tpupd").textContent = r.loaded_at ? `loaded ${hm(r.loaded_at)}` : "";
   // list
-  const list = [];
+  const list = [], q = TP.filter.trim();
+  let cnt = "";
   if (ok || r.stale) {
-    const shown = all.filter((t) => (TP.archived || t.is_active) && tpMatches(t));
+    const pool = all.filter((t) => (TP.archived || t.is_active) && (TP.agent === "all" || t.agent_type === TP.agent));
+    let shown = pool;
+    const matches = new Map();
+    if (q) {
+      shown = pool.map((t, i) => ({ t, i, m: tpMatch(t, q) })).filter((x) => x.m)
+        .sort((a, b) => b.m.score - a.m.score || a.i - b.i).map((x) => (matches.set(x.t.id, x.m), x.t));
+      cnt = `${shown.length} of ${pool.length} topics`;
+    }
     for (const a of TP_AGENTS) {
       const rows = shown.filter((t) => t.agent_type === a);
       if (!rows.length) continue;
       const active = all.filter((t) => t.is_active && t.agent_type === a).length;
       list.push(h("h3", "tpgroup", `${TP_AGENT_LABEL[a]} · ${active}/${TP_CAP}`));
-      for (const t of rows.filter((x) => x.is_active).concat(rows.filter((x) => !x.is_active))) list.push(tpRow(t));
+      for (const t of rows.filter((x) => x.is_active).concat(rows.filter((x) => !x.is_active))) list.push(tpRow(t, matches.get(t.id)));
     }
     if (!shown.length) {
       list.push(h("div", "empty", !all.length ? "No topics yet. Add one, or use rd topics add in valkyrie-dispatch."
         : TP.agent === "fintrend" && !TP.filter && !all.some((t) => t.agent_type === "fintrend") ? "Fintrend agent arrives in M4; topics you add now are kept."
-          : "No topics match."));
+          : q ? `No topic matches "${[...q].slice(0, 40).join("")}${[...q].length > 40 ? "…" : ""}"` : "No topics match."));
     } else if (TP.agent === "all" && !all.some((t) => t.agent_type === "fintrend")) {
       list.push(h("div", "small muted", "Fintrend agent arrives in M4; topics you add now are kept."));
     }
   }
   $("tplist").replaceChildren(...list);
+  $("tpcount").textContent = cnt;
 }
 
-function tpRow(t) {
+function tpRow(t, m) {
+  const kws = Array.isArray(t.keywords) ? t.keywords : [], exs = Array.isArray(t.excluded_terms) ? t.excluded_terms : [];
   const can = tpWritable() && !TP.busy.has(t.id);
   const row = h("div", `tprow${t.is_active ? "" : " tp-archived"}${TP.busy.has(t.id) ? " busy" : ""}${TP.flash === t.id ? " tpflash" : ""}`, "", { "data-id": t.id });
   if (t.is_active) {
@@ -1509,23 +1634,35 @@ function tpRow(t) {
   }
   const main = h("div", "tpmain");
   const title = h("div", "tptitle");
-  title.append(h("span", "tpname", t.name, t.updated_at ? { "data-tip": `Last edited ${t.updated_at}` } : {}));
+  const hl = m && m.name && m.name.size;
+  const nm = h("span", "tpname", hl ? null : t.name, t.updated_at ? { "data-tip": `Last edited ${t.updated_at}` } : {});
+  if (hl) {   // matched characters get their own span; every piece is still plain textContent
+    let run = "", on = false;
+    const flush = () => { if (run) nm.append(h("span", on ? "tpmatch" : "", run)); run = ""; };
+    Array.from(t.name).forEach((ch, i) => { const hit = m.name.has(i); if (hit !== on) { flush(); on = hit; } run += ch; });
+    flush();
+  }
+  title.append(nm);
   if (t.over_api_limits) title.append(h("span", "badge b-warn", "CLI-only limits", { "data-tip": "Created with the CLI; exceeds what the API accepts. Shorten it to edit." }));
   if (!t.is_active) title.append(h("span", "badge b-off", "archived"));
   main.append(title);
   const kw = h("div", "tpchips2");
-  for (const k of t.keywords.slice(0, 6)) kw.append(h("span", "tpchip", k));
-  if (t.keywords.length > 6) kw.append(h("span", "tpchip more", `+${t.keywords.length - 6}`));
-  if (t.excluded_terms.length) {
+  kws.slice(0, 6).forEach((k, i) => kw.append(h("span", m && m.kw.has(i) ? "tpchip tphit" : "tpchip", k)));
+  if (kws.length > 6) kw.append(h("span", "tpchip more", `+${kws.length - 6}`));
+  if (exs.length) {
     const open = TP.expanded.has(t.id);
-    const ex = h("button", "ghost tiny tpex", open ? "hide excluded" : `excludes ${t.excluded_terms.length}`, { "aria-expanded": String(open) });
+    const ex = h("button", "ghost tiny tpex", open ? "hide excluded" : `excludes ${exs.length}`, { "aria-expanded": String(open) });
     ex.onclick = () => { if (open) TP.expanded.delete(t.id); else TP.expanded.add(t.id); renderTopics(); };
     kw.append(ex);
   }
   main.append(kw);
+  if (m && (m.kw.size || m.ex.size)) {
+    const say = (label, arr, set) => set.size ? `${label} ${[...set].slice(0, 3).map((i) => String(arr[i]).slice(0, 40)).join(", ")}` : "";
+    main.append(h("div", "small muted tphint", "Matches " + [say("keyword", kws, m.kw), say("excluded", exs, m.ex)].filter(Boolean).join(" · ")));
+  }
   if (TP.expanded.has(t.id)) {
     const exl = h("div", "tpchips2 tpexl");
-    for (const k of t.excluded_terms) exl.append(h("span", "tpchip ex", k));
+    exs.forEach((k, i) => exl.append(h("span", m && m.ex.has(i) ? "tpchip ex tphit" : "tpchip ex", k)));
     main.append(exl);
   }
   const msg = TP.rowMsg.get(t.id);
@@ -1680,7 +1817,16 @@ $("tparchive").addEventListener("click", async () => {
 });
 $("tpadd").onclick = () => tpDialog(null);
 $("tprefresh").onclick = () => loadTopics(true);
-$("tpfilter").addEventListener("input", () => { TP.filter = $("tpfilter").value; renderTopics(); });
+let tpTimer = 0;
+$("tpfilter").addEventListener("input", () => {
+  clearTimeout(tpTimer);
+  tpTimer = setTimeout(() => { TP.filter = $("tpfilter").value; renderTopics(); }, 120);
+});
+$("tpfilter").addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !$("tpfilter").value) return;
+  e.preventDefault(); clearTimeout(tpTimer);
+  $("tpfilter").value = ""; TP.filter = ""; renderTopics();
+});
 $("tparch").addEventListener("change", () => { TP.archived = $("tparch").checked; renderTopics(); });
 // Fetched on open, after every write, on Refresh and when the page comes back after 60 s: never polled in the background.
 document.addEventListener("visibilitychange", () => {
