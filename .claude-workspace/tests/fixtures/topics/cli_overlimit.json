@@ -1,0 +1,45 @@
+[
+ {
+  "id": "0000000d-0000-4000-8000-00000000000d",
+  "agent_type": "general",
+  "name": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+  "keywords": [
+   "kw0",
+   "kw1",
+   "kw2",
+   "kw3",
+   "kw4",
+   "kw5",
+   "kw6",
+   "kw7",
+   "kw8",
+   "kw9",
+   "kw10",
+   "kw11",
+   "kw12",
+   "kw13",
+   "kw14",
+   "kw15",
+   "kw16",
+   "kw17",
+   "kw18",
+   "kw19",
+   "kw20",
+   "kw21",
+   "kw22",
+   "kw23",
+   "kw24",
+   "kw25",
+   "kw26",
+   "kw27",
+   "kw28",
+   "kw29"
+  ],
+  "excluded_terms": [
+   "ex"
+  ],
+  "weight": 1.0,
+  "is_active": true,
+  "updated_at": "2026-11-07T08:00:00.123456Z"
+ }
+]

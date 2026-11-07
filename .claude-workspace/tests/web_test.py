@@ -18,7 +18,8 @@ tmp = Path(tempfile.mkdtemp())
 env = dict(os.environ, NIU_EVENTS_DB=str(tmp / "state" / "events.db"),
            FAKE_GH_LOG=str(tmp / "gh.log"), FAKE_PR_FILE=str(tmp / "pr_state"), NIU_HOST_LABEL="testhost",
            NIU_CLAUDE_USAGE_API="0", NIU_CLAUDE_CREDENTIALS="/nonexistent/creds.json",  # never the real login
-           NIU_RESEARCH_TOKEN_FILE=str(tmp / "no-such-research.token"), NIU_RESEARCH_CONFIG=str(tmp / "no-such-research.json"))  # nor the real token
+           NIU_RESEARCH_TOKEN_FILE=str(tmp / "no-such-research.token"), NIU_RESEARCH_CONFIG=str(tmp / "no-such-research.json"),  # nor the real token
+           NIU_TOPICS_TOKEN_FILE=str(tmp / "state" / "topics-test.token"))
 (tmp / "bin").mkdir()
 (tmp / "pr_state").write_text("green")
 gh = tmp / "bin" / "gh"
@@ -130,6 +131,18 @@ try:
     check(req("POST", "/api/research/refresh", {}, {"X-Niu-CSRF": "1", "Origin": "https://evil.example"})[0] == 403, "research refresh cross-origin -> 403")
     check(req("POST", "/api/research/refresh", {}, POSTH)[0] == 200, "research refresh with CSRF header -> 200 (no pairing needed)")
     check(b"mission control" not in raw.lower().replace(b"<title>", b""), "no 'mission control' subtitle")
+    check(b'id="rsview-topics"' in raw and b'id="rsview-status"' in raw and b'id="tpdlg"' in raw and b'id="tpbody"' in raw and b'id="tplist"' in raw,
+          "Topics markup: sub-view switch, list and dialog")
+    check(b"tpswitch" in css and b".tprow" in css, "Topics styles served")
+    # Topics routes: every one needs the paired-device cookie, the list GET included
+    st, _, js, rawt = req("GET", "/api/topics")
+    check(st == 401 and js["state"] == "not_paired" and js["topics"] == [], f"GET /api/topics without a cookie -> 401 not_paired: {st}")
+    check(req("GET", "/api/topics", headers=POSTH)[0] == 401, "forged CSRF / origin headers do not replace the cookie on the list GET")
+    tbody = {"agent_type": "general", "name": "x", "keywords": ["k"]}
+    check(req("POST", "/api/topics/create", tbody, {"Origin": ORIGIN})[0] == 403, "topics create without CSRF header -> 403")
+    check(req("POST", "/api/topics/create", tbody, {"X-Niu-CSRF": "1", "Origin": "https://evil.example"})[0] == 403, "topics create cross-origin -> 403")
+    for p, b in (("/api/topics/create", tbody), ("/api/topics/update", {"id": "x", "fields": {}}), ("/api/topics/refresh", {})):
+        check(req("POST", p, b, POSTH)[0] == 401, f"{p} with CSRF and origin but no cookie -> 401")
 
     # State: links between session and subagents, tasks, messages
     st, _, js, _ = req("GET", "/api/state")
@@ -194,6 +207,48 @@ try:
     check(tok.split("=", 1)[1] not in json.dumps(store), "only token hash stored")
     check(oct((tmp / "state" / "web-sessions.json").stat().st_mode)[-3:] == "600", "credential file mode 600")
     check(req("GET", "/api/me", headers={"Cookie": tok})[2]["paired"] is True, "/api/me paired")
+
+    # Topics through a fake valkyrie-dispatch: a paired browser can list and create; CSP is unchanged
+    import threading  # noqa: E401
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class FakeRD(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, status, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            self._send(200, {"name": "t", "scope": "topics"} if self.path.startswith("/api/v1/auth/whoami") else [])
+
+        def do_POST(self):
+            data = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+            self._send(201, {"id": "0000aaaa-0000-4000-8000-00000000aaaa", "is_active": True, "updated_at": "2026-11-07T09:00:00Z", **data})
+    fake = ThreadingHTTPServer(("127.0.0.1", 0), FakeRD)
+    threading.Thread(target=fake.serve_forever, daemon=True).start()
+    Path(env["NIU_RESEARCH_CONFIG"]).write_text(json.dumps({"enabled": True, "url": f"http://127.0.0.1:{fake.server_address[1]}", "timeout_secs": 2}))
+    tfile = Path(env["NIU_TOPICS_TOKEN_FILE"])
+    tfile.parent.mkdir(parents=True, exist_ok=True)
+    tfile.write_text("rd_pat_WEBTEST_" + "t" * 24 + "\n")
+    os.chmod(tfile, 0o600)
+    cookie_only = {"Cookie": tok}
+    st, _, js, _ = req("GET", "/api/topics", headers=cookie_only)
+    check(st == 200 and js["state"] == "ok" and js["topics"] == [], f"paired GET /api/topics: {st} {js and js.get('state')}")
+    st, _, js, _ = req("POST", "/api/topics/create", {"agent_type": "general", "name": "Web test", "keywords": ["k"]}, auth)
+    check(st == 200 and js["ok"] and js["topic"]["name"] == "Web test", f"paired create through the fake: {st} {js}")
+    st, _, js, _ = req("POST", "/api/topics/create", {"agent_type": "general", "name": "a<b", "keywords": ["k"]}, auth)
+    check(st == 400 and js["code"] == "invalid" and js["fields"] == {"name": "forbidden_char"}, f"invalid create refused locally: {st} {js}")
+    st, hd, _, _ = req("GET", "/api/topics", headers=cookie_only)
+    check(hd.get("Content-Security-Policy", "").startswith("default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'"),
+          "CSP header unchanged on the topics route")
+    fake.shutdown()
+    tfile.unlink()
 
     # Merge with pairing: the host issues a single-use 4-digit code that must be typed back
     open(env["FAKE_GH_LOG"], "w").close()
@@ -263,10 +318,20 @@ try:
 
         rs_path = tmp / "research.json"
         rs_path.write_text(json.dumps({n: envelope(n) for n in ("m1", "m2", "hostile")}))
-        r = subprocess.run([node, str(SH / "tests" / "web_smoke.js"), str(SH / "web" / "app.js"), str(st_path), str(rs_path)],
+        # Topics panel payloads: the fixtures passed through the server's own shape_topic() like /api/topics does
+        import niu_topics  # noqa: E402
+
+        def tp_env(name):
+            rows = json.loads((SH / "tests" / "fixtures" / "topics" / f"{name}.json").read_text())
+            return {"state": "ok", "cause": None, "message": "", "topics": [t for t in map(niu_topics.shape_topic, rows) if t], "archived_truncated": False,
+                    "dropped": 0, "loaded_at": now, "stale": False, "limits": niu_topics.LIMITS, "server_now": now}
+        tp_path = tmp / "topics.json"
+        tp_path.write_text(json.dumps({"ok": tp_env("list_ok"), "hostile": tp_env("hostile"), "overlimit": tp_env("cli_overlimit"),
+                                       "not_paired": {"state": "not_paired", "message": niu_topics.MESSAGES["not_paired"], "topics": []}}))
+        r = subprocess.run([node, str(SH / "tests" / "web_smoke.js"), str(SH / "web" / "app.js"), str(st_path), str(rs_path), str(tp_path)],
                            capture_output=True, text=True, timeout=60)
-        check(r.returncode == 0 and "rendered" in r.stdout and "llm ok" in r.stdout and "research ok" in r.stdout,
-              f"app.js renders without errors (Agents and Research views): {r.stdout.strip()} {r.stderr.strip()[:300]}")
+        check(r.returncode == 0 and "rendered" in r.stdout and "llm ok" in r.stdout and "research ok" in r.stdout and "topics ok" in r.stdout,
+              f"app.js renders without errors (Agents, Research and Topics views): {r.stdout.strip()} {r.stderr.strip()[:300]}")
     else:
         print("web: node not found, front-end smoke run skipped")
 

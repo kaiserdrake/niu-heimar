@@ -173,18 +173,18 @@ not a hard security boundary against processes running as your own user.
   set `NIU_CLAUDE_USAGE_API=0` in the service's environment (`systemctl --user edit niu-dash`, and the same for
   `niu-notify`, adding `Environment=NIU_CLAUDE_USAGE_API=0` under `[Service]`).
 
-**Research tab** (monitors the research-dispatch agents in `PERSONAL/valkyrie-dispatch`): the next scheduled run with a
+**Research tab** (monitors the valkyrie-dispatch agents in `PERSONAL/valkyrie-dispatch`): the next scheduled run with a
 countdown, the usage gate (the same bars as the Claude limits, with the gate's floors marked), today's quota ledger,
 36-hour run lanes per agent, the last run per agent and recent errors. The research agents are Claude Agent SDK sessions in
-a container with no hooks, so the Agents tab can't see them; this tab polls research-dispatch's read-only
+a container with no hooks, so the Agents tab can't see them; this tab polls valkyrie-dispatch's read-only
 `GET /api/v1/monitor/summary` (schema `monitor.v1`) instead. It carries only numbers, enums and times: no prompts, item
 titles, URLs or free-text errors. The dashboard makes at most one call a minute, and only while someone has it open.
 The tab can't start, stop or change a run. A run still `running` after 45 minutes is labelled "possibly stuck" with a
 restart hint. Times are shown in your browser's time zone.
 
-*One-time setup* (after research-dispatch has the monitor endpoint):
+*One-time setup* (after valkyrie-dispatch has the monitor endpoint):
 1. `cd PERSONAL/valkyrie-dispatch && docker compose exec app rd gen-token --name niu-dash --scope monitor`
-2. Add the printed `niu-dash:monitor:<sha256>` entry to `API_TOKENS` in research-dispatch's own env file yourself, then
+2. Add the printed `niu-dash:monitor:<sha256>` entry to `API_TOKENS` in valkyrie-dispatch's own env file yourself, then
    `docker compose up -d`.
    Use only a `monitor`-scope token here, never a `read` or `admin` one: the dashboard sends it to the configured URL.
 3. Run `.claude-workspace/bin/niu-dash research-token` in a terminal and paste the token. It is read without echo and saved
@@ -198,10 +198,49 @@ Redirects and proxy variables are ignored, so the token only ever goes to that a
 agents from reading the token file, editing `research.json` (it names where the token is sent) or running `niu-dash research-token`.
 
 *What the tab says when something is wrong*: **not configured** shows the three setup steps; **not reachable** means the
-container is down (`docker compose ps` in research-dispatch); **token rejected** means the token is missing from
-`API_TOKENS` or was revoked (redo step 1 to 3); **incompatible version** means research-dispatch has no `monitor.v1`
+container is down (`docker compose ps` in valkyrie-dispatch); **token rejected** means the token is missing from
+`API_TOKENS` or was revoked (redo step 1 to 3); **incompatible version** means valkyrie-dispatch has no `monitor.v1`
 endpoint yet (update it); an **error** says which check failed (for example the token file's permissions). In every case
-the last good data stays on screen, greyed out, with the time it is from.
+the last good data stays on screen, greyed out, with the time it is from. The monitor token's scope is checked with
+`GET /api/v1/auth/whoami` (cached 5 minutes): a token that is not `monitor` scope shows **token scope too broad** and is
+never used. An older valkyrie-dispatch without `whoami` is tolerated.
+
+### Research tab, Topics
+A **Status | Topics** switch in the Research panel header opens the Topics view: list, add, edit, enable/disable and
+archive/restore the research topics held by valkyrie-dispatch. Design:
+`.claude-workspace/docs/design/2026-11-07-dashboard-topics-panel.md`.
+
+- **Pairing is required, even to look.** Topic text is personal and untrusted, so `GET /api/topics` and every write route
+  need the paired-browser cookie (a local `curl` can fake the CSRF header, not the cookie). An unpaired browser sees "Pair
+  this browser" and no topic data. Pair with `niu-dash pair`.
+- **A topics-only token.** valkyrie-dispatch has a `topics` scope that can read and write topics and nothing else (no
+  feedback, usage, monitor, `DELETE`, runs). The dashboard checks the scope with `whoami` before every use (cached 5
+  minutes) and **refuses any token whose scope is not exactly `topics`**. No endpoint here can start a research run.
+- **Edits are confirmed, not optimistic.** The row changes only after the server answers. Edits send `If-Match` (the topic's
+  `updated_at`), so a stale form cannot overwrite a change made from the CLI, duenext or a feedback mute: you get "changed
+  elsewhere, reload?". "Remove" is the API's soft delete, shown as **Archive / Restore**; nothing is hard-deleted.
+- **Limits:** name 1 to 120 characters, 1 to 20 keywords, 0 to 50 excluded terms (1 to 80 characters each, one per line),
+  weight 0.1 to 5, none of `<>`{}` or control characters. The dashboard checks these first; valkyrie-dispatch stays
+  authoritative. Topics made with `rd topics add` can exceed them and are flagged "CLI-only limits" until shortened.
+- **Rate limits and audit:** 10 changes a minute and 100 a day per paired browser here, 60 an hour per token in
+  valkyrie-dispatch. Every change adds a `TopicChange` row to the Events tab with the topic's ID prefix, the changed field
+  names and the device name: never topic text.
+
+*One-time setup* (needs the valkyrie-dispatch `topics` scope):
+1. `cd PERSONAL/valkyrie-dispatch && docker compose exec app rd gen-token --name niu-dash-topics --scope topics`
+2. Add the printed `niu-dash-topics:topics:<sha256>` entry to `API_TOKENS` in valkyrie-dispatch's own env file yourself,
+   then `docker compose up -d`.
+3. Run `.claude-workspace/bin/niu-dash research-token --scope topics` in a terminal and paste the token. It is saved to
+   `~/.local/state/niu-heimar/research-dispatch.topics.token` (mode 600; a separate file from the monitor token). The setter
+   asks valkyrie-dispatch for the token's scope afterwards and **deletes the file again** if it is not `topics`.
+   `niu-dash research-token --scope topics --remove` deletes it.
+4. Pair the browser if needed, then open Research, then Topics.
+
+*States:* **not paired** (pair this browser), **not configured** (setup steps), **scope too broad / wrong scope** (red,
+nothing is sent), **not reachable** (the last list stays, greyed out; writes are off), **token rejected**, **incompatible**
+(valkyrie-dispatch has no `whoami` yet; deploy it first) and **error** (a fixed message per cause). The dotenv guard hook
+also blocks agents from reading the topics token file, running `niu-dash research-token`, or calling `/api/topics`.
+To revoke at once, remove the `niu-dash-topics` entry from `API_TOKENS` and restart valkyrie-dispatch.
 
 Service: `systemctl --user status|restart|stop niu-dash`. Logs: `journalctl --user -u niu-dash`.
 

@@ -1,0 +1,63 @@
+[
+ {
+  "id": "00000001-0000-4000-8000-000000000001",
+  "agent_type": "general",
+  "name": "AI chips",
+  "keywords": [
+   "gpu",
+   "tpu",
+   "hbm"
+  ],
+  "excluded_terms": [
+   "rumor"
+  ],
+  "weight": 2.5,
+  "is_active": true,
+  "updated_at": "2026-11-07T08:00:00.123456Z"
+ },
+ {
+  "id": "00000002-0000-4000-8000-000000000002",
+  "agent_type": "general",
+  "name": "Open source LLMs",
+  "keywords": [
+   "llama",
+   "mistral"
+  ],
+  "excluded_terms": [],
+  "weight": 1.0,
+  "is_active": true,
+  "updated_at": "2026-11-07T08:00:00.123456Z"
+ },
+ {
+  "id": "00000003-0000-4000-8000-000000000003",
+  "agent_type": "hobby",
+  "name": "Retro synths",
+  "keywords": [
+   "moog",
+   "juno",
+   "dx7",
+   "prophet",
+   "oberheim",
+   "korg",
+   "arp"
+  ],
+  "excluded_terms": [
+   "ebay"
+  ],
+  "weight": 0.5,
+  "is_active": true,
+  "updated_at": "2026-11-07T08:00:00.123456Z"
+ },
+ {
+  "id": "00000004-0000-4000-8000-000000000004",
+  "agent_type": "general",
+  "name": "Old topic",
+  "keywords": [
+   "legacy"
+  ],
+  "excluded_terms": [],
+  "weight": 1.0,
+  "is_active": false,
+  "updated_at": "2026-11-07T08:00:00.123456Z"
+ }
+]

@@ -88,6 +88,7 @@ async function loadMe() {
   $("menudot").hidden = ME.paired;
   $("devstatus").textContent = ME.paired ? `Paired as "${ME.device.name}". Merge buttons are enabled.` : "Not paired: you can view everything, but merging is disabled.";
   if (PRS) renderPRs();
+  renderTopics();
 }
 
 // ---------- menus (hamburger + "needs you") ----------
@@ -119,11 +120,11 @@ function setView(v) {
     $(id).classList.toggle("on", VIEW === name); $(id).setAttribute("aria-pressed", String(VIEW === name));
   }
   store.set("niu.view", VIEW);
-  const hash = VIEW === "agents" ? "" : `#${VIEW}`;
+  const hash = VIEW === "agents" ? "" : VIEW === "research" && RSVIEW === "topics" ? "#research/topics" : `#${VIEW}`;
   if (location.hash !== hash) history.replaceState(null, "", hash || location.pathname);
   connect();
   setTimeout(refit, 50);
-  if (VIEW === "research") { renderResearch(); loadResearch(); }
+  if (VIEW === "research") { renderResearch(); loadResearch(); if (RSVIEW === "topics") loadTopics(); }
 }
 $("tab-agents").onclick = () => setView("agents");
 $("tab-events").onclick = () => setView("events");
@@ -234,7 +235,7 @@ function placeTip(e) {
   if (y + r.height > innerHeight - 8) y = Math.max(8, e.clientY - r.height - gap);
   TIP.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
 }
-for (const id of ["graph", "timeline", "llmcard", "rshead", "rsgate", "rsquota", "rslanes", "rslast"]) {
+for (const id of ["graph", "timeline", "llmcard", "rshead", "rsgate", "rsquota", "rslanes", "rslast", "tplist"]) {
   const box = $(id);
   box.addEventListener("pointerover", (e) => {
     const t = e.target.closest?.("[data-tip]");
@@ -953,6 +954,7 @@ const RS_STATE_MSG = {
   loading: "Checking valkyrie-dispatch…",
   unreachable: "valkyrie-dispatch is not reachable. Is the container running? (docker compose ps in PERSONAL/valkyrie-dispatch)",
   unauthorized: "Token rejected: check API_TOKENS in valkyrie-dispatch and re-run niu-dash research-token.",
+  too_powerful: "This token has a scope other than monitor. Remove it with niu-dash research-token --remove and store a monitor token.",
   incompatible: "valkyrie-dispatch has no compatible monitor endpoint (needs monitor.v1).",
   error: "Could not read the valkyrie-dispatch status.",
 };
@@ -1006,7 +1008,7 @@ function renderResearch() {
 function rsBadge(r) {
   const d = r.state === "ok" ? r.data : null;
   let lvl = "", pulse = false, why = "";
-  if (r.state === "unreachable" || r.state === "unauthorized") { lvl = "bad"; why = RS_STATE_MSG[r.state]; }
+  if (r.state === "unreachable" || r.state === "unauthorized" || r.state === "too_powerful") { lvl = "bad"; why = RS_STATE_MSG[r.state]; }
   else if (d) {
     const last = d.last_run, now = rsNow();
     const skipped = (d.recent_runs || []).some((x) => x.status === "skipped_gate" && now - (x.finished_at || x.started_at || 0) < 86400);
@@ -1030,7 +1032,7 @@ function rsHealth(r) {
     return bad ? ["partial", "valkyrie-dispatch degraded"] : ["up", "valkyrie-dispatch ok"];
   }
   return { loading: ["partial", "checking…"], not_configured: ["partial", "not configured"], unreachable: ["", "valkyrie-dispatch unreachable"],
-    unauthorized: ["", "token rejected"], incompatible: ["", "incompatible version"] }[r.state] || ["", "error"];
+    unauthorized: ["", "token rejected"], incompatible: ["", "incompatible version"], too_powerful: ["", "token scope too broad"] }[r.state] || ["", "error"];
 }
 
 function rsStateText(r) {
@@ -1324,6 +1326,368 @@ function rsErrors(r) {
   box.replaceChildren(...kids);
 }
 
+// ---------- Topics panel (sub-view of the Research tab) ----------
+// Topic text is untrusted (CLI-created topics can hold anything). Everything below builds elements with h()/svg() and sets
+// textContent or non-URL attributes: never an HTML string. web_smoke.js checks that this section holds none.
+const TP_AGENTS = ["general", "hobby", "fintrend"];
+const TP_AGENT_LABEL = { general: "General", hobby: "Hobby", fintrend: "Fintrend" };
+const TP_CAP = 200, TP_MAXKW = 20, TP_MAXEX = 50, TP_NAME = 120, TP_TERM = 80;
+let RSVIEW = store.get("niu.rsview", "status") === "topics" ? "topics" : "status";
+const TP = { data: null, agent: "all", filter: "", archived: false, editing: null, orig: null, flash: null, busy: new Set(), rowMsg: new Map(),
+  expanded: new Set(), armed: 0, loading: false, saving: false };
+const TP_STATE_MSG = {
+  loading: "Loading topics…",
+  not_paired: "Pair this browser to view and edit topics (menu, then Pair). Topics are personal, so they are not shown to unpaired viewers.",
+  not_configured: "No topics token yet. Create one with rd gen-token --name niu-dash-topics --scope topics in PERSONAL/valkyrie-dispatch, add it to API_TOKENS, restart, then run niu-dash research-token --scope topics on this machine.",
+  disabled: "The Research tab is turned off in its local config.",
+  wrong_scope: "This token does not have the topics scope. Remove it with niu-dash research-token --scope topics --remove.",
+  too_powerful: "This token is more powerful than the dashboard accepts. Remove it with niu-dash research-token --scope topics --remove.",
+  unreachable: "valkyrie-dispatch is not reachable. Is the container running?",
+  unauthorized: "Token rejected: check API_TOKENS and re-run niu-dash research-token --scope topics.",
+  incompatible: "valkyrie-dispatch is too old for the Topics panel (needs /auth/whoami).",
+  error: "Could not read the topics.",
+};
+const TP_BAD_STATE = new Set(["wrong_scope", "too_powerful", "unauthorized"]);
+const TP_MSG = {
+  changed: "This topic changed elsewhere (CLI, duenext or feedback). Reload it?",
+  duplicate: "A topic with this name already exists.",
+  rate_limited: "Too many changes in a short time. Try again in a minute.",
+  toolarge: "Too much text: shorten keywords or excluded terms.",
+  not_found: "That topic no longer exists. Refresh the list.",
+  invalid: "valkyrie-dispatch refused some values.",
+  unreachable: "valkyrie-dispatch is not reachable; nothing was saved.",
+  not_paired: "Pair this browser to edit topics.",
+  badjson: "That request could not be read.",
+  error: "Could not save; nothing was changed.",
+};
+const TP_FIELD_MSG = {
+  required: "Required", too_short: "Required", forbidden_char: "These characters are not allowed: < > ` { } and control characters",
+  bad_enum: "Pick one of the listed agents", not_list: "Enter one term per line", empty: "Nothing to save", unknown: "Not an editable field",
+  invalid: "Refused by valkyrie-dispatch", not_bool: "Must be on or off", toolarge: "Too much text",
+  out_of_range: "Between 0.1 and 5", too_few: "At least 1 keyword",
+};
+const tpFieldMsg = (field, code) => code === "too_many" ? `At most ${field === "keywords" ? TP_MAXKW : TP_MAXEX} ${field === "keywords" ? "keywords" : "excluded terms"}`
+  : code === "too_long" ? (field === "name" ? `At most ${TP_NAME} characters` : `Each term can have at most ${TP_TERM} characters`)
+  : TP_FIELD_MSG[code] || "Not accepted";
+const tpLen = (s) => [...s].length;
+const TP_BAD_CHAR = /[<>`{}\u2028\u2029\p{C}]/u;
+const tpAgentLabel = (a) => TP_AGENT_LABEL[a] || "That agent";
+
+// Client-side mirror of the server's allowlist (the server and valkyrie-dispatch stay authoritative).
+function tpTerms(text, lo, hi) {
+  const out = [], seen = new Set();
+  for (const raw of String(text).split(/\r?\n/)) {
+    const s = raw.trim().replace(/\s+/g, " ");
+    if (!s) continue;
+    if (TP_BAD_CHAR.test(s)) return { err: "forbidden_char" };
+    if (tpLen(s) > TP_TERM) return { err: "too_long" };
+    if (!seen.has(s.toLowerCase())) { seen.add(s.toLowerCase()); out.push(s); }
+  }
+  return out.length < lo ? { err: "too_few" } : out.length > hi ? { err: "too_many" } : { val: out };
+}
+function tpCollect() {
+  const val = {}, errs = {};
+  const name = $("tpname").value;
+  if (TP_BAD_CHAR.test(name)) errs.name = "forbidden_char";
+  else {
+    const n = name.trim().replace(/\s+/g, " ");
+    if (!n) errs.name = "too_short"; else if (tpLen(n) > TP_NAME) errs.name = "too_long"; else val.name = n;
+  }
+  for (const [id, field, lo, hi] of [["tpkw", "keywords", 1, TP_MAXKW], ["tpex", "excluded_terms", 0, TP_MAXEX]]) {
+    const t = tpTerms($(id).value, lo, hi);
+    if (t.err) errs[field] = t.err; else val[field] = t.val;
+  }
+  const w = Math.round(Number($("tpweight").value) * 100) / 100;
+  if (String($("tpweight").value).trim() === "" || !Number.isFinite(w) || w < 0.1 || w > 5) errs.weight = "out_of_range"; else val.weight = w;
+  return { val, errs };
+}
+
+// ----- sub-view switch -----
+function setRsView(v, init) {
+  RSVIEW = v === "topics" ? "topics" : "status";
+  store.set("niu.rsview", RSVIEW);
+  for (const [id, name] of [["rsview-status", "status"], ["rsview-topics", "topics"]]) {
+    $(id).classList.toggle("on", RSVIEW === name); $(id).setAttribute("aria-pressed", String(RSVIEW === name));
+  }
+  $("rsbody").hidden = RSVIEW === "topics"; $("tpbody").hidden = RSVIEW !== "topics";
+  $("rsrefresh").hidden = $("rsupd").hidden = RSVIEW === "topics";
+  if (init) return;
+  const hash = RSVIEW === "topics" ? "#research/topics" : "#research";
+  if (VIEW === "research" && location.hash !== hash) history.replaceState(null, "", hash);
+  if (RSVIEW === "topics") loadTopics(); else renderResearch();
+}
+$("rsview-status").onclick = () => setRsView("status");
+$("rsview-topics").onclick = () => setRsView("topics");
+
+// ----- data -----
+async function loadTopics(force) {
+  TP.loading = true;
+  let r = null;
+  try {
+    if (force) { const x = await POST("/api/topics/refresh"); r = x.data; }
+    else r = await fetch("/api/topics", { credentials: "same-origin" }).then((x) => x.json());
+  } catch { r = null; }
+  TP.loading = false;
+  if (!r || typeof r !== "object" || typeof r.state !== "string") r = { state: "error", topics: [] };
+  if (!Array.isArray(r.topics)) r.topics = [];
+  if (r.state === "not_paired") loadMe();
+  TP.data = r;
+  renderTopics();
+}
+
+// ----- rendering -----
+function tpWritable() { return !!TP.data && TP.data.state === "ok" && !TP.data.stale && ME.paired; }
+function tpMatches(t) {
+  const q = TP.filter.trim().toLowerCase();
+  if (TP.agent !== "all" && t.agent_type !== TP.agent) return false;
+  if (!q) return true;
+  return t.name.toLowerCase().includes(q) || t.keywords.some((k) => k.toLowerCase().includes(q)) || t.excluded_terms.some((k) => k.toLowerCase().includes(q));
+}
+function renderTopics() {
+  if (VIEW !== "research" || RSVIEW !== "topics") return;
+  const r = TP.data || { state: "loading", topics: [] };
+  const ok = r.state === "ok", all = r.topics || [];
+  $("tpbody").classList.toggle("stale", !!r.stale);
+  // state banner
+  const head = [];
+  if (!ok) {
+    const msg = (typeof r.message === "string" && r.message) || TP_STATE_MSG[r.state] || TP_STATE_MSG.error;
+    head.push(h("div", `tpstate ${TP_BAD_STATE.has(r.state) ? "bad" : "warn"}`, msg));
+    if (r.stale && r.loaded_at) head.push(h("div", "small muted", `Showing the list as of ${hm(r.loaded_at)}. Changes are disabled.`));
+  }
+  if (ok && r.archived_truncated) head.push(h("div", "small muted", "Showing 200 archived topics; use rd topics list --all for the rest."));
+  if (ok && r.dropped) head.push(h("div", "small muted", `${r.dropped} topic(s) could not be shown (unexpected data).`));
+  $("tphead").replaceChildren(...head);
+  // toolbar
+  const chips = [["all", "All", all.filter((t) => t.is_active).length, null]];
+  for (const a of TP_AGENTS) chips.push([a, TP_AGENT_LABEL[a], all.filter((t) => t.is_active && t.agent_type === a).length, TP_CAP]);
+  $("tpchips").replaceChildren(...chips.map(([k, label, n, cap]) => {
+    const b = h("button", `tpagent${TP.agent === k ? " on" : ""}`, cap ? `${label} ${n}/${cap}` : `${label} ${n}`, { "aria-pressed": String(TP.agent === k) });
+    b.onclick = () => { TP.agent = k; renderTopics(); };
+    return b;
+  }));
+  const add = $("tpadd");
+  add.disabled = !tpWritable();
+  add.setAttribute("title", ME.paired ? (ok ? "" : "Unavailable right now") : "Pair this browser to edit");
+  $("tpupd").textContent = r.loaded_at ? `loaded ${hm(r.loaded_at)}` : "";
+  // list
+  const list = [];
+  if (ok || r.stale) {
+    const shown = all.filter((t) => (TP.archived || t.is_active) && tpMatches(t));
+    for (const a of TP_AGENTS) {
+      const rows = shown.filter((t) => t.agent_type === a);
+      if (!rows.length) continue;
+      const active = all.filter((t) => t.is_active && t.agent_type === a).length;
+      list.push(h("h3", "tpgroup", `${TP_AGENT_LABEL[a]} · ${active}/${TP_CAP}`));
+      for (const t of rows.filter((x) => x.is_active).concat(rows.filter((x) => !x.is_active))) list.push(tpRow(t));
+    }
+    if (!shown.length) {
+      list.push(h("div", "empty", !all.length ? "No topics yet. Add one, or use rd topics add in valkyrie-dispatch."
+        : TP.agent === "fintrend" && !TP.filter && !all.some((t) => t.agent_type === "fintrend") ? "Fintrend agent arrives in M4; topics you add now are kept."
+          : "No topics match."));
+    } else if (TP.agent === "all" && !all.some((t) => t.agent_type === "fintrend")) {
+      list.push(h("div", "small muted", "Fintrend agent arrives in M4; topics you add now are kept."));
+    }
+  }
+  $("tplist").replaceChildren(...list);
+}
+
+function tpRow(t) {
+  const can = tpWritable() && !TP.busy.has(t.id);
+  const row = h("div", `tprow${t.is_active ? "" : " tp-archived"}${TP.busy.has(t.id) ? " busy" : ""}${TP.flash === t.id ? " tpflash" : ""}`, "", { "data-id": t.id });
+  if (t.is_active) {
+    const sw = h("input", "tpswitch", "", { type: "checkbox", role: "switch", "aria-label": `Active: ${t.name}` });
+    sw.checked = true; sw.disabled = !can;
+    if (!ME.paired) sw.setAttribute("title", "Pair this browser to edit");
+    sw.onchange = () => tpToggle(t, false);
+    row.append(sw);
+  } else {
+    const b = h("button", "ghost tiny tprestore", "Restore");
+    b.disabled = !can;
+    b.onclick = () => tpToggle(t, true);
+    row.append(b);
+  }
+  const main = h("div", "tpmain");
+  const title = h("div", "tptitle");
+  title.append(h("span", "tpname", t.name, t.updated_at ? { "data-tip": `Last edited ${t.updated_at}` } : {}));
+  if (t.over_api_limits) title.append(h("span", "badge b-warn", "CLI-only limits", { "data-tip": "Created with the CLI; exceeds what the API accepts. Shorten it to edit." }));
+  if (!t.is_active) title.append(h("span", "badge b-off", "archived"));
+  main.append(title);
+  const kw = h("div", "tpchips2");
+  for (const k of t.keywords.slice(0, 6)) kw.append(h("span", "tpchip", k));
+  if (t.keywords.length > 6) kw.append(h("span", "tpchip more", `+${t.keywords.length - 6}`));
+  if (t.excluded_terms.length) {
+    const open = TP.expanded.has(t.id);
+    const ex = h("button", "ghost tiny tpex", open ? "hide excluded" : `excludes ${t.excluded_terms.length}`, { "aria-expanded": String(open) });
+    ex.onclick = () => { if (open) TP.expanded.delete(t.id); else TP.expanded.add(t.id); renderTopics(); };
+    kw.append(ex);
+  }
+  main.append(kw);
+  if (TP.expanded.has(t.id)) {
+    const exl = h("div", "tpchips2 tpexl");
+    for (const k of t.excluded_terms) exl.append(h("span", "tpchip ex", k));
+    main.append(exl);
+  }
+  const msg = TP.rowMsg.get(t.id);
+  if (msg) main.append(h("div", "msg err", msg));
+  row.append(main);
+  const w = h("div", "tpw");
+  w.append(h("span", "tpwnum", t.weight.toFixed(1)));
+  const bar = svg("svg", { class: "tpweight", width: "60", height: "6", viewBox: "0 0 60 6", "aria-hidden": "true" });
+  bar.append(svg("rect", { class: "tpw-bg", x: "0", y: "0", width: "60", height: "6", rx: "3" }),
+    svg("rect", { class: "tpw-fg", x: "0", y: "0", width: String(Math.round(60 * Math.max(0, Math.min(5, t.weight)) / 5)), height: "6", rx: "3" }));
+  w.append(bar);
+  row.append(w);
+  const edit = h("button", "ghost tiny tpedit", "Edit");
+  edit.disabled = !can;
+  edit.onclick = () => tpDialog(t);
+  row.append(edit);
+  return row;
+}
+
+// ----- enable / disable (= archive / restore): confirmed, not optimistic -----
+async function tpToggle(t, active) {
+  TP.busy.add(t.id); TP.rowMsg.delete(t.id); renderTopics();
+  const r = await tpPost({ id: t.id, if_match: t.updated_at, fields: { is_active: active } }, "update").catch(() => null);
+  TP.busy.delete(t.id);
+  if (r && r.ok) tpApply(r.data.topic);
+  else TP.rowMsg.set(t.id, tpErrText(r, t));
+  renderTopics();
+}
+const tpPost = async (body, kind) => {
+  const r = await POST(`/api/topics/${kind}`, body);
+  if (r.status === 401) { loadMe(); TP.data = { state: "not_paired", topics: [] }; }
+  return r;
+};
+function tpErrText(r, t) {
+  const d = (r && r.data) || {};
+  if (!r) return TP_MSG.error;
+  if (d.code === "cap") return `${tpAgentLabel(t && t.agent_type)} already has ${TP_CAP} active topics. Archive one first.`;
+  return TP_MSG[d.code] || TP_STATE_MSG[d.code] || TP_MSG.error;
+}
+function tpApply(topic) {
+  if (!TP.data || !topic) return;
+  const list = TP.data.topics || (TP.data.topics = []);
+  const i = list.findIndex((x) => x.id === topic.id);
+  if (i >= 0) list[i] = topic; else list.push(topic);
+  TP.flash = topic.id;
+  setTimeout(() => { if (TP.flash === topic.id) { TP.flash = null; renderTopics(); } }, 1600);
+}
+
+// ----- add / edit dialog -----
+const TP_FIELDS = ["agent_type", "name", "keywords", "excluded_terms", "weight"];
+function tpShowErrs(errs) {
+  for (const f of TP_FIELDS) $(`tperr-${f}`).textContent = errs[f] ? tpFieldMsg(f, errs[f]) : "";
+}
+function tpCounters() {
+  const k = tpTerms($("tpkw").value, 0, 999), e = tpTerms($("tpex").value, 0, 999);
+  $("tpkwn").textContent = `${(k.val || []).length}/${TP_MAXKW}`;
+  $("tpexn").textContent = `${(e.val || []).length}/${TP_MAXEX}`;
+}
+function tpDialog(t) {
+  TP.editing = t || null;
+  const blank = { agent_type: TP.agent !== "all" ? TP.agent : "general", name: "", keywords: [], excluded_terms: [], weight: 1 };
+  const v = t || blank;
+  TP.orig = { name: v.name, keywords: [...v.keywords], excluded_terms: [...v.excluded_terms], weight: v.weight, is_active: v.is_active !== false };
+  $("tptitle").textContent = t ? "Edit topic" : "Add topic";
+  $("tpagent").value = v.agent_type;
+  $("tpname").value = v.name; $("tpkw").value = v.keywords.join("\n"); $("tpex").value = v.excluded_terms.join("\n"); $("tpweight").value = String(v.weight);
+  $("tpformmsg").textContent = ""; $("tpformmsg").className = "msg";
+  for (const id of ["tprestoredup", "tpreload"]) $(id).hidden = true;
+  $("tparchive").hidden = !(t && t.is_active); $("tparchhelp").hidden = $("tparchive").hidden;
+  $("tparchive").textContent = "Archive topic"; TP.armed = 0;
+  const note = $("tpnote");
+  note.hidden = !(t && t.over_api_limits);
+  note.textContent = note.hidden ? "" : "This topic was created with the CLI and exceeds what the API accepts. Shorten the highlighted fields to save.";
+  tpShowErrs(t && t.over_api_limits ? tpCollect().errs : {});
+  tpBusy(false); tpCounters();
+  $("tpdlg").showModal();
+  $("tpname").focus();
+}
+function tpBusy(on) {
+  TP.saving = on;
+  for (const id of ["tpname", "tpkw", "tpex", "tpweight", "tpsave", "tparchive", "tprestoredup", "tpreload"]) $(id).disabled = on;
+  $("tpagent").disabled = on || !!TP.editing;
+}
+function tpFormFail(r) {
+  const d = (r && r.data) || {};
+  const msg = $("tpformmsg");
+  msg.className = "msg err";
+  msg.textContent = tpErrText(r, TP.editing || { agent_type: $("tpagent").value });
+  if (d.fields && typeof d.fields === "object") tpShowErrs(Object.fromEntries(Object.entries(d.fields).filter(([f]) => TP_FIELDS.includes(f))));
+  $("tprestoredup").hidden = !(d.code === "duplicate" && d.existing_active === false && typeof d.existing_id === "string");
+  if (!$("tprestoredup").hidden) $("tprestoredup").setAttribute("data-id", d.existing_id);
+  $("tpreload").hidden = d.code !== "changed";
+}
+$("tpform").addEventListener("submit", async (ev) => {
+  if (ev.submitter && ev.submitter.value !== "save") return;
+  ev.preventDefault();
+  const { val, errs } = tpCollect();
+  tpShowErrs(errs);
+  if (Object.keys(errs).length) { $("tpformmsg").textContent = "Fix the highlighted fields."; $("tpformmsg").className = "msg err"; return; }
+  let body, kind;
+  if (TP.editing) {
+    const fields = {};
+    for (const f of ["name", "keywords", "excluded_terms", "weight"]) if (JSON.stringify(val[f]) !== JSON.stringify(TP.orig[f])) fields[f] = val[f];
+    if (!Object.keys(fields).length) { $("tpformmsg").textContent = "Nothing changed."; $("tpformmsg").className = "msg"; return; }
+    body = { id: TP.editing.id, if_match: TP.editing.updated_at, fields }; kind = "update";
+  } else { body = { agent_type: $("tpagent").value, ...val }; kind = "create"; }
+  tpBusy(true); $("tpformmsg").textContent = "Saving…"; $("tpformmsg").className = "msg";
+  const r = await tpPost(body, kind).catch(() => null);
+  tpBusy(false);
+  if (r && r.ok) { tpApply(r.data.topic); $("tpdlg").close(); renderTopics(); return; }
+  tpFormFail(r);
+});
+$("tpcancel").addEventListener("click", () => $("tpdlg").close());
+for (const id of ["tpkw", "tpex"]) $(id).addEventListener("input", tpCounters);
+// 412: re-fetch the list, keep what was typed, and compare against the fresh server state
+$("tpreload").addEventListener("click", async () => {
+  const id = TP.editing && TP.editing.id;
+  await loadTopics(true);
+  const fresh = ((TP.data && TP.data.topics) || []).find((x) => x.id === id);
+  if (!fresh) { $("tpformmsg").textContent = TP_MSG.not_found; return; }
+  TP.editing = fresh;
+  TP.orig = { name: fresh.name, keywords: [...fresh.keywords], excluded_terms: [...fresh.excluded_terms], weight: fresh.weight, is_active: fresh.is_active };
+  $("tpreload").hidden = true;
+  $("tpformmsg").textContent = "Reloaded. Your typed values are kept: review them, then save again.";
+  $("tpformmsg").className = "msg";
+});
+// 409 duplicate with an archived twin: offer to restore it
+$("tprestoredup").addEventListener("click", async () => {
+  const id = $("tprestoredup").getAttribute("data-id");
+  tpBusy(true);
+  const r = await tpPost({ id, fields: { is_active: true } }, "update").catch(() => null);
+  tpBusy(false);
+  if (r && r.ok) { $("tpdlg").close(); await loadTopics(true); TP.flash = id; renderTopics(); return; }
+  tpFormFail(r);
+});
+// Archive: two clicks, like Dismiss
+$("tparchive").addEventListener("click", async () => {
+  const t = TP.editing;
+  if (!t) return;
+  if (Date.now() > TP.armed) {
+    TP.armed = Date.now() + 4000;
+    $("tparchive").textContent = "Confirm archive";
+    setTimeout(() => { if ($("tparchive").isConnected && Date.now() >= TP.armed) { $("tparchive").textContent = "Archive topic"; TP.armed = 0; } }, 4100);
+    return;
+  }
+  TP.armed = 0;
+  tpBusy(true);
+  const r = await tpPost({ id: t.id, if_match: t.updated_at, fields: { is_active: false } }, "update").catch(() => null);
+  tpBusy(false);
+  if (r && r.ok) { tpApply(r.data.topic); $("tpdlg").close(); renderTopics(); return; }
+  tpFormFail(r);
+});
+$("tpadd").onclick = () => tpDialog(null);
+$("tprefresh").onclick = () => loadTopics(true);
+$("tpfilter").addEventListener("input", () => { TP.filter = $("tpfilter").value; renderTopics(); });
+$("tparch").addEventListener("change", () => { TP.archived = $("tparch").checked; renderTopics(); });
+// Fetched on open, after every write, on Refresh and when the page comes back after 60 s: never polled in the background.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && VIEW === "research" && RSVIEW === "topics" && TP.data && Date.now() / 1000 - (TP.data.loaded_at || 0) > 60) loadTopics();
+});
+// ---------- end Topics panel ----------
+
 setInterval(() => {
   if (document.hidden) return;
   if (VIEW === "research") rsTick();
@@ -1337,4 +1701,6 @@ loadMe();
 loadResearch();  // also keeps the tab badge current while another tab is open
 setInterval(() => { if (!document.hidden) loadResearch(); }, 30000);
 $("rsrefresh").onclick = () => loadResearch(true);
-setView({ "#events": "events", "#research": "research" }[location.hash] || store.get("niu.view", "agents"));
+if (location.hash === "#research/topics") RSVIEW = "topics";
+setRsView(RSVIEW, true);
+setView({ "#events": "events", "#research": "research", "#research/topics": "research" }[location.hash] || store.get("niu.view", "agents"));
