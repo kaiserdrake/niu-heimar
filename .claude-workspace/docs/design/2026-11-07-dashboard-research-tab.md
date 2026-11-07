@@ -2,7 +2,7 @@
 Status: proposed · Date: 2026-11-07 · Request: "Will these research agents show in the dashboard? If not, design and implement it so they can be seen or monitored there, in a dedicated tab."
 
 ## Decision summary (read this first)
-- **Answer: no, not today.** The research agents are Claude Agent SDK sessions inside the research-dispatch container. They run with `setting_sources=[]`, so no Claude Code hooks load (`PERSONAL/research-dispatch/docs/design/2026-11-06-research-dispatch-pipeline.md` §5). They also can't reach the host's `~/.local/state/niu-heimar/events.db`. The dashboard learns sessions only from that table, so they are invisible. The only trace today is indirect: their use of the plan shows up in the shared Claude limits on the LLM card (`/api/llm`, `bin/niu-dash:236-243`).
+- **Answer: no, not today.** The research agents are Claude Agent SDK sessions inside the research-dispatch container. They run with `setting_sources=[]`, so no Claude Code hooks load (`PERSONAL/valkyrie-dispatch/docs/design/2026-11-06-research-dispatch-pipeline.md` §5). They also can't reach the host's `~/.local/state/niu-heimar/events.db`. The dashboard learns sessions only from that table, so they are invisible. The only trace today is indirect: their use of the plan shows up in the shared Claude limits on the LLM card (`/api/llm`, `bin/niu-dash:236-243`).
 - **Data feed: option B, the dashboard polls research-dispatch.** niu-dash gets a small server-side poller (`lib/niu_research.py`) built like the PR cache (`bin/niu-dash:90-113`). It calls one fixed URL, `http://127.0.0.1:8080/api/v1/monitor/summary`, at most once every 60 s, and only while someone is viewing. It re-shapes the answer through an allowlist and serves it as `GET /api/research`. research-dispatch already owns the run data and has named tokens, and the browser never talks to research-dispatch, so the CSP stays as it is.
 - **research-dispatch adds one versioned, read-only endpoint, `GET /api/v1/monitor/summary` (`monitor.v1`).** It carries only numbers, enums, timestamps, model IDs and slot keys. It never carries free text, prompts, grounded content, URLs or tokens. A new, narrower token scope, `monitor`, can read only this endpoint (`read` and `admin` include it).
 - **Build now, in M1:** the endpoint with health, schedule (next slot), a gate preview (cached 5 min, never a probe), recent gate decisions and today's ledger. `current_run`, `last_run` and `recent_runs` are `null`/`[]`, with `features.runs=false`. **M2** fills in runs, agents and digest status. **M4** adds the fintrend lane.
@@ -31,7 +31,7 @@ Status: proposed · Date: 2026-11-07 · Request: "Will these research agents sho
   - Each `tests/*_test.py` has a `tests/*.test.sh` wrapper. `bin/workspace-lint` runs every wrapper.
   - `tests/block-env.test.sh` covers the hook.
 
-**research-dispatch (container, `PERSONAL/research-dispatch/`)**
+**research-dispatch (container, `PERSONAL/valkyrie-dispatch/`)**
 - Compose publishes `${BIND_ADDR:-127.0.0.1}:8080:8080` (`docker-compose.yml:9-10`). The README already documents `curl -H "Authorization: Bearer $READ_TOKEN" http://127.0.0.1:8080/api/v1/usage/gate` (`README.md:33`).
 - **Tokens:** `rd_pat_` + `token_urlsafe(32)` (`core/security.py:14,32-35`). Scopes are `read` and `admin`, and `admin` implies `read` (`:12-13,74-76`). They are configured as `API_TOKENS=name:scope:sha256` (`:38-61`). `rd gen-token --name --scope` prints the token once (`cli.py:21-36`). Dependencies are `Reader` and `Admin` (`api/deps.py:36-40`).
 - **M1 status (in progress):**
@@ -252,7 +252,7 @@ research-dispatch (container) ── reads SQLite (runs, agent_runs, run_items, 
 | `not_configured` | No token file | Setup steps (§7) |
 | `loading` | First fetch is in flight | "Checking research-dispatch…" |
 | `ok` | 200 and valid `monitor.v1` | Data |
-| `unreachable` | Connection refused, timeout or DNS-free socket error | "research-dispatch is not reachable on 127.0.0.1:8080. Is the container running? (`docker compose ps` in PERSONAL/research-dispatch)" |
+| `unreachable` | Connection refused, timeout or DNS-free socket error | "research-dispatch is not reachable on 127.0.0.1:8080. Is the container running? (`docker compose ps` in PERSONAL/valkyrie-dispatch)" |
 | `unauthorized` | 401 or 403 | "Token rejected: check `API_TOKENS` in research-dispatch and re-run `niu-dash research-token`" |
 | `incompatible` | 404, a redirect (3xx), wrong content type, or a `schema` other than `monitor.v1` | "research-dispatch has no compatible monitor endpoint (needs monitor.v1)" |
 | `error` | 5xx, too large, bad JSON, bad URL or bad token file permissions | A fixed message per cause |
@@ -378,14 +378,14 @@ All colours come from the existing variables (`--ok`, `--warn`, `--bad`, `--acce
 | "Possibly stuck" threshold | `app.js` constant | 45 min |
 
 ### 7. User setup (one time, after both PRs are merged)
-1. `cd ~/WORKSPACE/PERSONAL/research-dispatch && docker compose exec app rd gen-token --name niu-dash --scope monitor`
+1. `cd ~/WORKSPACE/PERSONAL/valkyrie-dispatch && docker compose exec app rd gen-token --name niu-dash --scope monitor`
 2. Add the printed `niu-dash:monitor:<sha256>` entry to `API_TOKENS` in research-dispatch's `.env` yourself. Then run `docker compose up -d`.
 3. Run `~/WORKSPACE/.claude-workspace/bin/niu-dash research-token` and paste the token.
 4. Open the dashboard and select the Research tab. It shows data within about 30 s.
 
 ## Changes
 
-### PR 1: research-dispatch (`PERSONAL/research-dispatch/`)
+### PR 1: research-dispatch (`PERSONAL/valkyrie-dispatch/`)
 | File | Change |
 |---|---|
 | `src/research_dispatch/core/security.py` | Add the scope `monitor` to `Scope` and `SCOPES`. `scope_allows`: admin ⊇ read ⊇ monitor. Update the validation message. |

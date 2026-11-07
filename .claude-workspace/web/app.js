@@ -951,7 +951,7 @@ const RS_SOURCE = { usage_api: "usage API", probe: "probe", none: "no data", rat
 const RS_SOON = { hobby: "arrives in M2", fintrend: "arrives in M4" };
 const RS_STATE_MSG = {
   loading: "Checking research-dispatch…",
-  unreachable: "research-dispatch is not reachable. Is the container running? (docker compose ps in PERSONAL/research-dispatch)",
+  unreachable: "research-dispatch is not reachable. Is the container running? (docker compose ps in PERSONAL/valkyrie-dispatch)",
   unauthorized: "Token rejected: check API_TOKENS in research-dispatch and re-run niu-dash research-token.",
   incompatible: "research-dispatch has no compatible monitor endpoint (needs monitor.v1).",
   error: "Could not read the research-dispatch status.",
@@ -1236,7 +1236,7 @@ function rsStateBlock(r) {
     const box = h("div", "rssetup");
     box.append(h("div", "", "No monitor token is set up yet. One time, in three steps:"));
     const ol = h("ol");
-    for (const [a, code, b] of [["In PERSONAL/research-dispatch run ", "docker compose exec app rd gen-token --name niu-dash --scope monitor", "."],
+    for (const [a, code, b] of [["In PERSONAL/valkyrie-dispatch run ", "docker compose exec app rd gen-token --name niu-dash --scope monitor", "."],
       ["Add the printed niu-dash:monitor:… entry to API_TOKENS in research-dispatch's own env file yourself, then run ", "docker compose up -d", "."],
       ["On this machine run ", "niu-dash research-token", " in a terminal and paste the token."]]) {
       const li = h("li");

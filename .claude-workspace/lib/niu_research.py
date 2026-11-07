@@ -58,7 +58,7 @@ MESSAGES = {
     "not_configured": "No monitor token yet. Run `niu-dash research-token` in a terminal on this machine and paste the token.",
     "loading": "Checking research-dispatch…",
     "ok": "",
-    "unreachable": "research-dispatch is not reachable on {addr}. Is the container running? (`docker compose ps` in PERSONAL/research-dispatch)",
+    "unreachable": "research-dispatch is not reachable on {addr}. Is the container running? (`docker compose ps` in PERSONAL/valkyrie-dispatch)",
     "unauthorized": "Token rejected: check API_TOKENS in research-dispatch and re-run `niu-dash research-token`.",
     "incompatible": "research-dispatch has no compatible monitor endpoint (needs monitor.v1).",
 }
