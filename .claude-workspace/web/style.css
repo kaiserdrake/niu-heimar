@@ -530,7 +530,7 @@ svg .slotline { stroke: var(--border); stroke-dasharray: 2 3; }
 .tpchips2 { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 3px; }
 .tpchip { font-size: 11px; padding: 0 7px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); overflow-wrap: anywhere; }
 .tpchip.more { color: var(--muted); } .tpchip.ex { border-style: dashed; color: var(--muted); }
-.tpmatch { background: var(--warn-bg); color: var(--warn); border-radius: 2px; }
+.tpmatch { background: var(--warn-bg); color: var(--warn); border-radius: 2px; font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
 .tpchip.tphit { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
 .tphint { margin-top: 2px; overflow-wrap: anywhere; }
 .tpex { padding: 0 6px; font-size: 11px; color: var(--muted); }

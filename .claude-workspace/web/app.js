@@ -1481,8 +1481,8 @@ function tpMatch(t, query) {
   const tokens = fzQuery(query);
   if (!tokens.length) return null;
   const nameFd = fzPrep(t.name), parts = [{ key: "name", i: 0, fd: nameFd }];
-  (t.keywords || []).slice(0, FZ_MAXTERMS).forEach((k, i) => parts.push({ key: "keywords", i, fd: fzPrep(k) }));
-  (t.excluded_terms || []).slice(0, FZ_MAXTERMS).forEach((k, i) => parts.push({ key: "excluded", i, fd: fzPrep(k) }));
+  (Array.isArray(t.keywords) ? t.keywords : []).slice(0, FZ_MAXTERMS).forEach((k, i) => parts.push({ key: "keywords", i, fd: fzPrep(k) }));
+  (Array.isArray(t.excluded_terms) ? t.excluded_terms : []).slice(0, FZ_MAXTERMS).forEach((k, i) => parts.push({ key: "excluded", i, fd: fzPrep(k) }));
   const r = fzRun(tokens, parts);
   if (!r) return null;
   const out = { score: r.score, name: null, kw: new Set(), ex: new Set() };
@@ -1607,7 +1607,7 @@ function renderTopics() {
     if (!shown.length) {
       list.push(h("div", "empty", !all.length ? "No topics yet. Add one, or use rd topics add in valkyrie-dispatch."
         : TP.agent === "fintrend" && !TP.filter && !all.some((t) => t.agent_type === "fintrend") ? "Fintrend agent arrives in M4; topics you add now are kept."
-          : q ? `No topic matches "${q.length > 40 ? q.slice(0, 40) + "…" : q}"` : "No topics match."));
+          : q ? `No topic matches "${[...q].slice(0, 40).join("")}${[...q].length > 40 ? "…" : ""}"` : "No topics match."));
     } else if (TP.agent === "all" && !all.some((t) => t.agent_type === "fintrend")) {
       list.push(h("div", "small muted", "Fintrend agent arrives in M4; topics you add now are kept."));
     }
@@ -1617,6 +1617,7 @@ function renderTopics() {
 }
 
 function tpRow(t, m) {
+  const kws = Array.isArray(t.keywords) ? t.keywords : [], exs = Array.isArray(t.excluded_terms) ? t.excluded_terms : [];
   const can = tpWritable() && !TP.busy.has(t.id);
   const row = h("div", `tprow${t.is_active ? "" : " tp-archived"}${TP.busy.has(t.id) ? " busy" : ""}${TP.flash === t.id ? " tpflash" : ""}`, "", { "data-id": t.id });
   if (t.is_active) {
@@ -1646,22 +1647,22 @@ function tpRow(t, m) {
   if (!t.is_active) title.append(h("span", "badge b-off", "archived"));
   main.append(title);
   const kw = h("div", "tpchips2");
-  t.keywords.slice(0, 6).forEach((k, i) => kw.append(h("span", m && m.kw.has(i) ? "tpchip tphit" : "tpchip", k)));
-  if (t.keywords.length > 6) kw.append(h("span", "tpchip more", `+${t.keywords.length - 6}`));
-  if (t.excluded_terms.length) {
+  kws.slice(0, 6).forEach((k, i) => kw.append(h("span", m && m.kw.has(i) ? "tpchip tphit" : "tpchip", k)));
+  if (kws.length > 6) kw.append(h("span", "tpchip more", `+${kws.length - 6}`));
+  if (exs.length) {
     const open = TP.expanded.has(t.id);
-    const ex = h("button", "ghost tiny tpex", open ? "hide excluded" : `excludes ${t.excluded_terms.length}`, { "aria-expanded": String(open) });
+    const ex = h("button", "ghost tiny tpex", open ? "hide excluded" : `excludes ${exs.length}`, { "aria-expanded": String(open) });
     ex.onclick = () => { if (open) TP.expanded.delete(t.id); else TP.expanded.add(t.id); renderTopics(); };
     kw.append(ex);
   }
   main.append(kw);
   if (m && (m.kw.size || m.ex.size)) {
     const say = (label, arr, set) => set.size ? `${label} ${[...set].slice(0, 3).map((i) => String(arr[i]).slice(0, 40)).join(", ")}` : "";
-    main.append(h("div", "small muted tphint", "Matches " + [say("keyword", t.keywords, m.kw), say("excluded", t.excluded_terms, m.ex)].filter(Boolean).join(" · ")));
+    main.append(h("div", "small muted tphint", "Matches " + [say("keyword", kws, m.kw), say("excluded", exs, m.ex)].filter(Boolean).join(" · ")));
   }
   if (TP.expanded.has(t.id)) {
     const exl = h("div", "tpchips2 tpexl");
-    t.excluded_terms.forEach((k, i) => exl.append(h("span", m && m.ex.has(i) ? "tpchip ex tphit" : "tpchip ex", k)));
+    exs.forEach((k, i) => exl.append(h("span", m && m.ex.has(i) ? "tpchip ex tphit" : "tpchip ex", k)));
     main.append(exl);
   }
   const msg = TP.rowMsg.get(t.id);

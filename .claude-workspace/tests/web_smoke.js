@@ -173,6 +173,24 @@ function fuzzyChecks(run, fail) {
   if (sc("a".repeat(500), big) < 0 || sc(big, "a") < 0 || sc("zz", big) !== 0) fail("huge input");
   if (!(sc("é".repeat(30), "é".repeat(5000)) >= 0) || Date.now() - t0 > 2000) fail("huge input too slow: " + (Date.now() - t0) + "ms");
   for (const q of ["\u0000‮", "\ud800", "((((", "[a-", "\\", "😀😀😀", "ǅ"]) { sc(q, "anything <b>x</b> 😀"); sc("x", q); }
+  // edit budgets: 4-6 chars allow 1 edit, 7+ allow 2; short tokens never match mid-word or by typo
+  for (const [q, t] of [["plxxet", "planet"], ["pxxnt", "plant"], ["x", "axe"], ["e", "Alpha Beta"], ["an", "Final Fantasy"], ["na", "Fantasy"], ["ar", "Final Fantasy"]]) {
+    if (sc(q, t) !== 0) fail(`budget: ${JSON.stringify(q)} must not match ${JSON.stringify(t)}, got ${sc(q, t)}`);
+  }
+  for (const [q, t] of [["plnet", "planet"], ["plxxnetary", "planetary"], ["resonnnce", "Resonance"]]) if (!(sc(q, t) > 0)) fail(`budget: ${JSON.stringify(q)} should match ${JSON.stringify(t)}`);
+  // caps: only the first 8 tokens and the first 80 characters of the query count
+  const w8 = "alpha beta gamma delta omega sigma theta kappa";
+  if (!(sc(w8 + " zzzzzz", w8) > 0)) fail("9th token should be dropped by the token cap");
+  if (sc("zzzzzz " + w8, w8) !== 0) fail("a wrong 1st token must still fail");
+  if (!(sc("alpha" + " ".repeat(80) + "zzzzzz", "alpha") > 0)) fail("query tail past 80 chars should be ignored");
+  if (sc("alpha" + " ".repeat(70) + "zzzzzz", "alpha") !== 0) fail("query inside 80 chars must count");
+  const tm = (q, name) => run(`tpMatch({ name: ${JSON.stringify(name)}, keywords: [], excluded_terms: [] }, ${JSON.stringify(q)}).score`);
+  if (!(tm("final fantasy", "Final Fantasy") > tm("fantasy final", "Final Fantasy"))) fail("phrase in the name should outrank the same words reversed");
+  // emoji-only queries have no tokens: they match nothing (not everything)
+  if (sc("😀😀", "anything 😀") !== 0 || run(`tpMatch({ name: "x", keywords: [], excluded_terms: [] }, "😀")`) !== null) fail("emoji-only query should match nothing");
+  if (!(sc("😀 anything", "anything") > 0)) fail("emoji tokens are dropped, the rest of the query still counts");
+  // malformed rows never throw
+  if (run(`tpMatch({ name: "abc", keywords: "abc", excluded_terms: 5 }, "abc")`) === null || run(`tpMatch({ name: "abc", keywords: { a: 1 }, excluded_terms: null }, "abc")`) === null) fail("tpMatch on malformed row");
   // tpMatch: stable fields and name indexes
   const m = run(`(() => { const r = tpMatch({ name: "Final Fantasy Resonance", keywords: ["ff14"], excluded_terms: ["leaks"] }, "reso leaks"); return [r.score > 0, [...r.name], [...r.ex], [...r.kw]]; })()`);
   if (JSON.stringify(m) !== JSON.stringify([true, [14, 15, 16, 17], [0], []])) fail("tpMatch details " + JSON.stringify(m));
@@ -255,6 +273,27 @@ async function topicsChecks(fx, appSrc) {
   const ev = { key: "Escape", preventDefault() { ev.pd = true; } };
   await fire("tpfilter", "keydown", ev);
   if (get("tpfilter").value !== "" || run("TP.filter") !== "" || !ev.pd || get("tpcount").textContent !== "") fail("Escape did not clear the search");
+  run("TP.filter = ''; TP.archived = false; TP.agent = 'all'");
+  // ordering is by score, not by list order: the better match comes second in the data and must render first
+  ctx.TP_CUR = { state: "ok", loaded_at: 1, topics: [
+    mk("x1", "general", "Zebra news", ["duterte"]), mk("x2", "general", "Duterte", ["other"]),
+    mk("x3", "general", "Bad keywords", "not-an-array", 7), mk("x4", "general", "Null lists", null, null),
+  ] };
+  await run("loadTopics()");
+  run("TP.filter = 'duterte'; renderTopics()");
+  if (names().join("|") !== "Duterte|Zebra news") fail("render order should follow the score: " + names());
+  run("TP.filter = ''; renderTopics()");
+  if (rowsOf().length !== 4) fail("malformed rows (non-array keywords/excluded_terms) must still render: " + rowsOf().length);
+  run("TP.filter = 'bad'; renderTopics()");
+  if (names().join("|") !== "Bad keywords") fail("malformed row search: " + names());
+  // empty-state echo is cut by code points (no lone surrogate), emoji-only queries show the empty state, hostile text stays text
+  run("TP.filter = 'a'.repeat(39) + '😀😀😀'; renderTopics()");
+  const echo = textOf(get("tplist"));
+  if (/[\ud800-\udbff](?![\udc00-\udfff])/.test(echo) || /(^|[^\ud800-\udbff])[\udc00-\udfff]/.test(echo) || !echo.includes("a".repeat(39) + "😀…")) fail("empty-state echo must cut by code points: " + JSON.stringify(echo));
+  run("TP.filter = '😀😀'; renderTopics()");
+  if (rowsOf().length || !/No topic matches "😀😀"/.test(textOf(get("tplist")))) fail("emoji-only query behaviour changed");
+  run("TP.filter = '\\u0000\\u202e<img src=x onerror=alert(1)>'; renderTopics()");
+  if (allOf(get("tplist")).some((n) => ["img", "script", "iframe", "a"].includes(n.tagName))) fail("hostile query created an element");
   run("TP.filter = ''; TP.archived = false; TP.agent = 'all'");
   // hostile topic text: literal, never markup
   ctx.TP_CUR = fx.hostile;
