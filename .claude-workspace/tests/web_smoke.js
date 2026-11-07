@@ -143,6 +143,41 @@ async function researchChecks(fx) {
   if (!els.get("tab-research").hidden || run("VIEW") !== "agents") fail("disabled research should hide the tab and leave the view");
   return "research ok";
 }
+// Pure scoring tables for fuzzyScore()/tpMatch() in the Topics section of app.js.
+function fuzzyChecks(run, fail) {
+  const sc = (q, t) => run(`fuzzyScore(${JSON.stringify(q)}, ${JSON.stringify(t)})`);
+  const yes = [
+    ["duterte", "Duterte"], ["DUTERTE", "duterte"], ["dute", "Duterte"], ["uter", "Duterte"],       // exact, case, prefix, substring
+    ["dutrte", "Duterte"], ["dutert", "Duterte"], ["duertte", "Duterte"], ["duetrte", "Duterte"],     // typo, transposition
+    ["resonanse", "Resonance"], ["resonnnce", "Resonance"],                                          // 7+ chars allow 2 edits
+    ["cafe", "Café du monde"], ["CAFÉ", "cafe"], ["naive", "naïve"],                                  // accent folding
+    ["ff", "Final Fantasy Resonance"], ["ff reso", "Final Fantasy Resonance"], ["fantasy final", "Final Fantasy"],  // initials, AND in any order
+    ["ollama mdls", "ollama models"], ["mdls", "models"],                                             // subsequence
+    ["a", "apple"], ["ap", "apple"], ["", "anything"], ["   ", "anything"],                            // short prefix, empty query
+    ["img", "<img src=x onerror=alert(1)>"], ["onerror", "<img src=x onerror=alert(1)>"], ["ａｂｃ", "abc"],
+  ];
+  for (const [q, t] of yes) if (!(sc(q, t) > 0)) fail(`fuzzyScore(${JSON.stringify(q)}, ${JSON.stringify(t)}) should match`);
+  const no = [
+    ["xyz", "Duterte"], ["dutxxxe", "Duterte"], ["ollama zzz", "ollama models"],                        // AND: one bad token fails all
+    ["ab", "xaxb"], ["fq", "Final Fantasy"], ["cat", "cut"], ["duk", "Duterte"],                         // short tokens: no typos, no subsequence
+    ["!!!", "Duterte"], ["resonance", "Final"], ["fantasyyyy", "Fantasy"],
+  ];
+  for (const [q, t] of no) if (sc(q, t) !== 0) fail(`fuzzyScore(${JSON.stringify(q)}, ${JSON.stringify(t)}) should not match, got ${sc(q, t)}`);
+  const better = [   // [query, better text, worse text]
+    ["duterte", "Duterte", "Dutrte"], ["duterte", "Duterte news", "the dutertes"], ["reso", "Resonance", "Xresonance"],
+    ["fantasy", "Fantasy", "Fantasyland"], ["models", "models", "modles"],
+  ];
+  for (const [q, a, b] of better) if (!(sc(q, a) > sc(q, b))) fail(`ranking: ${JSON.stringify(q)} should prefer ${JSON.stringify(a)} (${sc(q, a)}) over ${JSON.stringify(b)} (${sc(q, b)})`);
+  // hostile / huge input must neither throw nor hang
+  const big = "a".repeat(100000), t0 = Date.now();
+  if (sc("a".repeat(500), big) < 0 || sc(big, "a") < 0 || sc("zz", big) !== 0) fail("huge input");
+  if (!(sc("é".repeat(30), "é".repeat(5000)) >= 0) || Date.now() - t0 > 2000) fail("huge input too slow: " + (Date.now() - t0) + "ms");
+  for (const q of ["\u0000‮", "\ud800", "((((", "[a-", "\\", "😀😀😀", "ǅ"]) { sc(q, "anything <b>x</b> 😀"); sc("x", q); }
+  // tpMatch: stable fields and name indexes
+  const m = run(`(() => { const r = tpMatch({ name: "Final Fantasy Resonance", keywords: ["ff14"], excluded_terms: ["leaks"] }, "reso leaks"); return [r.score > 0, [...r.name], [...r.ex], [...r.kw]]; })()`);
+  if (JSON.stringify(m) !== JSON.stringify([true, [14, 15, 16, 17], [0], []])) fail("tpMatch details " + JSON.stringify(m));
+  if (run(`tpMatch({ name: "A", keywords: [], excluded_terms: [] }, "")`).score !== 1 || run(`tpMatch({ name: "A", keywords: [], excluded_terms: [] }, "b")`) !== null) fail("tpMatch empty/none");
+}
 // Topics sub-view: optional 5th argument = JSON file {ok, hostile, overlimit, not_paired} of /api/topics envelopes (rows already shaped by the server).
 async function topicsChecks(fx, appSrc) {
   const fail = (m) => { throw new Error("topics: " + m); };
@@ -182,8 +217,45 @@ async function topicsChecks(fx, appSrc) {
   run("TP.archived = false; TP.filter = 'moog'; renderTopics()");
   if (rowsOf().length !== 1) fail("text filter");
   run("TP.filter = 'zzzz'; renderTopics()");
-  if (!/No topics match/.test(textOf(get("tplist")))) fail("empty filter state");
+  if (!/No topic matches "zzzz"/.test(textOf(get("tplist")))) fail("empty filter state");
   run("TP.filter = ''; renderTopics()");
+  fuzzyChecks(run, fail);
+  // fuzzy search through the real render path: ranking, AND narrowing, counts, highlight, hostile text
+  const mk = (id, agent, name, kw, ex, act = true) => ({ id, agent_type: agent, name, keywords: kw, excluded_terms: ex || [], weight: 1, is_active: act, updated_at: "2026-11-07T00:00:00Z" });
+  ctx.TP_CUR = { state: "ok", loaded_at: 1, topics: [
+    mk("a", "general", "Philippine politics", ["Rodrigo Duterte", "senate"]),
+    mk("b", "hobby", "Final Fantasy Resonance", ["ff14", "dawntrail"], ["leaks"]),
+    mk("c", "general", "Local LLM news", ["ollama models", "llama.cpp"]),
+    mk("d", "general", "<img src=x onerror=alert(1)>", ["<script>alert(1)</script>"]),
+    mk("e", "general", "Old Duterte archive", ["history"], [], false),
+  ] };
+  await run("loadTopics()");
+  const names = () => rowsOf().map((r) => allOf(r).find((n) => /\btpname\b/.test(n.className || "")).children.map((c) => c.textContent).join("") || allOf(r).find((n) => /\btpname\b/.test(n.className || "")).textContent);
+  run("TP.filter = 'dutrte'; renderTopics()");
+  if (names().join("|") !== "Philippine politics" || !/1 of 4 topics/.test(get("tpcount").textContent)) fail("typo search: " + names() + " / " + get("tpcount").textContent);
+  if (!allOf(get("tplist")).some((n) => /\btphit\b/.test(n.className || "")) || !/Matches keyword Rodrigo Duterte/.test(textOf(get("tplist")))) fail("keyword hit not shown");
+  run("TP.filter = 'ff reso'; renderTopics()");
+  if (names().join("|") !== "Final Fantasy Resonance") fail("initials+prefix: " + names());
+  if (!allOf(get("tplist")).some((n) => n.className === "tpmatch")) fail("name highlight missing");
+  run("TP.filter = 'ollama mdls'; renderTopics()");
+  if (names().join("|") !== "Local LLM news") fail("keyword subsequence: " + names());
+  run("TP.filter = 'duterte'; TP.archived = true; renderTopics()");
+  if (names().join("|") !== "Philippine politics|Old Duterte archive" || !/2 of 5 topics/.test(get("tpcount").textContent)) fail("archived scope: " + names());
+  run("TP.archived = false; TP.agent = 'hobby'; TP.filter = 'duterte'; renderTopics()");
+  if (rowsOf().length || !/No topic matches "duterte"/.test(textOf(get("tplist")))) fail("agent tab not respected");
+  run("TP.agent = 'all'; TP.filter = 'xyz' + 'q'.repeat(100); renderTopics()");
+  if (!/No topic matches "xyzq+…"/.test(textOf(get("tplist"))) || textOf(get("tplist")).length > 200) fail("empty state not capped");
+  run("TP.filter = 'onerror'; renderTopics()");
+  if (names().join("|") !== "<img src=x onerror=alert(1)>") fail("hostile name must render literally: " + names());
+  if (allOf(get("tplist")).some((n) => ["img", "script", "iframe", "a"].includes(n.tagName))) fail("hostile search created an element");
+  run("TP.filter = '<script>'; renderTopics()");
+  if (rowsOf().length !== 1) fail("hostile keyword search");
+  // input is debounced; Escape clears (setTimeout is stubbed to a no-op in this harness, so only the cleared state is checked)
+  get("tpfilter").value = "x"; run("TP.filter = 'x'");
+  const ev = { key: "Escape", preventDefault() { ev.pd = true; } };
+  await fire("tpfilter", "keydown", ev);
+  if (get("tpfilter").value !== "" || run("TP.filter") !== "" || !ev.pd || get("tpcount").textContent !== "") fail("Escape did not clear the search");
+  run("TP.filter = ''; TP.archived = false; TP.agent = 'all'");
   // hostile topic text: literal, never markup
   ctx.TP_CUR = fx.hostile;
   await run("loadTopics()");
