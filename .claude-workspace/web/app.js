@@ -15,6 +15,7 @@ const store = {
 };
 
 let STATE = null, PRS = null, ME = { paired: false }, ES = null, SELECTED = null, LAST_FEED_TS = 0, CLOCK_OFFSET = 0;
+let RESEARCH = null, RS_OFFSET = 0, RS_TIMER = 0, LLM_CLAUDE = null;
 let ACTIONS = [], SEEN_ACTIONS = null, ACT_BY = { session: new Map(), pr: new Map() };
 const STATE_LABEL = { working: "working", waiting: "waiting for you", idle: "idle", ended: "ended", stale: "stale" };
 const TOOL_CLASS = (t) => String(t || "").startsWith("mcp__niu-local") ? "local" : t === "Bash" ? "bash" : ["Read", "Grep", "Glob"].includes(t) ? "read"
@@ -112,18 +113,21 @@ $("bellbtn").addEventListener("click", (e) => {
 function refit() { if (STATE && VIEW === "agents") { renderGraph(); renderTimeline(); } }
 let VIEW = "agents";
 function setView(v) {
-  VIEW = v === "events" ? "events" : "agents";
+  VIEW = v === "events" ? "events" : v === "research" ? "research" : "agents";
   $("mcgrid").dataset.view = VIEW;
-  for (const [id, name] of [["tab-agents", "agents"], ["tab-events", "events"]]) {
+  for (const [id, name] of [["tab-agents", "agents"], ["tab-events", "events"], ["tab-research", "research"]]) {
     $(id).classList.toggle("on", VIEW === name); $(id).setAttribute("aria-pressed", String(VIEW === name));
   }
   store.set("niu.view", VIEW);
-  if (location.hash !== (VIEW === "events" ? "#events" : "")) history.replaceState(null, "", VIEW === "events" ? "#events" : location.pathname);
+  const hash = VIEW === "agents" ? "" : `#${VIEW}`;
+  if (location.hash !== hash) history.replaceState(null, "", hash || location.pathname);
   connect();
   setTimeout(refit, 50);
+  if (VIEW === "research") { renderResearch(); loadResearch(); }
 }
 $("tab-agents").onclick = () => setView("agents");
 $("tab-events").onclick = () => setView("events");
+$("tab-research").onclick = () => setView("research");
 let LLM_EPS = [];
 document.addEventListener("click", (e) => {
   for (const n of Object.keys(DROPS)) if (!$(n).hidden && !$(n).contains(e.target)) toggleDrop(n, false);
@@ -219,7 +223,7 @@ async function dismissSession(btn) {
   btn.textContent = r.ok ? "Dismissed" : (r.data.error || "Failed");
 }
 
-// ---------- themed hover tooltip (graph + timeline; native SVG <title> tooltips can't be styled) ----------
+// ---------- themed hover tooltip (graph, timeline, LLM card; native SVG <title> tooltips can't be styled) ----------
 const TIP = Object.assign(document.createElement("div"), { className: "gtip", hidden: true });
 TIP.setAttribute("role", "tooltip");
 document.body.append(TIP);
@@ -230,7 +234,7 @@ function placeTip(e) {
   if (y + r.height > innerHeight - 8) y = Math.max(8, e.clientY - r.height - gap);
   TIP.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
 }
-for (const id of ["graph", "timeline"]) {
+for (const id of ["graph", "timeline", "llmcard", "rshead", "rsgate", "rsquota", "rslanes", "rslast"]) {
   const box = $(id);
   box.addEventListener("pointerover", (e) => {
     const t = e.target.closest?.("[data-tip]");
@@ -259,6 +263,7 @@ addEventListener("scroll", () => { TIP.hidden = true; }, true);
 // ---------- animated interaction graph ----------
 // The SVG is built once and updated in place, so transitions and flows keep running between updates.
 const G = { root: null, layers: {}, nodes: new Map(), edges: new Map(), seen: new Map(), first: true, ids: 0 };
+const MSG_TTL = 45; // seconds a SendMessage edge stays on the graph
 const NW = 210, NH = 52, XG = 90, YG = 16, PAD = 16;
 
 function graphInit() {
@@ -348,7 +353,9 @@ function graphLayout(list, cw, ch) {
       const a = nodes.find((n) => n.id === h.from), b = nodes.find((n) => n.id === h.to);
       if (a && b) edges.push({ id: `${h.from}=>${h.to}`, a, b, label: h.label, kind: "handoff" });
     }
-    s.messages.forEach((m, i) => {
+    // A message is a moment, not a state: show its edge and recipient only for MSG_TTL s after it was sent
+    // (the state keeps the whole list so the flow-packet bookkeeping below can index into it).
+    s.messages.filter((m) => STATE.now - m.ts < MSG_TTL).forEach((m, i) => {
       const from = nodes.find((n) => n.id === m.from) || root;
       const ext = { id: `msg:${s.id}:${m.to}`, x: from.x + NW + XG, y: from.y + i * 4, kind: "ext", label: `→ ${m.to}`, sub: "message recipient", source: "msg" };
       if (!nodes.some((n) => n.id === ext.id)) nodes.push(ext);
@@ -871,7 +878,7 @@ const EP_NAME = { remote: "Remote GPU", local: "Local CPU" };
 // Claude plan limits (5-hour / weekly): the status line's last report, or the usage API (default on) when that is older.
 function claudeLimits(c) {
   if (!c || !c.available) {
-    return `<div class="limrow muted small" title="From the niu-statusline status line of Claude Code terminal sessions, or from Anthropic's usage API (read-only, using your Claude Code login; NIU_CLAUDE_USAGE_API=0 turns it off)">` +
+    return `<div class="limrow muted small" data-tip="From the niu-statusline status line of Claude Code terminal sessions, or from Anthropic's usage API (read-only, using your Claude Code login; NIU_CLAUDE_USAGE_API=0 turns it off)">` +
       `Claude limits: shown once a terminal Claude Code session reports them (the desktop app does not run it; the dashboard also reads usage from Anthropic unless NIU_CLAUDE_USAGE_API=0)</div>`;
   }
   const fmtReset = (ts) => {
@@ -889,7 +896,7 @@ function claudeLimits(c) {
   };
   const rows = c.windows.filter((w) => w.key === "five_hour" || w.key === "seven_day" || w.used >= 50).map((w) => {
     const lvl = w.used >= 90 ? "bad" : w.used >= 70 ? "warn" : "ok";
-    return `<div class="limrow" title="${esc(`Claude ${w.label}: ${w.used}% used${w.resets_at ? ` · ${fmtReset(w.resets_at)}` : ""}`)}">` +
+    return `<div class="limrow" data-tip="${esc(`Claude ${w.label}\n${w.used}% used${w.resets_at ? ` · ${fmtReset(w.resets_at)}` : ""}`)}">` +
       `<span class="llmpill up claude"><i></i>Claude</span><span class="nm">${esc(w.label)}</span>` +
       `<progress class="lim ${lvl}" max="100" value="${Math.min(100, w.used)}"></progress>` +
       `<span class="limpct ${lvl}">${Math.round(w.used)}%</span><span class="mdl">${esc(shortReset(w.resets_at))}</span></div>`;
@@ -906,29 +913,428 @@ async function loadLLM(force) {
   }
   const eps = r.endpoints || [];
   LLM_EPS = eps;
+  LLM_CLAUDE = r.claude || null;
+  if (VIEW === "research") rsGate(RESEARCH);  // the gate card falls back to these numbers when research-dispatch has no preview
   const state = (e) => !e.up ? "down" : Object.values(e.models || {}).every((m) => m.present) ? "up" : "partial";
   const word = { up: "online", partial: "models missing", down: "offline" };
   card.innerHTML = claudeLimits(r.claude) + eps.map((e) => {
     const st = state(e);
     const models = [...new Set(Object.values(e.models || {}).map((m) => `${m.present ? "" : "✗ "}${m.name}`))].join(", ");
-    const tip = `${EP_NAME[e.name] || e.label} ${e.url} · ${e.up ? `Ollama ${e.version}` : `down: ${e.error || "unreachable"}`} · ${e.mode} mode`;
-    const hint = e.up ? "" : e.name === "local"
-      ? `<div class="hint">Not reachable: publish the container on <code>127.0.0.1:11434</code> or set <code>OLLAMA_LOCAL_BASE_URL</code>.</div>`
-      : `<div class="hint">Not reachable: check the machine and <code>OLLAMA_HOST=0.0.0.0</code>. Local agents fall back to the CPU.</div>`;
-    return `<div class="llmrow" title="${esc(tip)}"><span class="llmpill ${st}"><i></i>${esc(e.label)}</span>` +
-      `<span class="nm">${esc(word[st])}</span><span class="mdl">${esc(models)}</span></div>${hint}`;
+    // The row shows only the state; the detail (and what to do about it) goes in the themed tooltip.
+    const fix = e.up ? "" : e.name === "local"
+      ? "Not reachable: publish the container on 127.0.0.1:11434 or set OLLAMA_LOCAL_BASE_URL."
+      : "Not reachable: check the machine and OLLAMA_HOST=0.0.0.0. Local agents fall back to the CPU.";
+    const tip = [`${EP_NAME[e.name] || e.label}: ${word[st]}`, `${e.url} · ${e.mode} mode`,
+      e.up ? `Ollama ${e.version}` : `Error: ${e.error || "unreachable"}`, fix].filter(Boolean).join("\n");
+    return `<div class="llmrow ${st}" data-tip="${esc(tip)}"><span class="llmpill ${st}"><i></i>${esc(e.label)}</span>` +
+      `<span class="nm">${esc(word[st])}</span><span class="mdl">${esc(models)}</span></div>`;
   }).join("") + `<div class="llmfoot">checked ${hhmmss(Date.now() / 1000)} · <button class="ghost linkish" id="llmrecheck">Re-check</button></div>`;
   $("llmrecheck").onclick = () => loadLLM(true);
 }
 loadLLM();
 setInterval(() => { if (!document.hidden) loadLLM(); }, 30000);
 
+// ---------- Research tab (research-dispatch monitor) ----------
+// /api/research is already allowlisted by the server, but nothing from it is ever shown as HTML:
+// every value goes through textContent or setAttribute, so a hostile payload cannot run or inject anything.
+const RS_STUCK_SECS = 45 * 60;
+const RS_REASON = { ok: "quota is fine", ok_conservative: "quota is tight: conservative run", weekly_low: "weekly limit nearly used up",
+  low_quota: "5-hour window too full", probe_warning: "usage probe warning", no_signal: "no usage signal", manual_cap: "manual-run cap reached",
+  grace_expired: "gave up after the grace period", kill_switch: "stopped by the kill switch" };
+const RS_DECISION = { run: "Run", run_conservative: "Run conservatively", retry: "Retry later", skip: "Skip" };
+const RS_STATUS = { waiting_gate: "waiting for the gate", running: "running", succeeded: "succeeded", partial: "partial", failed: "failed",
+  skipped_gate: "skipped (gate)", aborted_quota: "stopped: quota", pending: "pending", skipped: "skipped", timed_out: "timed out" };
+const RS_ERROR = { timeout: "agent timed out", aborted_quota: "stopped: quota floor reached", max_turns: "hit the turn cap", max_budget: "hit the budget cap",
+  structure_invalid: "output failed validation", no_sources: "no usable sources", rate_limited: "rate limited", auth: "Claude login problem",
+  interrupted: "interrupted (service restart)", network: "network error", internal: "internal error" };
+const RS_SOURCE = { usage_api: "usage API", probe: "probe", none: "no data", rate_limit_event: "rate-limit event" };
+const RS_SOON = { hobby: "arrives in M2", fintrend: "arrives in M4" };
+const RS_STATE_MSG = {
+  loading: "Checking research-dispatch…",
+  unreachable: "research-dispatch is not reachable. Is the container running? (docker compose ps in PERSONAL/research-dispatch)",
+  unauthorized: "Token rejected: check API_TOKENS in research-dispatch and re-run niu-dash research-token.",
+  incompatible: "research-dispatch has no compatible monitor endpoint (needs monitor.v1).",
+  error: "Could not read the research-dispatch status.",
+};
+const RS_LEVEL = { succeeded: "ok", running: "ok", partial: "warn", waiting_gate: "warn", pending: "warn", skipped: "warn",
+  failed: "bad", timed_out: "bad", aborted_quota: "bad", skipped_gate: "bad" };
+const RS_DECISION_LEVEL = { run: "ok", run_conservative: "warn", retry: "bad", skip: "bad" };
+const RS_DIGEST = { not_built: "not built", pending: "pending", held_quiet_hours: "held for quiet hours", sent: "sent", partial: "partly sent",
+  failed: "failed", dead: "gave up", nothing_new: "nothing new", suppressed: "suppressed" };
+
+const rsNow = () => Date.now() / 1000 + RS_OFFSET;
+const hm = (ts) => ts ? new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }) : "–";
+const rsWhen = (ts) => !ts ? "–" : rsNow() - ts < 18 * 3600 ? hm(ts) : `${new Date(ts * 1000).toLocaleDateString([], { weekday: "short" })} ${hm(ts)}`;
+const rsN = (n) => n == null ? "–" : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}k` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
+const rsUsd = (n) => n == null ? "–" : `$${n.toFixed(2)}`;
+const rsUntil = (at) => at - rsNow() <= 0 ? "due now" : `in ${dur(at - rsNow())}`;
+function h(tag, cls, text, attrs) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined && text !== null) e.textContent = String(text);
+  for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+  return e;
+}
+const rsBadgeEl = (text, lvl) => h("span", `badge b-${lvl}`, text);
+
+async function loadResearch(force) {
+  let r = null;
+  try {
+    if (force) { const x = await POST("/api/research/refresh"); r = x.ok ? x.data : null; }
+    else r = await fetch("/api/research", { credentials: "same-origin" }).then((x) => x.json());
+  } catch { r = null; }
+  if (!r || typeof r !== "object" || typeof r.state !== "string") r = { state: "error", data: null };
+  RESEARCH = r;
+  if (typeof r.server_now === "number") RS_OFFSET = r.server_now - Date.now() / 1000;
+  renderResearch();
+  clearTimeout(RS_TIMER);
+  if (r.state === "loading") RS_TIMER = setTimeout(() => loadResearch(), 3000);
+}
+
+function renderResearch() {
+  const r = RESEARCH || { state: "loading", data: null };
+  $("tab-research").hidden = r.state === "disabled";
+  rsBadge(r);
+  if (r.state === "disabled") { if (VIEW === "research") setView("agents"); return; }
+  if (VIEW !== "research") return;
+  $("rsbody").classList.toggle("stale", !!r.stale);
+  rsHead(r); rsGate(r); rsQuota(r); rsLanes(r); rsLast(r); rsErrors(r);
+}
+
+// Tab badge: red = unreachable/unauthorized, a failed or quota-stopped last run, or a gate skip in the last day;
+// amber = partial, waiting for the gate, conservative; green + pulse = a run is in progress.
+function rsBadge(r) {
+  const d = r.state === "ok" ? r.data : null;
+  let lvl = "", pulse = false, why = "";
+  if (r.state === "unreachable" || r.state === "unauthorized") { lvl = "bad"; why = RS_STATE_MSG[r.state]; }
+  else if (d) {
+    const last = d.last_run, now = rsNow();
+    const skipped = (d.recent_runs || []).some((x) => x.status === "skipped_gate" && now - (x.finished_at || x.started_at || 0) < 86400);
+    if (d.current_run?.status === "running") { lvl = "ok"; pulse = true; why = "A research run is in progress"; }
+    else if (last && (last.status === "failed" || last.status === "aborted_quota")) { lvl = "bad"; why = `Last run ${RS_STATUS[last.status]}`; }
+    else if (skipped) { lvl = "bad"; why = "A run was skipped by the gate in the last 24 h"; }
+    else if (last?.status === "partial" || d.gate?.pending || (d.recent_runs || []).some((x) => x.status === "waiting_gate") || last?.mode === "conservative") {
+      lvl = "warn"; why = "Partial, waiting for the gate or conservative mode";
+    }
+  }
+  const dot = $("rsdot");
+  dot.hidden = !lvl;
+  dot.className = `tabdot ${lvl ? `rs-${lvl}` : ""} ${pulse ? "pulse" : ""}`;
+  $("tab-research").setAttribute("title", why);
+}
+
+function rsHealth(r) {
+  if (r.state === "ok") {
+    const hl = r.data?.service?.health || {};
+    const bad = hl.db === false || hl.migrations === false || hl.scheduler === false || hl.claude_auth === false;
+    return bad ? ["partial", "research-dispatch degraded"] : ["up", "research-dispatch ok"];
+  }
+  return { loading: ["partial", "checking…"], not_configured: ["partial", "not configured"], unreachable: ["", "research-dispatch unreachable"],
+    unauthorized: ["", "token rejected"], incompatible: ["", "incompatible version"] }[r.state] || ["", "error"];
+}
+
+function rsStateText(r) {
+  return (typeof r.message === "string" && r.message) || RS_STATE_MSG[r.state] || RS_STATE_MSG.error;
+}
+
+function rsHead(r) {
+  const d = r.data, [cls, label] = rsHealth(r), kids = [];
+  const pill = h("span", `llmpill ${cls}`);
+  pill.append(h("i"), h("span", "", label));
+  kids.push(pill);
+  if (d) {
+    const sch = d.schedule || {};
+    if (sch.next_slot_at) {
+      const next = h("span", "", "", { "data-tip": [`Next scheduled run`, sch.next_slot_key, [sch.cron, sch.timezone].filter(Boolean).join(" ")].filter(Boolean).join("\n") });
+      next.append(h("span", "", `Next run ${hm(sch.next_slot_at)} · `), h("span", "", rsUntil(sch.next_slot_at), { id: "rscount" }));
+      kids.push(next);
+    }
+    if (sch.enabled === false) kids.push(rsBadgeEl("Scheduler off", "warn"));
+    if (sch.manual_runs_today != null && sch.manual_runs_per_day != null) kids.push(h("span", "muted", `Manual runs today ${sch.manual_runs_today}/${sch.manual_runs_per_day}`));
+    if (r.state !== "ok") kids.push(h("span", "warnnote", `${rsStateText(r)}${r.ok_at ? ` Showing data as of ${hm(r.ok_at)}.` : ""}`));
+    else if (r.stale) kids.push(h("span", "warnnote", `Data as of ${hm(r.ok_at)}`));
+  }
+  $("rshead").replaceChildren(...kids);
+  $("rsupd").textContent = r.fetched_at ? `updated ${hhmmss(r.fetched_at)}` : "";
+}
+
+function rsTick() {
+  const d = RESEARCH?.data;
+  if (!d) return;
+  const c = document.getElementById("rscount");
+  if (c && d.schedule?.next_slot_at) c.textContent = rsUntil(d.schedule.next_slot_at);
+  const e = document.getElementById("rselapsed");
+  if (e && d.current_run?.started_at) e.textContent = dur(rsNow() - d.current_run.started_at);
+}
+
+// ----- gate card: the Claude limits bars, with the gate's floors marked -----
+const rsReset = (ts) => !ts ? "" : "↻ " + (new Date().toDateString() === new Date(ts * 1000).toDateString() ? hm(ts)
+  : `${new Date(ts * 1000).toLocaleDateString([], { weekday: "short" })} ${hm(ts)}`);
+function rsMeter(rows) {
+  const m = h("div", "rsmeter");
+  for (const w of rows) {
+    const used = w.used ?? 0;
+    const lvl = w.floor != null ? (used >= w.floor ? "bad" : used >= w.floor - 10 ? "warn" : "ok") : used >= 90 ? "bad" : used >= 70 ? "warn" : "ok";
+    const prog = h("progress", `lim ${lvl}`, "", { max: "100", value: String(Math.min(100, used)) });
+    m.append(h("span", "nm", w.label), prog, h("span", `limpct ${lvl}`, w.used == null ? "–" : `${Math.round(used)}%`), h("span", "mdl", rsReset(w.reset)));
+    if (w.floor != null) {  // tick position is an SVG attribute, so no inline style is needed (CSP)
+      const x = `${w.floor}%`, sv = svg("svg", { class: "floor", "aria-hidden": "true" });
+      sv.append(svg("line", { class: "floor-tick", x1: x, x2: x, y1: 0, y2: 6 }), svg("text", { class: "floor-lbl", x, y: 15, "text-anchor": "middle" }, w.floorLbl));
+      m.append(h("span"), sv, h("span"), h("span"));
+    }
+  }
+  return m;
+}
+
+function rsGate(r) {
+  if (VIEW !== "research") return;
+  const box = $("rsgate"), d = r?.data;
+  if (!d) { box.replaceChildren(); return; }
+  const g = d.gate || {}, p = g.preview, kids = [h("h3", "", "Gate")];
+  if (p) {
+    const line = h("div", "rsline");
+    line.append(rsBadgeEl(RS_DECISION[p.decision] || "unknown", RS_DECISION_LEVEL[p.decision] || "warn"), h("span", "", ` ${RS_REASON[p.reason] || ""}`));
+    kids.push(line);
+    const f = p.floors || {}, e = p.expected_run_pct || 0;
+    const fiveFloor = f.five_hour_min_remaining_pct != null ? Math.max(0, 100 - f.five_hour_min_remaining_pct - e) : null;
+    const weekFloor = f.weekly_min_remaining_pct != null ? 100 - f.weekly_min_remaining_pct : null;
+    kids.push(rsMeter([
+      { label: "5-hour", used: p.five_hour?.used_pct, reset: p.five_hour?.resets_at, floor: fiveFloor, floorLbl: "gate floor" },
+      { label: "Weekly", used: p.seven_day?.used_pct, reset: p.seven_day?.resets_at, floor: weekFloor, floorLbl: `${f.weekly_min_remaining_pct}% weekly floor` },
+    ]));
+    kids.push(h("div", "rsline muted", `${RS_SOURCE[p.source] || "unknown"} · checked ${p.checked_at ? `${dur(rsNow() - p.checked_at)} ago` : "never"}`,
+      { "data-tip": `Gate floors\n5-hour: stop below ${f.five_hour_min_remaining_pct ?? "?"}% left (plus ${e}% for the run)\nWeekly: stop below ${f.weekly_min_remaining_pct ?? "?"}% left\nAbort a running run below ${f.abort_remaining_pct ?? "?"}% left` }));
+  } else {
+    kids.push(h("div", "rsline muted", "No gate preview from research-dispatch yet."));
+    const c = LLM_CLAUDE?.available ? LLM_CLAUDE.windows.filter((w) => w.key === "five_hour" || w.key === "seven_day") : [];
+    if (c.length) {
+      kids.push(rsMeter(c.map((w) => ({ label: w.label, used: w.used, reset: w.resets_at }))));
+      kids.push(h("div", "rsline muted", "dashboard reading"));
+    }
+  }
+  const pend = g.pending;
+  if (pend) {
+    kids.push(h("div", "rsline", `Waiting for the gate: attempt ${pend.attempts ?? "?"} of ${pend.max_attempts ?? "?"}, next check ${hm(pend.next_check_at)}` +
+      `, gives up at ${hm(pend.grace_until)}${pend.last_reason ? ` (${RS_REASON[pend.last_reason] || ""})` : ""}`));
+  }
+  const rec = (g.recent || []).slice(0, 5);
+  const list = h("div", "rsrecent");
+  if (!rec.length) list.append(h("div", "muted", "No gate checks recorded yet."));
+  for (const x of rec) {
+    list.append(h("div", "", `${rsWhen(x.taken_at)}  ${RS_DECISION[x.decision] || "?"}${x.reason ? ` · ${RS_REASON[x.reason] || ""}` : ""}` +
+      `  5h ${x.five_hour_used ?? "–"}% · wk ${x.seven_day_used ?? "–"}%`));
+  }
+  kids.push(list);
+  box.replaceChildren(...kids);
+}
+
+// ----- quota card -----
+function rsQuota(r) {
+  const box = $("rsquota"), d = r.data;
+  if (!d) { box.replaceChildren(); return; }
+  const t = d.ledger?.today, kids = [h("h3", "", "Quota today")];
+  if (t) {
+    const kv = h("dl", "rskv");
+    for (const [k, v] of [["Runs", t.runs], ["Sessions", t.sessions], ["Probes", t.probes], ["Web searches", t.web_searches],
+      ["Tokens in", rsN(t.tokens_in)], ["Tokens out", rsN(t.tokens_out)]]) kv.append(h("dt", "", k), h("dd", "", v ?? "–"));
+    kv.append(h("dt", "", "≈ USD"), h("dd", "", rsUsd(t.equiv_usd), { "data-tip": "API-equivalent estimate\nWhat this usage would cost on the pay-as-you-go API; it is not a bill." }));
+    kids.push(kv);
+  }
+  const days = (d.ledger?.last_7_days || []).slice(-7);
+  if (days.length) {
+    const W = 140, H = 44, max = Math.max(0.01, ...days.map((x) => x.equiv_usd || 0)), bw = W / 7;
+    const sv = svg("svg", { class: "spark", width: "100%", height: H, viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", role: "img", "aria-label": "Daily API-equivalent cost, last 7 days" });
+    days.forEach((x, i) => {
+      const bh = Math.max(1, ((x.equiv_usd || 0) / max) * (H - 4));
+      const bar = svg("rect", { class: "bar-mini", x: i * bw + 2, y: H - bh, width: bw - 4, height: bh, rx: 1 });
+      bar.setAttribute("data-tip", `${x.day || "?"}\n${rsUsd(x.equiv_usd)} · ${x.runs ?? 0} run(s)`);
+      sv.append(bar);
+    });
+    kids.push(sv, h("div", "rsline muted", "≈ USD per day, last 7 days (API-equivalent estimate)"));
+  }
+  const wk = d.gate?.preview?.floors?.weekly_min_remaining_pct ?? 20;
+  kids.push(h("div", "rsline muted", `The bot stops when less than ${wk}% of the weekly limit remains.`));
+  box.replaceChildren(...kids);
+}
+
+// ----- 36 h lanes -----
+function rsRuns(d) {
+  const m = new Map();
+  [...(d.recent_runs || []), d.last_run, d.current_run].forEach((run, i) => { if (run) m.set(run.id || `anon${i}`, run); });
+  return [...m.values()];
+}
+function rsSlots(sch, t0, t1) {  // earlier slot instants, derived from the cron hours and the next slot
+  const out = [];
+  if (!sch?.next_slot_at) return out;
+  const m = /^[0-9]+ ([0-9,]+) \* \* \*$/.exec(sch.cron || "");
+  const hours = m ? [...new Set(m[1].split(",").map(Number))].filter((n) => n >= 0 && n < 24).sort((a, b) => a - b) : [];
+  const k = /T([0-9]{2}):/.exec(sch.next_slot_key || ""), idx = k ? hours.indexOf(Number(k[1])) : -1;
+  const gaps = idx >= 0 ? hours.map((_, i) => ((hours[i] - hours[(i - 1 + hours.length) % hours.length] + 24) % 24) || 24) : [12];
+  let t = sch.next_slot_at, i = idx >= 0 ? idx : 0;
+  for (let n = 0; n < 40 && t > t0; n++) {
+    if (t <= t1) out.push(t);
+    t -= gaps[i] * 3600;
+    i = (i - 1 + gaps.length) % gaps.length;
+  }
+  return out;
+}
+function rsLanes(r) {
+  if (TIP.dataset.owner === "rslanes") TIP.hidden = true;  // rebuilt from scratch
+  const box = $("rslanes"), d = r.data;
+  box.replaceChildren();
+  if (!d) return;
+  const feat = d.service?.features || { runs: false, agents: [] };
+  const t1 = rsNow(), t0 = t1 - 36 * 3600;
+  const lanes = [{ key: "gate", label: "gate" }, ...["general", "hobby", "fintrend"].map((a) => ({ key: a, label: a, off: !(feat.agents || []).includes(a) }))];
+  const LH = 22, LW = 110, W = Math.max(640, (box.clientWidth || 900) - 20), H = lanes.length * LH + 26;
+  const x = (t) => LW + ((Math.min(Math.max(t, t0), t1) - t0) / (t1 - t0)) * (W - LW - 10);
+  const root = svg("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Research run lanes, last 36 hours" });
+  for (let tk = Math.ceil(t0 / 3600) * 3600; tk < t1; tk += 3600) {
+    const dt = new Date(tk * 1000);
+    if (dt.getMinutes() !== 0 || dt.getHours() % 6 !== 0) continue;
+    root.append(svg("line", { x1: x(tk), x2: x(tk), y1: 0, y2: H - 20, class: "axis" }), svg("text", { x: x(tk), y: H - 6, class: "lbl", "text-anchor": "middle" }, hm(tk)));
+  }
+  for (const st of rsSlots(d.schedule, t0, t1)) root.append(svg("line", { x1: x(st), x2: x(st), y1: 0, y2: H - 20, class: "axis slotline" }));
+  root.append(svg("line", { x1: x(t1), x2: x(t1), y1: 0, y2: H - 20, class: "nowline" }), svg("text", { x: x(t1), y: H - 6, class: "lbl", "text-anchor": "end" }, "now"));
+  lanes.forEach((l, i) => {
+    const y = i * LH + 2;
+    root.append(svg("rect", { x: LW, y, width: W - LW - 10, height: LH - 4, class: "lane", rx: 3 }));
+    root.append(svg("text", { x: 0, y: y + 14, class: l.off ? "muted" : "" }, trunc(l.off ? `${l.label} · ${RS_SOON[l.key] || "not enabled"}` : l.label, 20)));
+  });
+  const laneOf = (k) => lanes.findIndex((l) => l.key === k);
+  for (const run of rsRuns(d)) {
+    for (const a of run.agents || []) {
+      const li = laneOf(a.agent_type);
+      if (li < 0 || !a.started_at) continue;
+      const end = a.finished_at || (a.status === "running" ? t1 : a.started_at);
+      if (end < t0) continue;
+      const lvl = RS_LEVEL[a.status] || "warn", running = a.status === "running";
+      const bar = svg("rect", { x: x(a.started_at), y: li * LH + 3, width: Math.max(3, x(end) - x(a.started_at)), height: LH - 6, rx: 2,
+        class: `bar-sub rs-${lvl} ${running ? "running" : ""}` });
+      bar.setAttribute("data-tip", [`${a.agent_type} · ${RS_STATUS[a.status] || a.status}`,
+        `${hhmmss(a.started_at)} → ${a.finished_at ? hhmmss(a.finished_at) : running ? "running" : "?"}` +
+        `${a.num_turns != null ? ` · ${a.num_turns}${a.max_turns != null ? `/${a.max_turns}` : ""} turns` : ""}` +
+        `${a.web_searches != null ? ` · ${a.web_searches}${a.max_web_searches != null ? `/${a.max_web_searches}` : ""} searches` : ""}`,
+        run.slot_key ? `slot ${run.slot_key}` : "", a.error_code ? RS_ERROR[a.error_code] || a.error_code : ""].filter(Boolean).join("\n"));
+      root.append(bar);
+    }
+  }
+  for (const g of d.gate?.recent || []) {
+    if (!g.taken_at || g.taken_at < t0) continue;
+    const dot = svg("circle", { cx: x(g.taken_at), cy: 2 + (LH - 4) / 2, r: 4, class: `rs-dot rs-${RS_DECISION_LEVEL[g.decision] || "warn"}` });
+    dot.setAttribute("data-tip", `gate · ${RS_DECISION[g.decision] || "?"}\n${hhmmss(g.taken_at)}${g.reason ? ` · ${RS_REASON[g.reason] || ""}` : ""}\n5h ${g.five_hour_used ?? "–"}% · wk ${g.seven_day_used ?? "–"}%`);
+    root.append(dot);
+  }
+  box.append(root);
+  if (!feat.runs) box.append(h("div", "rsline muted", "Run history arrives with research-dispatch M2."));
+  else if (!rsRuns(d).some((run) => (run.agents || []).some((a) => a.started_at && (a.finished_at || a.started_at) >= t0))) box.append(h("div", "rsline muted", "No agent runs in the last 36 hours."));
+}
+
+// ----- last run + errors -----
+function rsStateBlock(r) {
+  if (r.state === "not_configured") {
+    const box = h("div", "rssetup");
+    box.append(h("div", "", "No monitor token is set up yet. One time, in three steps:"));
+    const ol = h("ol");
+    for (const [a, code, b] of [["In PERSONAL/research-dispatch run ", "docker compose exec app rd gen-token --name niu-dash --scope monitor", "."],
+      ["Add the printed niu-dash:monitor:… entry to API_TOKENS in research-dispatch's own env file yourself, then run ", "docker compose up -d", "."],
+      ["On this machine run ", "niu-dash research-token", " in a terminal and paste the token."]]) {
+      const li = h("li");
+      li.append(h("span", "", a), h("code", "", code), h("span", "", b));
+      ol.append(li);
+    }
+    box.append(ol);
+    return box;
+  }
+  return h("div", `rsline ${r.state === "loading" ? "muted" : "msg err"}`, rsStateText(r));
+}
+
+function rsDigest(dg) {
+  if (!dg) return "";
+  const n = dg.sections_total != null ? ` ${dg.sections_sent ?? 0}/${dg.sections_total}` : "";
+  if (dg.status === "held_quiet_hours") return `digest held for quiet hours${dg.next_attempt_at ? ` until ${hm(dg.next_attempt_at)}` : ""}`;
+  if (dg.status === "failed") return `digest failed${dg.last_http_status ? ` (HTTP ${dg.last_http_status})` : ""}`;
+  if (dg.status === "sent" || dg.status === "partial") return `digest ${RS_DIGEST[dg.status]}${n}`;
+  return `digest ${RS_DIGEST[dg.status] || "unknown"}`;
+}
+
+function rsRun(run, title, live) {
+  const box = h("div", "rsrun"), head = h("div", "rsrunh");
+  head.append(h("b", "", title), h("span", "", run.slot_key || "no slot"), h("span", "muted", `${run.trigger} · ${run.mode}`),
+    rsBadgeEl(RS_STATUS[run.status] || "unknown", RS_LEVEL[run.status] || "warn"));
+  if (live && run.started_at) {
+    const el = h("span", "muted", "running for ");
+    el.append(h("span", "", dur(rsNow() - run.started_at), { id: "rselapsed" }));
+    head.append(el);
+  } else if (run.duration_s != null) head.append(h("span", "muted", dur(run.duration_s)));
+  if (run.window_share_pct != null) head.append(h("span", "muted", `${run.window_share_pct}% of the 5-hour window`));
+  if (run.error_code) head.append(h("span", "msg err", RS_ERROR[run.error_code] || "error"));
+  const dg = rsDigest(run.digest);
+  if (dg) head.append(h("span", "muted", dg));
+  if (live && run.status === "running" && run.started_at && rsNow() - run.started_at > RS_STUCK_SECS) {
+    head.append(h("span", "rsstuck", "possibly stuck · run `docker compose restart app` in research-dispatch; it marks the run interrupted on startup"));
+  }
+  box.append(head);
+  const table = h("table", "rstable"), tr = h("tr"), thead = h("thead");
+  for (const c of ["Agent", "Status", "Models", "Started", "Took", "Turns", "Searches", "Tokens in/out", "≈ USD", "Kept", "Filtered", "Error"]) tr.append(h("th", "", c));
+  thead.append(tr);
+  table.append(thead);
+  const body = h("tbody");
+  for (const a of run.agents || []) {
+    const row = h("tr"), fb = a.filtered_by;
+    const filt = h("td", "", a.items_filtered ?? "–");
+    if (fb) filt.setAttribute("data-tip", `Filtered items\nduplicate: ${fb.duplicate ?? 0}\nexcluded: ${fb.excluded ?? 0}\nno update: ${fb.no_update ?? 0}`);
+    row.append(h("td", "", a.agent_type), h("td", "", RS_STATUS[a.status] || a.status),
+      h("td", "", [a.research_model, a.structure_model].filter(Boolean).map(shortModel).join(" / ") || "–"), h("td", "", hm(a.started_at)),
+      h("td", "", a.duration_s != null ? dur(a.duration_s) : "–"), h("td", "", `${a.num_turns ?? "–"}/${a.max_turns ?? "–"}`),
+      h("td", "", `${a.web_searches ?? "–"}/${a.max_web_searches ?? "–"}`), h("td", "", `${rsN(a.tokens_in)} / ${rsN(a.tokens_out)}`),
+      h("td", "", rsUsd(a.equiv_usd)), h("td", "", a.items_kept ?? "–"), filt, h("td", "", a.error_code ? RS_ERROR[a.error_code] || "error" : ""));
+    body.append(row);
+  }
+  table.append(body);
+  box.append(table);
+  return box;
+}
+
+function rsLast(r) {
+  const box = $("rslast"), d = r.data;
+  if (!d) { box.replaceChildren(rsStateBlock(r)); return; }
+  const kids = [h("h3", "", "Runs")];
+  if (!d.service?.features?.runs) kids.push(h("div", "rsline muted", "No run history yet."));
+  else {
+    if (d.current_run) kids.push(rsRun(d.current_run, "Now", true));
+    if (d.last_run) kids.push(rsRun(d.last_run, "Last run", false));
+    if (!d.current_run && !d.last_run) kids.push(h("div", "rsline muted", "No runs recorded yet."));
+  }
+  box.replaceChildren(...kids);
+}
+
+function rsErrors(r) {
+  const box = $("rserrors"), d = r.data;
+  if (!d || !d.service?.features?.runs) { box.replaceChildren(); return; }
+  const items = [];
+  for (const run of rsRuns(d)) {
+    if (run.status === "skipped_gate") items.push({ ts: run.finished_at || run.started_at, who: "gate", slot: run.slot_key, label: `skipped${run.gate_reason ? `: ${RS_REASON[run.gate_reason] || ""}` : ""}` });
+    for (const a of run.agents || []) if (a.error_code) items.push({ ts: a.finished_at || a.started_at, who: a.agent_type, slot: run.slot_key, label: RS_ERROR[a.error_code] || "error" });
+  }
+  items.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const kids = [h("h3", "", "Errors")];
+  if (!items.length) kids.push(h("div", "rsline muted", "No errors in the last 48 hours."));
+  for (const e of items.slice(0, 10)) kids.push(h("div", "rsline", `${rsWhen(e.ts)}  ${e.who}  ${e.slot || ""}  ${e.label}`));
+  box.replaceChildren(...kids);
+}
+
 setInterval(() => {
-  if (!STATE || document.hidden) return;
+  if (document.hidden) return;
+  if (VIEW === "research") rsTick();
+  if (!STATE) return;
   STATE.now = Date.now() / 1000 + CLOCK_OFFSET;
   renderCounters(); renderSessions();
   if (VIEW === "agents") { renderGraph(); renderTimeline(); }
 }, 1000);
 
 loadMe();
-setView(location.hash === "#events" ? "events" : store.get("niu.view", "agents"));
+loadResearch();  // also keeps the tab badge current while another tab is open
+setInterval(() => { if (!document.hidden) loadResearch(); }, 30000);
+$("rsrefresh").onclick = () => loadResearch(true);
+setView({ "#events": "events", "#research": "research" }[location.hash] || store.get("niu.view", "agents"));

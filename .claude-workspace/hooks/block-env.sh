@@ -19,6 +19,17 @@ targets="$(jq -r '[.tool_input.file_path, .tool_input.path, .tool_input.notebook
 
 under_ws() { [[ "$1" == "$WS" || "$1" == "$WS"/* ]]; }
 
+# Web dashboard credentials, the research-dispatch token and its config are for the user, not agents.
+# The config names the URL the token is sent to, so editing it would redirect the token.
+if grep -Eq 'web-sessions\.json|research-dispatch\.t|niu-heimar/\*|read_token|research(\.template)?\.json' <<<"$targets"; then
+  echo "BLOCKED by workspace policy: dashboard device credentials, the research-dispatch token and the research config are off-limits to agents." >&2
+  exit 2
+fi
+if [[ "$tool" == "Bash" ]] && grep -Eq '(^|[^A-Za-z0-9_-])niu-dash["'"'"']?([[:space:]]+[^;&|]*)?[[:space:]]["'"'"']?research-token' <<<"$targets"; then
+  echo "BLOCKED by workspace policy: setting the research-dispatch token is reserved for the user. Ask the user." >&2
+  exit 2
+fi
+
 in_scope=false
 under_ws "${cwd:-/nonexistent}" && in_scope=true
 if ! $in_scope; then
@@ -46,11 +57,6 @@ if grep -Eq '(^|[^A-Za-z0-9_])\.e(n(v)?)?\*' <<<"$cleaned"; then
   block "$tool uses a wildcard that matches .env files"
 fi
 
-# Web dashboard credentials and merge/pair endpoints are for the user, not agents.
-if grep -Eq 'web-sessions\.json' <<<"$targets"; then
-  echo "BLOCKED by workspace policy: dashboard device credentials are off-limits to agents." >&2
-  exit 2
-fi
 if [[ "$tool" == "Bash" ]] && grep -Eq '/api/(prs/merge|pair|unpair|sessions/dismiss)' <<<"$targets"; then
   echo "BLOCKED by workspace policy: merging, pairing or dismissing sessions through the web dashboard is reserved for the user. Ask the user." >&2
   exit 2

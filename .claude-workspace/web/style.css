@@ -434,3 +434,61 @@ progress.lim.bad::-webkit-progress-value { background: var(--bad); } progress.li
 /* release-please PRs: muted, marked, listed last */
 .pr.release { border-left: 3px solid var(--domain); padding-left: 8px; }
 .reltag { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding: 0 7px; border-radius: 999px; border: 1px solid var(--domain); color: var(--domain); }
+
+/* =====================================================================
+   Research tab (research-dispatch monitor). Colours come from the theme variables only.
+   ===================================================================== */
+.p-research { grid-area: rs; }
+.mcgrid .panel.p-research { display: none; }
+.mcgrid[data-view="research"] { grid-template-rows: minmax(0, 1fr); grid-template-areas: "left rs"; }
+.mcgrid[data-view="research"] .panel.p-graph, .mcgrid[data-view="research"] .panel.p-timeline,
+.mcgrid[data-view="research"] .panel.p-feed, .mcgrid[data-view="research"] .panel.p-prs { display: none; }
+.mcgrid[data-view="research"] .panel.p-research { display: flex; }
+@media (max-width: 899px), (max-height: 599px) {
+  .mcgrid[data-view="research"] .panel.p-research { max-height: none; }
+}
+.tabdot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-left: 3px; vertical-align: 1px; background: var(--muted); }
+.tabdot.rs-ok { background: var(--ok); } .tabdot.rs-warn { background: var(--warn); } .tabdot.rs-bad { background: var(--bad); }
+.tabdot.pulse { animation: live 2s infinite; }
+.calm .tabdot.pulse { animation: none; }
+@media (prefers-reduced-motion: reduce) { .tabdot.pulse { animation: none; } }
+
+.rsbody { display: flex; flex-direction: column; gap: 10px; }
+.rsbody.stale > :not(.rshead) { opacity: .55; filter: grayscale(.6); }
+.rshead { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 12.5px; }
+.rshead .warnnote { color: var(--warn); font-weight: 600; }
+.rsgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.rscard { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; min-width: 0; background: var(--bg2); }
+.rscard h3 { margin: 0 0 6px; }
+.rscard:empty, .rssec:empty { display: none; }
+.rssec h3 { margin: 0 0 6px; }
+.rsline { font-size: 12px; margin: 4px 0; overflow-wrap: anywhere; }
+.rsmeter { display: grid; grid-template-columns: 62px minmax(60px, 1fr) 40px 62px; align-items: center; column-gap: 6px; row-gap: 0; font-size: 12px; }
+.rsmeter .nm { font-weight: 600; } .rsmeter .mdl { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.rsmeter progress.lim { width: 100%; }
+.rsmeter svg.floor { grid-column: 2; width: 100%; height: 16px; overflow: visible; }
+svg .floor-tick { stroke: var(--text); stroke-width: 1.5; }
+svg .floor-lbl { font-size: 10px; fill: var(--muted); }
+.rskv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 12px; }
+.rskv dt { color: var(--muted); } .rskv dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
+.rsrecent { font-family: var(--mono); font-size: 11.5px; }
+.rsrecent div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 1px 0; }
+.rslanes { overflow-x: auto; min-height: 40px; }
+.rslanes svg { display: block; }
+svg .bar-sub.rs-ok { stroke: var(--ok); fill: var(--ok-bg); }
+svg .bar-sub.rs-warn { stroke: var(--warn); fill: var(--warn-bg); }
+svg .bar-sub.rs-bad { stroke: var(--bad); fill: var(--bad-bg); }
+svg .rs-dot { stroke-width: 1; stroke: var(--card); }
+svg .rs-dot.rs-ok { fill: var(--ok); } svg .rs-dot.rs-warn { fill: var(--warn); } svg .rs-dot.rs-bad { fill: var(--bad); }
+svg .bar-mini { fill: var(--accent); opacity: .75; }
+svg .slotline { stroke: var(--border); stroke-dasharray: 2 3; }
+.rsrun { margin-bottom: 10px; }
+.rsrunh { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; font-size: 12px; margin-bottom: 4px; }
+.rsrunh b { font-weight: 600; }
+.rstable { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.rstable th { text-align: left; font-weight: 600; color: var(--muted); padding: 2px 8px 2px 0; white-space: nowrap; }
+.rstable td { padding: 3px 8px 3px 0; border-top: 1px solid var(--border); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.rssetup { font-size: 12.5px; } .rssetup ol { margin: 6px 0 0 18px; padding: 0; } .rssetup li { margin: 3px 0; }
+.rssetup code { overflow-wrap: anywhere; }
+.rsstuck { color: var(--bad); font-weight: 600; }
+@media (max-width: 899px) { .rsgrid { grid-template-columns: minmax(0, 1fr); } .rsbody { overflow-x: auto; } }

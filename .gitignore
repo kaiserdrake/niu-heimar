@@ -29,6 +29,7 @@
 /*/.claude/mcp.json
 /.claude-workspace/ollama.json
 /.claude-workspace/discord.json
+/.claude-workspace/research.json
 /.mcp.json
 /.claude/settings.local.json
 .env

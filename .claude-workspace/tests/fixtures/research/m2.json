@@ -1,0 +1,251 @@
+{
+ "schema": "monitor.v1",
+ "generated_at": "2026-11-07T03:12:00Z",
+ "service": {
+  "version": "0.3.0",
+  "features": {
+   "runs": true,
+   "digest": true,
+   "agents": [
+    "general",
+    "hobby"
+   ]
+  },
+  "health": {
+   "db": true,
+   "migrations": true,
+   "scheduler": true,
+   "claude_auth": true
+  }
+ },
+ "schedule": {
+  "enabled": true,
+  "running": false,
+  "cron": "0 0,12 * * *",
+  "timezone": "Asia/Tokyo",
+  "next_slot_key": "2026-11-07T12:00[Asia/Tokyo]",
+  "next_slot_at": "2026-11-07T03:00:00Z",
+  "manual_runs_today": 0,
+  "manual_runs_per_day": 4
+ },
+ "gate": {
+  "preview": {
+   "checked_at": "2026-11-07T03:08:00Z",
+   "decision": "run",
+   "reason": "ok",
+   "allow": true,
+   "conservative": false,
+   "source": "usage_api",
+   "five_hour": {
+    "used_pct": 42.0,
+    "resets_at": "2026-11-07T06:00:00Z"
+   },
+   "seven_day": {
+    "used_pct": 61.0,
+    "resets_at": "2026-11-10T00:00:00Z"
+   },
+   "expected_run_pct": 5.0,
+   "floors": {
+    "five_hour_min_remaining_pct": 10,
+    "weekly_min_remaining_pct": 20,
+    "abort_remaining_pct": 5
+   }
+  },
+  "pending": {
+   "run_id": "00000000-0000-4000-8000-000000000001",
+   "slot_key": "2026-11-07T12:00[Asia/Tokyo]",
+   "attempts": 2,
+   "max_attempts": 3,
+   "next_check_at": "2026-11-07T03:30:00Z",
+   "grace_until": "2026-11-07T06:00:00Z",
+   "last_reason": "low_quota"
+  },
+  "recent": [
+   {
+    "taken_at": "2026-11-07T02:00:00Z",
+    "source": "usage_api",
+    "decision": "run",
+    "reason": "ok",
+    "five_hour_used": 40.0,
+    "seven_day_used": 60.0,
+    "run_id": "00000000-0000-4000-8000-000000000002"
+   },
+   {
+    "taken_at": "2026-11-06T14:00:00Z",
+    "source": "usage_api",
+    "decision": "retry",
+    "reason": "low_quota",
+    "five_hour_used": 88.0,
+    "seven_day_used": 58.0,
+    "run_id": null
+   }
+  ]
+ },
+ "current_run": null,
+ "last_run": {
+  "id": "00000000-0000-4000-8000-000000000002",
+  "slot_key": "2026-11-07T00:00[Asia/Tokyo]",
+  "trigger": "cron",
+  "mode": "conservative",
+  "status": "partial",
+  "scheduled_for": "2026-11-06T15:00:00Z",
+  "started_at": "2026-11-06T15:00:12Z",
+  "finished_at": "2026-11-06T15:07:04Z",
+  "duration_s": 412,
+  "gate_attempts": 1,
+  "gate_reason": "ok_conservative",
+  "gate_source": "usage_api",
+  "five_hour_used_before": 38.0,
+  "five_hour_used_after": 44.5,
+  "window_share_pct": 6.5,
+  "error_code": null,
+  "agents": [
+   {
+    "agent_type": "general",
+    "status": "succeeded",
+    "attempts": 1,
+    "research_model": "claude-sonnet-5-5",
+    "structure_model": "claude-haiku-5-5",
+    "started_at": "2026-11-06T15:00:12Z",
+    "finished_at": "2026-11-06T15:03:20Z",
+    "duration_s": 188,
+    "num_turns": 9,
+    "max_turns": 12,
+    "web_searches": 6,
+    "max_web_searches": 8,
+    "web_fetches": 0,
+    "tokens_in": 91000,
+    "tokens_out": 6200,
+    "cache_read": 70000,
+    "equiv_usd": 0.31,
+    "items_kept": 5,
+    "items_filtered": 3,
+    "filtered_by": {
+     "duplicate": 2,
+     "excluded": 1,
+     "no_update": 0
+    },
+    "uncited_dropped": 1,
+    "permission_denials": 0,
+    "error_code": null
+   },
+   {
+    "agent_type": "hobby",
+    "status": "timed_out",
+    "attempts": 1,
+    "research_model": "claude-sonnet-5-5",
+    "structure_model": "claude-haiku-5-5",
+    "started_at": "2026-11-06T15:03:25Z",
+    "finished_at": "2026-11-06T15:07:04Z",
+    "duration_s": 219,
+    "num_turns": 12,
+    "max_turns": 12,
+    "web_searches": 6,
+    "max_web_searches": 8,
+    "web_fetches": 0,
+    "tokens_in": 91000,
+    "tokens_out": 6200,
+    "cache_read": 70000,
+    "equiv_usd": 0.31,
+    "items_kept": 0,
+    "items_filtered": 0,
+    "filtered_by": {
+     "duplicate": 0,
+     "excluded": 0,
+     "no_update": 0
+    },
+    "uncited_dropped": 1,
+    "permission_denials": 0,
+    "error_code": "timeout"
+   }
+  ],
+  "digest": {
+   "status": "held_quiet_hours",
+   "sections_total": 2,
+   "sections_sent": 0,
+   "next_attempt_at": "2026-11-07T22:00:00Z",
+   "last_http_status": null
+  }
+ },
+ "recent_runs": [
+  {
+   "id": "00000000-0000-4000-8000-000000000002",
+   "slot_key": "2026-11-07T00:00[Asia/Tokyo]",
+   "trigger": "cron",
+   "status": "partial",
+   "mode": "conservative",
+   "started_at": "2026-11-06T15:00:12Z",
+   "finished_at": "2026-11-06T15:07:04Z",
+   "agents": [
+    {
+     "agent_type": "general",
+     "status": "succeeded",
+     "started_at": "2026-11-06T15:00:12Z",
+     "finished_at": "2026-11-06T15:03:20Z",
+     "error_code": null
+    },
+    {
+     "agent_type": "hobby",
+     "status": "timed_out",
+     "started_at": "2026-11-06T15:03:25Z",
+     "finished_at": "2026-11-06T15:07:04Z",
+     "error_code": "timeout"
+    }
+   ]
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000003",
+   "slot_key": "2026-11-06T12:00[Asia/Tokyo]",
+   "trigger": "cron",
+   "mode": "normal",
+   "status": "skipped_gate",
+   "started_at": "2026-11-06T03:00:05Z",
+   "finished_at": "2026-11-06T03:00:09Z",
+   "agents": []
+  }
+ ],
+ "ledger": {
+  "today": {
+   "day": "2026-11-07",
+   "runs": 1,
+   "sessions": 2,
+   "probes": 0,
+   "tokens_in": 91000,
+   "tokens_out": 6200,
+   "web_searches": 6,
+   "equiv_usd": 0.31
+  },
+  "last_7_days": [
+   {
+    "day": "2026-11-05",
+    "runs": 2,
+    "sessions": 0,
+    "probes": 0,
+    "tokens_in": 0,
+    "tokens_out": 0,
+    "web_searches": 0,
+    "equiv_usd": 0.6
+   },
+   {
+    "day": "2026-11-06",
+    "runs": 2,
+    "sessions": 0,
+    "probes": 0,
+    "tokens_in": 0,
+    "tokens_out": 0,
+    "web_searches": 0,
+    "equiv_usd": 0.8
+   },
+   {
+    "day": "2026-11-07",
+    "runs": 1,
+    "sessions": 0,
+    "probes": 0,
+    "tokens_in": 0,
+    "tokens_out": 0,
+    "web_searches": 0,
+    "equiv_usd": 0.31
+   }
+  ]
+ }
+}

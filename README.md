@@ -173,6 +173,36 @@ not a hard security boundary against processes running as your own user.
   set `NIU_CLAUDE_USAGE_API=0` in the service's environment (`systemctl --user edit niu-dash`, and the same for
   `niu-notify`, adding `Environment=NIU_CLAUDE_USAGE_API=0` under `[Service]`).
 
+**Research tab** (monitors the research-dispatch agents in `PERSONAL/research-dispatch`): the next scheduled run with a
+countdown, the usage gate (the same bars as the Claude limits, with the gate's floors marked), today's quota ledger,
+36-hour run lanes per agent, the last run per agent and recent errors. The research agents are Claude Agent SDK sessions in
+a container with no hooks, so the Agents tab can't see them; this tab polls research-dispatch's read-only
+`GET /api/v1/monitor/summary` (schema `monitor.v1`) instead. It carries only numbers, enums and times: no prompts, item
+titles, URLs or free-text errors. The dashboard makes at most one call a minute, and only while someone has it open.
+The tab can't start, stop or change a run. A run still `running` after 45 minutes is labelled "possibly stuck" with a
+restart hint. Times are shown in your browser's time zone.
+
+*One-time setup* (after research-dispatch has the monitor endpoint):
+1. `cd PERSONAL/research-dispatch && docker compose exec app rd gen-token --name niu-dash --scope monitor`
+2. Add the printed `niu-dash:monitor:<sha256>` entry to `API_TOKENS` in research-dispatch's own env file yourself, then
+   `docker compose up -d`.
+   Use only a `monitor`-scope token here, never a `read` or `admin` one: the dashboard sends it to the configured URL.
+3. Run `.claude-workspace/bin/niu-dash research-token` in a terminal and paste the token. It is read without echo and saved
+   to `~/.local/state/niu-heimar/research-dispatch.token` (mode 600, next to the device credentials; not a `.env` file).
+   `niu-dash research-token --remove` deletes it. The token is read again on every fetch, so rotating it needs no restart.
+
+*Configuration*: copy `.claude-workspace/research.template.json` to `research.json` (gitignored) to change it:
+`{"enabled": true, "url": "http://127.0.0.1:8080", "poll_secs": 60, "timeout_secs": 4}`. The URL must be exactly
+`http://127.0.0.1:PORT` or `http://[::1]:PORT`; anything else is refused. `"enabled": false` hides the tab and stops all calls.
+Redirects and proxy variables are ignored, so the token only ever goes to that address. The dotenv guard hook also blocks
+agents from reading the token file, editing `research.json` (it names where the token is sent) or running `niu-dash research-token`.
+
+*What the tab says when something is wrong*: **not configured** shows the three setup steps; **not reachable** means the
+container is down (`docker compose ps` in research-dispatch); **token rejected** means the token is missing from
+`API_TOKENS` or was revoked (redo step 1 to 3); **incompatible version** means research-dispatch has no `monitor.v1`
+endpoint yet (update it); an **error** says which check failed (for example the token file's permissions). In every case
+the last good data stays on screen, greyed out, with the time it is from.
+
 Service: `systemctl --user status|restart|stop niu-dash`. Logs: `journalctl --user -u niu-dash`.
 
 ## Discord notifications
@@ -180,7 +210,7 @@ Service: `systemctl --user status|restart|stop niu-dash`. Logs: `journalctl --us
 it even when you can't reach the dashboard. It is **outbound only**: Discord webhooks, no bot, and no commands are accepted
 from Discord. Every message is a fixed template. Endpoint URLs, error text and this machine's hostname are never sent,
 secrets are redacted, mentions and link previews are off, and it alerts only on changes, with cooldowns and an hourly cap.
-Design: `docs/design/2026-11-06-discord-notifications.md`.
+Design: `.claude-workspace/docs/design/2026-11-06-discord-notifications.md`.
 
 | Channel | What lands there | Suggested notification setting |
 |---|---|---|
