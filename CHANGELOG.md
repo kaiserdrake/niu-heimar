@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.10.0...niu-heimar-v0.11.0) (2026-11-07)
+
+
+### Features
+
+* **dashboard:** fuzzy search in the Topics panel ([#40](https://github.com/kaiserdrake/niu-heimar/issues/40)) ([282ced0](https://github.com/kaiserdrake/niu-heimar/commit/282ced052088cf3faa052e54921b0c41fe387e8b))
+* **dashboard:** Topics panel to manage valkyrie-dispatch topics ([#38](https://github.com/kaiserdrake/niu-heimar/issues/38)) ([505a050](https://github.com/kaiserdrake/niu-heimar/commit/505a0500b984a2f3bcb3c1f2d8382d719e891108))
+
 ## [0.10.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.9.0...niu-heimar-v0.10.0) (2026-11-07)
 
 
