@@ -21,7 +21,7 @@ under_ws() { [[ "$1" == "$WS" || "$1" == "$WS"/* ]]; }
 
 # Web dashboard credentials, the research-dispatch token and its config are for the user, not agents.
 # The config names the URL the token is sent to, so editing it would redirect the token.
-if grep -Eq 'web-sessions\.json|research-dispatch\.t|niu-heimar/\*|read_token|research(\.template)?\.json' <<<"$targets"; then
+if grep -Eq 'web-sessions\.json|research-dispatch\.t|research-dispatch\.topics\.token|niu-heimar/\*|read_token|research(\.template)?\.json' <<<"$targets"; then
   echo "BLOCKED by workspace policy: dashboard device credentials, the research-dispatch token and the research config are off-limits to agents." >&2
   exit 2
 fi
@@ -57,8 +57,8 @@ if grep -Eq '(^|[^A-Za-z0-9_])\.e(n(v)?)?\*' <<<"$cleaned"; then
   block "$tool uses a wildcard that matches .env files"
 fi
 
-if [[ "$tool" == "Bash" ]] && grep -Eq '/api/(prs/merge|pair|unpair|sessions/dismiss)' <<<"$targets"; then
-  echo "BLOCKED by workspace policy: merging, pairing or dismissing sessions through the web dashboard is reserved for the user. Ask the user." >&2
+if [[ "$tool" == "Bash" ]] && grep -Eq '/api/(prs/merge|pair|unpair|sessions/dismiss|topics)' <<<"$targets"; then
+  echo "BLOCKED by workspace policy: merging, pairing, dismissing sessions or reading and editing research topics through the web dashboard is reserved for the user. Ask the user." >&2
   exit 2
 fi
 

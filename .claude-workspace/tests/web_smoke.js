@@ -6,7 +6,7 @@ function el(tag = "div") {
   const kids = [], attrs = {}, cls = new Set();
   const e = {
     tagName: tag, children: kids, childNodes: kids, style: {}, dataset: {}, hidden: false, checked: false, value: "",
-    textContent: "", innerHTML: "", clientWidth: 900, clientHeight: 500, isConnected: true,
+    textContent: "", clientWidth: 900, clientHeight: 500, isConnected: true,
     classList: { add: (...c) => c.forEach((x) => cls.add(x)), remove: (...c) => c.forEach((x) => cls.delete(x)),
       toggle: (c, on) => (on ?? !cls.has(c)) ? cls.add(c) : cls.delete(c), contains: (c) => cls.has(c) },
     setAttribute: (k, v) => { attrs[k] = String(v); if (k === "class") { cls.clear(); String(v).split(/\s+/).filter(Boolean).forEach((x) => cls.add(x)); } }, getAttribute: (k) => attrs[k] ?? null, removeAttribute: (k) => delete attrs[k],
@@ -14,10 +14,13 @@ function el(tag = "div") {
     insertBefore: (n, ref) => { if (ref === undefined) throw new Error("insertBefore(ref undefined)"); kids.push(n); return n; },
     remove() {}, replaceChildren: (...n) => { kids.length = 0; kids.push(...n); },
     querySelector: (s) => { for (const k of kids) if (k._sel === s || (s.startsWith(".") && k.classList.contains(s.slice(1)))) return k; return null; },
-    querySelectorAll: () => [], addEventListener() {}, removeEventListener() {}, closest: () => null, contains: () => false,
+    querySelectorAll: () => [], addEventListener(t, f) { (e._ls[t] = e._ls[t] || []).push(f); }, removeEventListener() {}, closest: () => null, contains: () => false,
     getBoundingClientRect: () => ({ width: 100, height: 40, left: 0, top: 0 }), scrollIntoView() {}, focus() {},
+    _ls: {}, showModal() { e.open = true; }, close() { e.open = false; e.closed = (e.closed || 0) + 1; },
     getTotalLength: () => 100, getPointAtLength: () => ({ x: 0, y: 0 }), animate: () => ({ onfinish: null, cancel() {} }),
   };
+  let inner = "";   // innerHTML is trapped while the Topics view renders (ctx.TP_TRAP): topic text must never become HTML
+  Object.defineProperty(e, "innerHTML", { get: () => inner, set: (v) => { if (ctx.TP_TRAP) throw new Error("innerHTML written while rendering Topics"); inner = String(v); } });
   Object.defineProperty(e, "className", { get: () => [...cls].join(" "), set: (v) => { cls.clear(); String(v).split(/\s+/).filter(Boolean).forEach((x) => cls.add(x)); } });
   return e;
 }
@@ -58,7 +61,7 @@ const extra = `
   s0.messages = had;
   return fetchLLM();
 })()`;
-ctx.fetch = (url) => Promise.resolve({ json: () => Promise.resolve(String(url).startsWith("/api/research") ? ctx.RS_CUR : String(url).startsWith("/api/llm") ? { claude: { available: false }, endpoints: [
+ctx.fetch = (url) => Promise.resolve({ json: () => Promise.resolve(String(url).startsWith("/api/topics") ? ctx.TP_CUR : String(url).startsWith("/api/research") ? ctx.RS_CUR : String(url).startsWith("/api/llm") ? { claude: { available: false }, endpoints: [
   { name: "remote", label: "GPU", url: "http://gpu.example:11434", up: false, error: "Connection refused", mode: "auto", models: {} },
   { name: "local", label: "CPU", url: "http://127.0.0.1:11434", up: true, version: "0.5", mode: "auto", models: { a: { present: true, name: "m1" } } }] } : {}) });
 ctx.fetchLLM = async () => {
@@ -140,10 +143,156 @@ async function researchChecks(fx) {
   if (!els.get("tab-research").hidden || run("VIEW") !== "agents") fail("disabled research should hide the tab and leave the view");
   return "research ok";
 }
+// Topics sub-view: optional 5th argument = JSON file {ok, hostile, overlimit, not_paired} of /api/topics envelopes (rows already shaped by the server).
+async function topicsChecks(fx, appSrc) {
+  const fail = (m) => { throw new Error("topics: " + m); };
+  const run = (c) => vm.runInContext(c, ctx);
+  const get = (id) => els.get(id);
+  const rowsOf = () => allOf(get("tplist")).filter((n) => /\btprow\b/.test(n.className || ""));
+  const fire = (id, type, ev) => Promise.all((get(id)._ls[type] || []).map((f) => f(ev)));
+  const calls = [];
+  const reply = { ok: true, status: 200, data: {} };
+  ctx.fetch = (url, opts) => {
+    calls.push({ url: String(url), body: opts && opts.body ? JSON.parse(opts.body) : null });
+    const r = opts && opts.method === "POST" ? reply : { ok: true, status: 200, data: String(url).startsWith("/api/topics") ? ctx.TP_CUR : { state: "error", data: null } };
+    return Promise.resolve({ ok: r.ok, status: r.status, json: () => Promise.resolve(r.data) });
+  };
+  const topicsSrc = appSrc.slice(appSrc.indexOf("// ---------- Topics panel"), appSrc.indexOf("// ---------- end Topics panel"));
+  if (topicsSrc.length < 2000) fail("could not find the Topics section in app.js");
+  for (const bad of ["innerHTML", "esc(", "insertAdjacentHTML", "outerHTML", "document.write", "eval(", "new Function"]) if (topicsSrc.includes(bad)) fail(`the Topics code uses ${bad}`);
+  run("ME = { paired: true }");
+  ctx.TP_CUR = fx.ok;
+  run('RESEARCH = { state: "error", data: null }');   // the Research tab is shown (the earlier checks left it disabled)
+  run('setView("research")');
+  run('setRsView("topics")');
+  await run("loadTopics()");
+  if (get("tpbody").hidden || !get("rsbody").hidden) fail("sub-view did not switch");
+  if (!get("rsview-topics").classList.contains("on")) fail("segmented control state");
+  ctx.TP_TRAP = true;   // from here on, any innerHTML write while rendering fails the run
+  run("renderTopics()");
+  if (rowsOf().length !== 3) fail(`expected 3 active rows, got ${rowsOf().length}`);
+  const list = textOf(get("tplist"));
+  if (!/General · 2\/200/.test(list) || !/Hobby · 1\/200/.test(list)) fail("group counts: " + list.slice(0, 200));
+  if (!/General 2\/200/.test(textOf(get("tpchips"))) || !/Fintrend 0\/200/.test(textOf(get("tpchips")))) fail("agent chips: " + textOf(get("tpchips")));
+  if (!/Fintrend agent arrives in M4/.test(list)) fail("fintrend note missing");
+  if (get("tpadd").disabled) fail("Add topic disabled although paired and ok");
+  if (!allOf(get("tplist")).some((n) => n.tagName === "svg") || !allOf(get("tplist")).some((n) => /\btpw-fg\b/.test(n.className || ""))) fail("weight bar missing");
+  run("TP.archived = true; renderTopics()");
+  if (rowsOf().length !== 4 || !rowsOf().some((n) => /\btp-archived\b/.test(n.className)) || !/Restore/.test(textOf(get("tplist")))) fail("archived toggle");
+  run("TP.archived = false; TP.filter = 'moog'; renderTopics()");
+  if (rowsOf().length !== 1) fail("text filter");
+  run("TP.filter = 'zzzz'; renderTopics()");
+  if (!/No topics match/.test(textOf(get("tplist")))) fail("empty filter state");
+  run("TP.filter = ''; renderTopics()");
+  // hostile topic text: literal, never markup
+  ctx.TP_CUR = fx.hostile;
+  await run("loadTopics()");
+  const all = allOf(get("tplist"));
+  if (all.some((n) => ["img", "script", "iframe", "a"].includes(n.tagName))) fail("hostile text created an element");
+  if (!all.some((n) => n.textContent === "<img src=x onerror=alert(1)>")) fail("hostile name not shown literally");
+  if (!all.some((n) => n.textContent === "<script>alert(1)</script>")) fail("hostile keyword not shown literally");
+  if (/Ignore previous|rd_pat_/.test(textOf(get("tplist")))) fail("dropped fields reached the page");
+  if (!rowsOf().some((r) => /CLI-only limits/.test(textOf(r)))) fail("over-limit badge missing");
+  // CLI topic over the API limits: notice + highlighted fields in the edit dialog
+  ctx.TP_CUR = fx.overlimit;
+  await run("loadTopics()");
+  run("tpDialog(TP.data.topics[0])");
+  if (get("tpnote").hidden || !/exceeds what the API accepts/.test(get("tpnote").textContent)) fail("over-limit notice");
+  if (!get("tperr-keywords").textContent) fail("over-limit fields not highlighted: " + get("tperr-keywords").textContent);
+  // not paired: message, no rows, write controls disabled
+  ctx.TP_CUR = fx.not_paired;
+  run("ME = { paired: false }");
+  await run("loadTopics()");
+  if (!/Pair this browser to view and edit topics/.test(textOf(get("tphead")))) fail("not_paired message");
+  if (rowsOf().length || !get("tpadd").disabled) fail("not_paired must show no rows and disable Add");
+  ctx.TP_CUR = fx.ok;
+  await run("loadTopics()");
+  const ctl = allOf(get("tplist")).filter((n) => ["input", "button"].includes(n.tagName) && !/tpex/.test(n.className || ""));
+  if (!ctl.length || !ctl.every((n) => n.disabled)) fail("write controls must be disabled when the browser is not paired");
+  // state banners keep the (stale) list and disable writes
+  run("ME = { paired: true }");
+  ctx.TP_CUR = { ...fx.ok, state: "unreachable", stale: true, message: "valkyrie-dispatch is not reachable on 127.0.0.1:8080. Is the container running?" };
+  await run("loadTopics()");
+  if (!/not reachable/.test(textOf(get("tphead"))) || !get("tpadd").disabled || !get("tpbody").classList.contains("stale")) fail("stale unreachable state");
+  ctx.TP_CUR = { state: "too_powerful", topics: [], message: "This token has scope admin. The dashboard only accepts a topics-scope token." };
+  await run("loadTopics()");
+  if (!/scope admin/.test(textOf(get("tphead"))) || rowsOf().length) fail("too_powerful state");
+  // toggle: confirmed (the POST happens, then the row is replaced by the server's record)
+  ctx.TP_CUR = fx.ok;
+  await run("loadTopics()");
+  const t0 = JSON.parse(JSON.stringify(fx.ok.topics[0]));
+  Object.assign(reply, { ok: true, status: 200, data: { ok: true, topic: { ...t0, is_active: false, updated_at: "2026-11-07T11:00:00.000000Z" } } });
+  calls.length = 0;
+  await run("tpToggle(TP.data.topics[0], false)");
+  const c = calls.find((x) => x.url === "/api/topics/update");
+  if (!c || c.body.id !== t0.id || c.body.if_match !== t0.updated_at || JSON.stringify(c.body.fields) !== '{"is_active":false}') fail("toggle request: " + JSON.stringify(calls));
+  if (run("TP.data.topics[0].is_active") !== false) fail("row not replaced by the server record");
+  // toggle error: the row shows a fixed message and keeps the server state
+  Object.assign(reply, { ok: false, status: 412, data: { ok: false, code: "changed" } });
+  await run("tpToggle(TP.data.topics[1], false)");
+  if (!/changed elsewhere/.test(textOf(get("tplist"))) || run("TP.data.topics[1].is_active") !== true) fail("toggle failure handling");
+  // add dialog: client-side validation first, then the request
+  const form = { submitter: { value: "save" }, preventDefault() {} };
+  run("tpDialog(null)");
+  await fire("tpform", "submit", form);
+  if (get("tperr-name").textContent !== "Required" || !/At least 1 keyword/.test(get("tperr-keywords").textContent)) fail("client validation messages");
+  calls.length = 0;
+  get("tpagent").value = "hobby"; get("tpname").value = "  New   thing "; get("tpkw").value = "a\n\nA\nb\r\n"; get("tpex").value = ""; get("tpweight").value = "2.5";
+  await fire("tpkw", "input", {});
+  if (get("tpkwn").textContent !== "2/20") fail("live counter: " + get("tpkwn").textContent);
+  const newId = "00000009-0000-4000-8000-000000000009";
+  Object.assign(reply, { ok: true, status: 200, data: { ok: true, topic: { ...t0, id: newId, name: "New thing", agent_type: "hobby" } } });
+  const closed = get("tpdlg").closed || 0;
+  await fire("tpform", "submit", form);
+  const cr = calls.find((x) => x.url === "/api/topics/create");
+  if (!cr || JSON.stringify(cr.body) !== JSON.stringify({ agent_type: "hobby", name: "New thing", keywords: ["a", "b"], excluded_terms: [], weight: 2.5 })) fail("create request: " + JSON.stringify(cr));
+  if ((get("tpdlg").closed || 0) !== closed + 1) fail("dialog did not close after a confirmed save");
+  if (!run(`TP.data.topics.some((t) => t.id === '${newId}')`)) fail("created topic not added");
+  // duplicate with an archived twin offers Restore; cap names the agent; rate limit and unreachable keep the form
+  run("tpDialog(null)");
+  get("tpagent").value = "hobby"; get("tpname").value = "Dup"; get("tpkw").value = "x"; get("tpweight").value = "1";
+  Object.assign(reply, { ok: false, status: 409, data: { ok: false, code: "duplicate", existing_id: "00000004-0000-4000-8000-000000000004", existing_active: false } });
+  await fire("tpform", "submit", form);
+  if (!/already exists/.test(get("tpformmsg").textContent) || get("tprestoredup").hidden) fail("duplicate handling");
+  Object.assign(reply, { ok: false, status: 409, data: { ok: false, code: "cap" } });
+  await fire("tpform", "submit", form);
+  if (!/Hobby already has 200 active topics/.test(get("tpformmsg").textContent)) fail("cap message: " + get("tpformmsg").textContent);
+  Object.assign(reply, { ok: false, status: 429, data: { ok: false, code: "rate_limited" } });
+  await fire("tpform", "submit", form);
+  if (!/Too many changes/.test(get("tpformmsg").textContent)) fail("rate limit message");
+  Object.assign(reply, { ok: false, status: 502, data: { ok: false, code: "unreachable" } });
+  await fire("tpform", "submit", form);
+  if (!/nothing was saved/.test(get("tpformmsg").textContent) || get("tpname").value !== "Dup") fail("unreachable keeps the form filled");
+  Object.assign(reply, { ok: false, status: 400, data: { ok: false, code: "invalid", fields: { name: "forbidden_char", evil: "x" } } });
+  await fire("tpform", "submit", form);
+  if (!/not allowed/.test(get("tperr-name").textContent)) fail("per-field server error");
+  // edit sends only changed fields; 412 offers Reload; archive needs two clicks
+  run("tpDialog(TP.data.topics.find((t) => t.is_active))");
+  const cur = run("TP.editing");
+  get("tpweight").value = "4";
+  Object.assign(reply, { ok: false, status: 412, data: { ok: false, code: "changed" } });
+  await fire("tpform", "submit", form);
+  if (get("tpreload").hidden || !/changed elsewhere/.test(get("tpformmsg").textContent)) fail("412 handling");
+  Object.assign(reply, { ok: true, status: 200, data: { ok: true, topic: { ...cur, weight: 4 } } });
+  calls.length = 0;
+  await fire("tpform", "submit", form);
+  const upd = calls.find((x) => x.url === "/api/topics/update");
+  if (!upd || JSON.stringify(upd.body.fields) !== '{"weight":4}' || upd.body.if_match !== cur.updated_at) fail("edit sends only changed fields with if_match: " + JSON.stringify(upd));
+  run("tpDialog(TP.data.topics.find((t) => t.is_active))");
+  calls.length = 0;
+  await get("tparchive")._ls.click[0]({});
+  if (calls.length || get("tparchive").textContent !== "Confirm archive") fail("first archive click must only arm");
+  Object.assign(reply, { ok: true, status: 200, data: { ok: true, topic: { ...run("TP.editing"), is_active: false } } });
+  await get("tparchive")._ls.click[0]({});
+  if (!calls.some((x) => x.url === "/api/topics/update" && x.body.fields.is_active === false)) fail("second click archives");
+  ctx.TP_TRAP = false;
+  return "topics ok";
+}
 (async () => {
   try {
     console.log(vm.runInContext(src, ctx, { filename: "app.js" }));
     console.log(await vm.runInContext(extra, ctx, { filename: "extra.js" }));
     if (process.argv[4]) console.log(await researchChecks(JSON.parse(fs.readFileSync(process.argv[4], "utf8"))));
+    if (process.argv[5]) console.log(await topicsChecks(JSON.parse(fs.readFileSync(process.argv[5], "utf8")), fs.readFileSync(process.argv[2], "utf8")));
   } catch (e) { console.log("ERROR:", e.message, (e.stack || "").split("\n")[1]); process.exit(1); }
 })();

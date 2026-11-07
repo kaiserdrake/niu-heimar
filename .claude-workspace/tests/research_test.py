@@ -26,6 +26,7 @@ TOKEN = "rd_pat_TESTTOKEN_" + "a" * 24
 TOKEN_FILE = tmp / "state" / "research-dispatch.token"
 CFG_FILE = tmp / "research.json"
 os.environ.update(NIU_EVENTS_DB=str(tmp / "state" / "events.db"), NIU_RESEARCH_TOKEN_FILE=str(TOKEN_FILE),
+                  NIU_TOPICS_TOKEN_FILE=str(tmp / "state" / "research-dispatch.topics.token"),
                   NIU_RESEARCH_CONFIG=str(CFG_FILE), NIU_CLAUDE_USAGE_API="0", NIU_CLAUDE_CREDENTIALS="/nonexistent/creds.json")
 for k in ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
     os.environ.pop(k, None)
@@ -50,7 +51,7 @@ class Fake(ThreadingHTTPServer):
 
     def __init__(self):
         super().__init__(("127.0.0.1", 0), FakeHandler)
-        self.seen, self.mode = [], {}
+        self.seen, self.mode, self.who, self.who_mode = [], {}, [], {}
         threading.Thread(target=self.serve_forever, daemon=True).start()
 
     @property
@@ -64,6 +65,16 @@ class FakeHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         s = self.server
+        if self.path == "/api/v1/auth/whoami":   # scope check: scripted separately so the monitor request counts stay exact
+            s.who.append({"auth": self.headers.get("Authorization")})
+            m = s.who_mode
+            body = m.get("body", b'{"name":"niu-dash","scope":"monitor"}')
+            self.send_response(m.get("status", 200))
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         s.seen.append({"path": self.path, "auth": self.headers.get("Authorization"), "ua": self.headers.get("User-Agent")})
         m = s.mode
         if m.get("delay"):
@@ -102,9 +113,10 @@ def token_file(content=TOKEN + "\n", mode=0o600):
 
 
 def reset():
-    nr.RESEARCH.update(cache=None, ok_data=None, ok_at=0.0, busy=False, last_force=0.0)
+    nr.RESEARCH.update(cache=None, ok_data=None, ok_at=0.0, busy=False, last_force=0.0, scope=None)
     NOW[0] += 1000
-    up.seen.clear(), capture.seen.clear()
+    up.seen.clear(), up.who.clear(), capture.seen.clear()
+    up.who_mode = {}
 
 
 def settle():
@@ -229,6 +241,41 @@ r = poll(body=b"[1,2]")
 check(r["state"] == "incompatible", "JSON array -> incompatible")
 r = poll(status=429, body=b"{}")
 check(r["state"] == "error", "other 4xx -> error")
+
+# ---------- 3b. scope check of the monitor token (whoami) ----------
+reset()
+up.mode = {"body": M1}
+nr.summary()
+settle()
+check(nr.summary()["state"] == "ok" and len(up.who) == 1 and up.who[0]["auth"] == f"Bearer {TOKEN}", f"monitor scope: ok, one whoami call: {len(up.who)}")
+NOW[0] += 61
+nr.summary()
+settle()
+check(len(up.who) == 1 and len(up.seen) == 2, "whoami result cached for 300 s")
+NOW[0] += 301
+nr.summary()
+settle()
+check(len(up.who) == 2, "whoami asked again after 300 s")
+for scope in ("admin", "read", "topics"):
+    reset()
+    up.mode = {"body": M1}
+    up.who_mode = {"body": json.dumps({"name": "x", "scope": scope}).encode()}
+    nr.summary()
+    settle()
+    r = nr.summary()
+    check(r["state"] == "too_powerful" and not up.seen and "monitor-scope" in r["message"], f"{scope} token refused, no monitor request: {r['state']} {len(up.seen)}")
+reset()
+up.mode = {"body": M1}
+up.who_mode = {"status": 404, "body": b"{}"}
+nr.summary()
+settle()
+check(nr.summary()["state"] == "ok" and len(up.seen) == 1, "whoami 404 (older deploy) is tolerated")
+reset()
+up.mode = {"body": M1}
+up.who_mode = {"status": 401, "body": b"{}"}
+nr.summary()
+settle()
+check(nr.summary()["state"] == "unauthorized" and not up.seen, "whoami 401 -> unauthorized")
 
 # ---------- 4. no proxies ----------
 for k in ("http_proxy", "HTTP_PROXY", "all_proxy"):
@@ -484,6 +531,26 @@ code, out = tty_run(["research-token"], "hello")
 check(code != 0 and "nothing saved" in out and TOKEN_FILE.read_text().strip() == new, f"a malformed token is refused and the old one kept: {code} {out!r}")
 code, out = tty_run(["research-token", "--remove"], None)
 check(code == 0 and not TOKEN_FILE.exists(), f"--remove deletes the token file: {code} {out!r}")
+
+# the setter asks valkyrie-dispatch for the token's scope and deletes a wrong one again
+TOPICS_FILE = Path(os.environ["NIU_TOPICS_TOKEN_FILE"])
+config()
+up.who.clear()
+up.who_mode = {"body": b'{"name":"niu-dash-topics","scope":"topics"}'}
+code, out = tty_run(["research-token", "--scope", "topics"], new)
+check(code == 0 and "scope checked: topics" in out and TOPICS_FILE.exists() and not TOKEN_FILE.exists(), f"topics token stored in its own file: {code} {out!r}")
+check(oct(TOPICS_FILE.stat().st_mode)[-3:] == "600" and up.who and up.who[-1]["auth"] == f"Bearer {new}", "topics token file is 0600; scope asked once")
+check("research-dispatch topics token:" in out, "prompt names the topics token")
+up.who_mode = {"body": b'{"name":"adm","scope":"admin"}'}
+code, out = tty_run(["research-token", "--scope", "topics"], new)
+check(code != 0 and "scope admin" in out and not TOPICS_FILE.exists(), f"admin token for topics: deleted again: {code} {out!r}")
+code, out = tty_run(["research-token"], new)
+check(code != 0 and not TOKEN_FILE.exists(), f"admin token for the monitor file: deleted again: {code} {out!r}")
+up.who_mode = {"status": 404, "body": b"{}"}
+code, out = tty_run(["research-token", "--scope", "topics"], new)
+check(code == 0 and "could not check" in out and TOPICS_FILE.exists(), f"old deploy without whoami: kept with a note: {code} {out!r}")
+code, out = tty_run(["research-token", "--scope", "topics", "--remove"], None)
+check(code == 0 and not TOPICS_FILE.exists(), "--remove --scope topics deletes the topics file")
 
 print(f"research: {passed} passed, {failed} failed")
 for n in notes:

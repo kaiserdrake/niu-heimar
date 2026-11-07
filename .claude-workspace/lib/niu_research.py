@@ -8,6 +8,7 @@ Design: docs/design/2026-11-07-dashboard-research-tab.md. Rules this module keep
 - Everything that leaves this module is rebuilt from an allowlist (`shape`): unknown keys are dropped, enums and strings
   are checked, numbers are clamped. Messages are fixed strings, never `str(exc)`. Nothing is written to stdout or stderr.
 """
+import hashlib
 import http.client
 import json
 import math
@@ -25,6 +26,8 @@ from niu_events import db_path
 
 SCHEMA = "monitor.v1"
 PATH = "/api/v1/monitor/summary"
+WHOAMI_PATH = "/api/v1/auth/whoami"
+WHOAMI_TTL = 300              # the monitor token's scope is re-checked at most this often
 MAX_BODY = 128 * 1024
 MIN_POLL_SECS = 60            # the server never asks valkyrie-dispatch more often than this (tests lower it)
 FORCE_GAP_SECS = 10           # a manual refresh is allowed at most this often
@@ -61,6 +64,8 @@ MESSAGES = {
     "unreachable": "valkyrie-dispatch is not reachable on {addr}. Is the container running? (`docker compose ps` in PERSONAL/valkyrie-dispatch)",
     "unauthorized": "Token rejected: check API_TOKENS in valkyrie-dispatch and re-run `niu-dash research-token`.",
     "incompatible": "valkyrie-dispatch has no compatible monitor endpoint (needs monitor.v1).",
+    "too_powerful": "This token has a scope other than monitor. The Research tab only accepts a monitor-scope token. "
+                    "Remove it with `niu-dash research-token --remove` and store a monitor token.",
 }
 ERROR_MESSAGES = {
     "url": "research URL must be http://127.0.0.1:PORT",
@@ -73,7 +78,7 @@ ERROR_MESSAGES = {
 }
 
 LOCK = threading.Lock()
-RESEARCH = {"cache": None, "ok_data": None, "ok_at": 0.0, "busy": False, "last_force": 0.0}
+RESEARCH = {"cache": None, "ok_data": None, "ok_at": 0.0, "busy": False, "last_force": 0.0, "scope": None}
 _clock = time.time            # tests replace this
 
 
@@ -131,9 +136,13 @@ def valid_token(s):
 
 
 def read_token():
+    return _read_token_at(token_path())
+
+
+def _read_token_at(path):
     """The token string. Refuses symlinks, non-regular files, files owned by someone else and anything group/world accessible."""
     try:
-        fd = os.open(token_path(), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
     except FileNotFoundError:
         raise TokenProblem("missing") from None
     except OSError:
@@ -155,10 +164,13 @@ def read_token():
 
 
 def write_token(token):
+    _write_token_at(token_path(), token)
+
+
+def _write_token_at(p, token):
     """Atomic 0600 write into the (0700) state directory."""
     if not valid_token(token):
         raise ValueError("not a valkyrie-dispatch token")
-    p = token_path()
     p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = p.with_name(p.name + ".tmp")
     try:
@@ -198,12 +210,12 @@ def _opener():
     return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
 
 
-def fetch(cfg, token):
-    """The parsed monitor.v1 document. Raises _Fail(state, cause); never anything that holds the token."""
+def _get(cfg, token, path, max_body):
+    """The parsed JSON of a fixed-path GET. Raises _Fail(state, cause); never anything that holds the token."""
     base = validate_url(cfg.get("url"))
     if not base:
         raise _Fail("error", "url")
-    req = urllib.request.Request(base + PATH, method="GET", headers={
+    req = urllib.request.Request(base + path, method="GET", headers={
         "Authorization": f"Bearer {token}", "Accept": "application/json", "User-Agent": "niu-heimar-dashboard"})
     timeout = cfg.get("timeout_secs", 4)
     deadline = time.monotonic() + 2 * timeout
@@ -216,8 +228,8 @@ def fetch(cfg, token):
             if r.headers.get_content_type() != "application/json":
                 raise _Fail("incompatible")
             body = b""
-            while len(body) <= MAX_BODY:
-                chunk = r.read(min(16384, MAX_BODY + 1 - len(body)))
+            while len(body) <= max_body:
+                chunk = r.read(min(16384, max_body + 1 - len(body)))
                 if not chunk:
                     break
                 body += chunk
@@ -235,15 +247,49 @@ def fetch(cfg, token):
         raise _Fail("unreachable") from None
     except http.client.HTTPException:
         raise _Fail("error", "badjson") from None
-    if len(body) > MAX_BODY:
+    if len(body) > max_body:
         raise _Fail("error", "toolarge")
     try:
-        doc = json.loads(body)
+        return json.loads(body)
     except (ValueError, RecursionError):
         raise _Fail("error", "badjson") from None
+
+
+def fetch(cfg, token):
+    """The parsed monitor.v1 document. Raises _Fail(state, cause)."""
+    doc = _get(cfg, token, PATH, MAX_BODY)
     if not isinstance(doc, dict) or doc.get("schema") != SCHEMA:
         raise _Fail("incompatible")
     return doc
+
+
+def whoami(cfg, token):
+    """The scope name valkyrie-dispatch reports for this token (GET /api/v1/auth/whoami). Raises _Fail; 404 -> incompatible."""
+    doc = _get(cfg, token, WHOAMI_PATH, 4096)
+    scope = doc.get("scope") if isinstance(doc, dict) else None
+    if not isinstance(scope, str) or len(scope) > 32:
+        raise _Fail("incompatible")
+    return scope
+
+
+def _check_monitor_scope(cfg, token, now):
+    """The monitor token must be monitor-scope. Checked every WHOAMI_TTL seconds; an older deploy without whoami (404) is tolerated."""
+    key = hashlib.sha256(token.encode()).hexdigest()
+    with LOCK:
+        c = RESEARCH["scope"]
+    if c and c["key"] == key and now - c["at"] < WHOAMI_TTL:
+        scope = c["scope"]
+    else:
+        try:
+            scope = whoami(cfg, token)
+        except _Fail as f:
+            if f.state == "incompatible":
+                return
+            raise
+        with LOCK:
+            RESEARCH["scope"] = {"key": key, "at": now, "scope": scope}
+    if scope != "monitor":
+        raise _Fail("too_powerful")
 
 
 # ---------- allowlist reshaping (pure) ----------
@@ -446,7 +492,9 @@ def _refresh():
         cfg = load_config()
         if not validate_url(cfg["url"]):
             raise _Fail("error", "url")
-        data = shape(fetch(cfg, read_token()), _clock())
+        tok = read_token()
+        _check_monitor_scope(cfg, tok, _clock())
+        data = shape(fetch(cfg, tok), _clock())
         state, cause = "ok", None
     except _Fail as f:
         state, cause = f.state, f.cause

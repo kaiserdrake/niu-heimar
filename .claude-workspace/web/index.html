@@ -98,7 +98,24 @@
   </section>
 
   <section class="panel p-research" aria-label="Research agents">
-    <div class="ph"><h2>Research agents</h2><span id="rsupd" class="small muted"></span><button id="rsrefresh" class="ghost tiny">Refresh</button></div>
+    <div class="ph"><h2>Research agents</h2>
+      <span class="seg" role="group" aria-label="Research view">
+        <button id="rsview-status" class="segbtn on" aria-pressed="true">Status</button><button id="rsview-topics" class="segbtn" aria-pressed="false">Topics</button>
+      </span>
+      <span id="rsupd" class="small muted"></span><button id="rsrefresh" class="ghost tiny">Refresh</button></div>
+    <div id="tpbody" class="pb tpbody" hidden>
+      <div id="tphead" class="tphead"></div>
+      <div class="tpbar">
+        <span id="tpchips" class="tpchips" role="group" aria-label="Agent filter"></span>
+        <input id="tpfilter" type="search" placeholder="Filter topics" aria-label="Filter topics" autocomplete="off">
+        <label class="check"><input type="checkbox" id="tparch"> Show archived</label>
+        <button id="tpadd" class="primary tiny">Add topic</button>
+        <button id="tprefresh" class="ghost tiny">Refresh</button>
+        <span id="tpupd" class="small muted"></span>
+      </div>
+      <div id="tpmsg" class="msg" aria-live="polite"></div>
+      <div id="tplist" class="tplist"></div>
+    </div>
     <div id="rsbody" class="pb rsbody">
       <div id="rshead" class="rshead"></div>
       <div class="rsgrid">
@@ -134,6 +151,32 @@
     <div class="row end">
       <button type="button" id="mergecancel" class="ghost">Cancel</button>
       <button id="mergego" value="merge" class="danger">Merge</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="tpdlg">
+  <form method="dialog" id="tpform" novalidate>
+    <h2 id="tptitle">Add topic</h2>
+    <p id="tpnote" class="small warnnote" hidden></p>
+    <div class="tpfield"><label class="small muted" for="tpagent">Agent</label>
+      <select id="tpagent"><option value="general">General</option><option value="hobby">Hobby</option><option value="fintrend">Fintrend</option></select>
+      <div id="tperr-agent_type" class="msg err"></div></div>
+    <div class="tpfield"><label class="small muted" for="tpname">Name (1 to 120 characters)</label>
+      <input id="tpname" autocomplete="off"><div id="tperr-name" class="msg err"></div></div>
+    <div class="tpfield"><label class="small muted" for="tpkw">Keywords (one per line) <span id="tpkwn"></span></label>
+      <textarea id="tpkw" rows="5" autocomplete="off"></textarea><div id="tperr-keywords" class="msg err"></div></div>
+    <div class="tpfield"><label class="small muted" for="tpex">Excluded terms (one per line, optional) <span id="tpexn"></span></label>
+      <textarea id="tpex" rows="3" autocomplete="off"></textarea><div id="tperr-excluded_terms" class="msg err"></div></div>
+    <div class="tpfield"><label class="small muted" for="tpweight">Weight (0.1 to 5)</label>
+      <input id="tpweight" type="number" min="0.1" max="5" step="0.1" inputmode="decimal"><div id="tperr-weight" class="msg err"></div></div>
+    <p id="tpformmsg" class="msg" aria-live="polite"></p>
+    <div class="row"><button type="button" id="tprestoredup" class="ghost" hidden>Restore the archived one</button>
+      <button type="button" id="tpreload" class="ghost" hidden>Reload</button></div>
+    <p id="tparchhelp" class="small muted" hidden>Archived topics stop being researched and can be restored. Nothing is deleted.</p>
+    <div class="row end">
+      <button type="button" id="tparchive" class="danger" hidden>Archive topic</button>
+      <button type="button" id="tpcancel" class="ghost">Cancel</button>
+      <button id="tpsave" value="save" class="primary">Save</button>
     </div>
   </form>
 </dialog>
