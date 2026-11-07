@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.9.0...niu-heimar-v0.10.0) (2026-11-07)
+
+
+### Features
+
+* **dashboard:** mark release-please PRs and let Enter confirm a merge ([#34](https://github.com/kaiserdrake/niu-heimar/issues/34)) ([6cedf80](https://github.com/kaiserdrake/niu-heimar/commit/6cedf8005c27afe8995f2c1f669be5d76ce55bf5))
+* **dashboard:** Research tab for research-dispatch, plus three dashboard fixes ([#36](https://github.com/kaiserdrake/niu-heimar/issues/36)) ([b461171](https://github.com/kaiserdrake/niu-heimar/commit/b461171a7b0bb3787421a61c2dd27063c3eb95c4))
+
 ## [0.9.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.8.1...niu-heimar-v0.9.0) (2026-11-06)
 
 
