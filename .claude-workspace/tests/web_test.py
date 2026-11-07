@@ -17,7 +17,8 @@ SH = WS / ".claude-workspace"
 tmp = Path(tempfile.mkdtemp())
 env = dict(os.environ, NIU_EVENTS_DB=str(tmp / "state" / "events.db"),
            FAKE_GH_LOG=str(tmp / "gh.log"), FAKE_PR_FILE=str(tmp / "pr_state"), NIU_HOST_LABEL="testhost",
-           NIU_CLAUDE_USAGE_API="0", NIU_CLAUDE_CREDENTIALS="/nonexistent/creds.json")  # never the real login
+           NIU_CLAUDE_USAGE_API="0", NIU_CLAUDE_CREDENTIALS="/nonexistent/creds.json",  # never the real login
+           NIU_RESEARCH_TOKEN_FILE=str(tmp / "no-such-research.token"), NIU_RESEARCH_CONFIG=str(tmp / "no-such-research.json"))  # nor the real token
 (tmp / "bin").mkdir()
 (tmp / "pr_state").write_text("green")
 gh = tmp / "bin" / "gh"
@@ -118,6 +119,16 @@ try:
           "needs-you / PRs / LLMs live in the left column")
     check(b'id="pulltab"' not in raw and b'id="drawer"' not in raw, "no pull-out drawer")
     check(b'id="tab-events"' in raw and b'id="feed"' in raw, "event feed has its own tab")
+    check(b'id="tab-research"' in raw and b'id="rslanes"' in raw and b'id="rsdot"' in raw and b"p-research" in raw, "Research tab markup")
+    check(b'style="' not in raw and b"onclick=" not in raw and b"<script>" not in raw, "no inline styles, handlers or scripts in the page")
+    check(hd.get("Content-Security-Policy", "").startswith("default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'"),
+          "CSP header unchanged")
+    check(b'data-view="research"' in css, "Research view styles served")
+    st, _, js, rawr = req("GET", "/api/research")
+    check(st == 200 and js["state"] == "not_configured" and js["data"] is None, f"/api/research without a token file: {js and js.get('state')}")
+    check(req("POST", "/api/research/refresh", {}, {"Origin": ORIGIN})[0] == 403, "research refresh without CSRF header -> 403")
+    check(req("POST", "/api/research/refresh", {}, {"X-Niu-CSRF": "1", "Origin": "https://evil.example"})[0] == 403, "research refresh cross-origin -> 403")
+    check(req("POST", "/api/research/refresh", {}, POSTH)[0] == 200, "research refresh with CSRF header -> 200 (no pairing needed)")
     check(b"mission control" not in raw.lower().replace(b"<title>", b""), "no 'mission control' subtitle")
 
     # State: links between session and subagents, tasks, messages
@@ -226,9 +237,36 @@ try:
             smoke["sessions"] += [{**base, "id": "smoke-stale", "state": "stale", "ended": False, "last": smoke["now"] - 4000},
                                   {**base, "id": "smoke-wait", "state": "waiting", "ended": False, "last": smoke["now"] - 4000}]
         st_path.write_text(json.dumps(smoke))
-        r = subprocess.run([node, str(SH / "tests" / "web_smoke.js"), str(SH / "web" / "app.js"), str(st_path)],
+        # Research tab payloads: the fixtures re-timed to "now", passed through the server's own shape() like /api/research does
+        sys.path.insert(0, str(SH / "lib"))
+        import niu_research  # noqa: E402
+        from datetime import datetime, timezone  # noqa: E402
+        ts_re = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+        now = time.time()
+
+        def retime(x, delta):
+            if isinstance(x, dict):
+                return {k: retime(v, delta) for k, v in x.items()}
+            if isinstance(x, list):
+                return [retime(v, delta) for v in x]
+            if isinstance(x, str) and ts_re.fullmatch(x):
+                t = datetime.strptime(x, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp() + delta
+                return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            return x
+
+        def envelope(name):
+            raw = json.loads((SH / "tests" / "fixtures" / "research" / f"{name}.json").read_text())
+            gen = datetime.strptime(raw["generated_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+            raw = retime(raw, int(now) - gen)
+            return {"state": "ok", "cause": None, "message": "", "data": niu_research.shape(raw), "fetched_at": now, "ok_at": now,
+                    "stale": False, "refreshing": False, "server_now": now}
+
+        rs_path = tmp / "research.json"
+        rs_path.write_text(json.dumps({n: envelope(n) for n in ("m1", "m2", "hostile")}))
+        r = subprocess.run([node, str(SH / "tests" / "web_smoke.js"), str(SH / "web" / "app.js"), str(st_path), str(rs_path)],
                            capture_output=True, text=True, timeout=60)
-        check(r.returncode == 0 and "rendered" in r.stdout, f"app.js renders without errors: {r.stdout.strip()} {r.stderr.strip()[:300]}")
+        check(r.returncode == 0 and "rendered" in r.stdout and "llm ok" in r.stdout and "research ok" in r.stdout,
+              f"app.js renders without errors (Agents and Research views): {r.stdout.strip()} {r.stderr.strip()[:300]}")
     else:
         print("web: node not found, front-end smoke run skipped")
 

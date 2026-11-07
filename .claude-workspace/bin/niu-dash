@@ -6,8 +6,11 @@ Usage:
   niu-dash pair [--name laptop]     show a one-time code to pair a browser (interactive terminal only)
   niu-dash devices                  list paired browsers
   niu-dash revoke ID|all            remove paired browsers
+  niu-dash research-token [--remove]  store (or delete) the research-dispatch monitor token for the Research tab
+                                    (interactive terminal only; the token is read without echo)
 """
 import argparse
+import getpass
 import hashlib
 import hmac
 import json
@@ -24,6 +27,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import niu_prs  # noqa: E402
+import niu_research  # noqa: E402
 from niu_events import connect, db_path, host_label  # noqa: E402
 from niu_state import SYSTEM_SESSIONS, live, mark_dirty, parse_since  # noqa: E402
 
@@ -228,6 +232,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self._state())
         elif path == "/api/prs":
             self._json(prs_json())
+        elif path == "/api/research":
+            self._json(niu_research.summary())
         elif path == "/api/me":
             d = device_for(self._cookie())
             self._json({"paired": bool(d), "device": d and {"id": d["id"], "name": d["name"]}})
@@ -279,6 +285,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/pair":
             return self._pair()
         device = device_for(self._cookie())
+        if path == "/api/research/refresh":
+            return self._json(niu_research.summary(force=True))  # throttled inside; needs no pairing, like the PR refresh
         if path == "/api/prs/refresh":
             refresh_prs(force=True)
             return self._json({"ok": True})
@@ -433,6 +441,19 @@ def cmd_revoke(args):
     print(f"revoked {before - len(data['devices'])} device(s)")
 
 
+def cmd_research_token(args):
+    if args.remove:
+        print("research-dispatch token removed" if niu_research.remove_token() else "no research-dispatch token was stored")
+        return
+    if not niu_prs.can_prompt():
+        sys.exit("niu-dash: research-token needs an interactive terminal (you set the token yourself)")
+    token = getpass.getpass("research-dispatch monitor token: ").strip()
+    if not niu_research.valid_token(token):
+        sys.exit("niu-dash: that is not a research-dispatch token (expected rd_pat_...); nothing saved")
+    niu_research.write_token(token)
+    print(f"saved (rd_pat_...{token[-4:]})")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -446,6 +467,9 @@ def main():
     r = sub.add_parser("revoke")
     r.add_argument("id")
     r.set_defaults(fn=cmd_revoke)
+    t = sub.add_parser("research-token")
+    t.add_argument("--remove", action="store_true")
+    t.set_defaults(fn=cmd_research_token)
     args = ap.parse_args()
     args.fn(args)
 

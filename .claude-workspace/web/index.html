@@ -17,6 +17,7 @@
   <nav class="tabs" aria-label="Views">
     <button id="tab-agents" class="tab on" aria-pressed="true">Agents</button>
     <button id="tab-events" class="tab" aria-pressed="false">Events</button>
+    <button id="tab-research" class="tab" aria-pressed="false">Research <span id="rsdot" class="tabdot" hidden></span></button>
   </nav>
   <div id="counters" class="counters" aria-label="Live"></div>
   <div id="today" class="kpis" aria-label="Today"></div>
@@ -94,6 +95,20 @@
   <section class="panel p-prs" aria-label="Pull requests">
     <div class="ph"><h2>Pull requests</h2><span id="prneeds" class="needs" hidden></span><button id="prrefresh" class="ghost tiny">Refresh</button></div>
     <div id="prs" class="pb"></div>
+  </section>
+
+  <section class="panel p-research" aria-label="Research agents">
+    <div class="ph"><h2>Research agents</h2><span id="rsupd" class="small muted"></span><button id="rsrefresh" class="ghost tiny">Refresh</button></div>
+    <div id="rsbody" class="pb rsbody">
+      <div id="rshead" class="rshead"></div>
+      <div class="rsgrid">
+        <div id="rsgate" class="rscard"></div>
+        <div id="rsquota" class="rscard"></div>
+      </div>
+      <div id="rslanes" class="rslanes"></div>
+      <div id="rslast" class="rssec"></div>
+      <div id="rserrors" class="rssec"></div>
+    </div>
   </section>
 
   <section class="panel p-feed" aria-label="Event feed">

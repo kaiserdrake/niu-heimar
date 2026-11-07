@@ -1,0 +1,122 @@
+{
+ "schema": "monitor.v1",
+ "generated_at": "2026-11-07T03:12:00Z",
+ "service": {
+  "version": "0.2.0",
+  "features": {
+   "runs": false,
+   "digest": false,
+   "agents": [
+    "general"
+   ]
+  },
+  "health": {
+   "db": true,
+   "migrations": true,
+   "scheduler": null,
+   "claude_auth": null
+  }
+ },
+ "schedule": {
+  "enabled": true,
+  "running": false,
+  "cron": "0 0,12 * * *",
+  "timezone": "Asia/Tokyo",
+  "next_slot_key": "2026-11-07T12:00[Asia/Tokyo]",
+  "next_slot_at": "2026-11-07T03:00:00Z",
+  "manual_runs_today": 0,
+  "manual_runs_per_day": 4
+ },
+ "gate": {
+  "preview": {
+   "checked_at": "2026-11-07T03:08:00Z",
+   "decision": "run",
+   "reason": "ok",
+   "allow": true,
+   "conservative": false,
+   "source": "usage_api",
+   "five_hour": {
+    "used_pct": 42.0,
+    "resets_at": "2026-11-07T06:00:00Z"
+   },
+   "seven_day": {
+    "used_pct": 61.0,
+    "resets_at": "2026-11-10T00:00:00Z"
+   },
+   "expected_run_pct": 5.0,
+   "floors": {
+    "five_hour_min_remaining_pct": 10,
+    "weekly_min_remaining_pct": 20,
+    "abort_remaining_pct": 5
+   }
+  },
+  "pending": null,
+  "recent": [
+   {
+    "taken_at": "2026-11-07T02:00:00Z",
+    "source": "usage_api",
+    "decision": "run",
+    "reason": "ok",
+    "five_hour_used": 40.0,
+    "seven_day_used": 60.0,
+    "run_id": null
+   },
+   {
+    "taken_at": "2026-11-06T14:00:00Z",
+    "source": "usage_api",
+    "decision": "retry",
+    "reason": "low_quota",
+    "five_hour_used": 88.0,
+    "seven_day_used": 58.0,
+    "run_id": null
+   }
+  ]
+ },
+ "current_run": null,
+ "last_run": null,
+ "recent_runs": [],
+ "ledger": {
+  "today": {
+   "day": "2026-11-07",
+   "runs": 1,
+   "sessions": 2,
+   "probes": 0,
+   "tokens_in": 91000,
+   "tokens_out": 6200,
+   "web_searches": 6,
+   "equiv_usd": 0.31
+  },
+  "last_7_days": [
+   {
+    "day": "2026-11-05",
+    "runs": 2,
+    "sessions": 0,
+    "probes": 0,
+    "tokens_in": 0,
+    "tokens_out": 0,
+    "web_searches": 0,
+    "equiv_usd": 0.6
+   },
+   {
+    "day": "2026-11-06",
+    "runs": 2,
+    "sessions": 0,
+    "probes": 0,
+    "tokens_in": 0,
+    "tokens_out": 0,
+    "web_searches": 0,
+    "equiv_usd": 0.8
+   },
+   {
+    "day": "2026-11-07",
+    "runs": 1,
+    "sessions": 0,
+    "probes": 0,
+    "tokens_in": 0,
+    "tokens_out": 0,
+    "web_searches": 0,
+    "equiv_usd": 0.31
+   }
+  ]
+ }
+}
