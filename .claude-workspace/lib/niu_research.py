@@ -1,4 +1,4 @@
-"""Research tab data: polls research-dispatch's read-only monitor endpoint and re-shapes it for the dashboard.
+"""Research tab data: polls valkyrie-dispatch's read-only monitor endpoint and re-shapes it for the dashboard.
 
 Design: docs/design/2026-11-07-dashboard-research-tab.md. Rules this module keeps:
 - The only outbound target is `<validated loopback base URL>/api/v1/monitor/summary`. The base URL comes from local config,
@@ -26,7 +26,7 @@ from niu_events import db_path
 SCHEMA = "monitor.v1"
 PATH = "/api/v1/monitor/summary"
 MAX_BODY = 128 * 1024
-MIN_POLL_SECS = 60            # the server never asks research-dispatch more often than this (tests lower it)
+MIN_POLL_SECS = 60            # the server never asks valkyrie-dispatch more often than this (tests lower it)
 FORCE_GAP_SECS = 10           # a manual refresh is allowed at most this often
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULTS = {"enabled": True, "url": "http://127.0.0.1:8080", "poll_secs": 60, "timeout_secs": 4}
@@ -56,20 +56,20 @@ DIGEST = frozenset("not_built pending held_quiet_hours sent partial failed dead 
 MESSAGES = {
     "disabled": "The Research tab is turned off (research.json: enabled is false).",
     "not_configured": "No monitor token yet. Run `niu-dash research-token` in a terminal on this machine and paste the token.",
-    "loading": "Checking research-dispatch…",
+    "loading": "Checking valkyrie-dispatch…",
     "ok": "",
-    "unreachable": "research-dispatch is not reachable on {addr}. Is the container running? (`docker compose ps` in PERSONAL/valkyrie-dispatch)",
-    "unauthorized": "Token rejected: check API_TOKENS in research-dispatch and re-run `niu-dash research-token`.",
-    "incompatible": "research-dispatch has no compatible monitor endpoint (needs monitor.v1).",
+    "unreachable": "valkyrie-dispatch is not reachable on {addr}. Is the container running? (`docker compose ps` in PERSONAL/valkyrie-dispatch)",
+    "unauthorized": "Token rejected: check API_TOKENS in valkyrie-dispatch and re-run `niu-dash research-token`.",
+    "incompatible": "valkyrie-dispatch has no compatible monitor endpoint (needs monitor.v1).",
 }
 ERROR_MESSAGES = {
     "url": "research URL must be http://127.0.0.1:PORT",
     "perms": "The token file must be a regular file you own with mode 600 (and not a symlink).",
-    "format": "The token file does not hold a research-dispatch token. Re-run `niu-dash research-token`.",
-    "server": "research-dispatch returned an error.",
-    "toolarge": "research-dispatch sent a response that is too large.",
-    "badjson": "research-dispatch sent a response that could not be read.",
-    "internal": "Could not read the research-dispatch status.",
+    "format": "The token file does not hold a valkyrie-dispatch token. Re-run `niu-dash research-token`.",
+    "server": "valkyrie-dispatch returned an error.",
+    "toolarge": "valkyrie-dispatch sent a response that is too large.",
+    "badjson": "valkyrie-dispatch sent a response that could not be read.",
+    "internal": "Could not read the valkyrie-dispatch status.",
 }
 
 LOCK = threading.Lock()
@@ -157,7 +157,7 @@ def read_token():
 def write_token(token):
     """Atomic 0600 write into the (0700) state directory."""
     if not valid_token(token):
-        raise ValueError("not a research-dispatch token")
+        raise ValueError("not a valkyrie-dispatch token")
     p = token_path()
     p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = p.with_name(p.name + ".tmp")
