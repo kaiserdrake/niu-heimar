@@ -173,7 +173,7 @@ not a hard security boundary against processes running as your own user.
   set `NIU_CLAUDE_USAGE_API=0` in the service's environment (`systemctl --user edit niu-dash`, and the same for
   `niu-notify`, adding `Environment=NIU_CLAUDE_USAGE_API=0` under `[Service]`).
 
-**Research tab** (monitors the research-dispatch agents in `PERSONAL/research-dispatch`): the next scheduled run with a
+**Research tab** (monitors the research-dispatch agents in `PERSONAL/valkyrie-dispatch`): the next scheduled run with a
 countdown, the usage gate (the same bars as the Claude limits, with the gate's floors marked), today's quota ledger,
 36-hour run lanes per agent, the last run per agent and recent errors. The research agents are Claude Agent SDK sessions in
 a container with no hooks, so the Agents tab can't see them; this tab polls research-dispatch's read-only
@@ -183,7 +183,7 @@ The tab can't start, stop or change a run. A run still `running` after 45 minute
 restart hint. Times are shown in your browser's time zone.
 
 *One-time setup* (after research-dispatch has the monitor endpoint):
-1. `cd PERSONAL/research-dispatch && docker compose exec app rd gen-token --name niu-dash --scope monitor`
+1. `cd PERSONAL/valkyrie-dispatch && docker compose exec app rd gen-token --name niu-dash --scope monitor`
 2. Add the printed `niu-dash:monitor:<sha256>` entry to `API_TOKENS` in research-dispatch's own env file yourself, then
    `docker compose up -d`.
    Use only a `monitor`-scope token here, never a `read` or `admin` one: the dashboard sends it to the configured URL.

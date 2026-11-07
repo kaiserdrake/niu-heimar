@@ -88,7 +88,7 @@ async function researchChecks(fx) {
   if (els.get("tab-research").hidden) fail("tab hidden although enabled");
   need("rslast", /general/, "last-run table lists the agent"); need("rslast", /hobby/); need("rslast", /agent timed out/);
   need("rslast", /held for quiet hours/, "digest status");
-  need("rshead", /Next run/); need("rshead", /research-dispatch ok/); need("rsgate", /Waiting for the gate: attempt 2 of 3/);
+  need("rshead", /Next run/); need("rshead", /valkyrie-dispatch ok/); need("rsgate", /Waiting for the gate: attempt 2 of 3/);
   need("rsgate", /20% weekly floor/, "weekly floor tick label"); need("rsgate", /gate floor/);
   need("rsquota", /Quota today/); need("rserrors", /agent timed out/); need("rserrors", /skipped/);
   const lanes = els.get("rslanes");
@@ -117,7 +117,7 @@ async function researchChecks(fx) {
   need("rslast", /possibly stuck/); need("rslast", /docker compose restart app/);
   // M1: partial data and the M2 note
   await show(fx.m1);
-  need("rslanes", /arrives with research-dispatch M2/); need("rslast", /No run history yet/); need("rsgate", /Run/); need("rsquota", /weekly limit/);
+  need("rslanes", /arrives with valkyrie-dispatch M2/); need("rslast", /No run history yet/); need("rsgate", /Run/); need("rsquota", /weekly limit/);
   if (!dot.hidden) fail("badge should be hidden for a healthy M1 payload: " + dot.className);
   // failure states
   await show({ state: "unreachable", data: null });

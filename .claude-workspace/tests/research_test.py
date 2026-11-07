@@ -20,7 +20,7 @@ from pathlib import Path
 WS = Path(__file__).resolve().parents[2]
 SH = WS / ".claude-workspace"
 FX = SH / "tests" / "fixtures" / "research"
-SCHEMA = WS / "PERSONAL" / "research-dispatch" / "schemas" / "monitor.v1.json"
+SCHEMA = WS / "PERSONAL" / "valkyrie-dispatch" / "schemas" / "monitor.v1.json"
 tmp = Path(tempfile.mkdtemp())
 TOKEN = "rd_pat_TESTTOKEN_" + "a" * 24
 TOKEN_FILE = tmp / "state" / "research-dispatch.token"
@@ -371,7 +371,7 @@ if SCHEMA.exists():
     check(nr.SOURCES == enum("GatePreviewModel", "source") | enum("GateRecent", "source"), "gate source enums match the schema")
     check(nr.TRIGGERS == enum("CompactRun", "trigger") and nr.MODES == enum("CompactRun", "mode"), "trigger / mode enums match")
 else:
-    notes.append("PERSONAL/research-dispatch/schemas/monitor.v1.json not found: fixtures and allowlist not checked against it")
+    notes.append("PERSONAL/valkyrie-dispatch/schemas/monitor.v1.json not found: fixtures and allowlist not checked against it")
 
 # ---------- 7. the real server and the research-token command ----------
 env = dict(os.environ, PATH=os.environ["PATH"])

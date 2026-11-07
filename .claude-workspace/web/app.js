@@ -914,7 +914,7 @@ async function loadLLM(force) {
   const eps = r.endpoints || [];
   LLM_EPS = eps;
   LLM_CLAUDE = r.claude || null;
-  if (VIEW === "research") rsGate(RESEARCH);  // the gate card falls back to these numbers when research-dispatch has no preview
+  if (VIEW === "research") rsGate(RESEARCH);  // the gate card falls back to these numbers when valkyrie-dispatch has no preview
   const state = (e) => !e.up ? "down" : Object.values(e.models || {}).every((m) => m.present) ? "up" : "partial";
   const word = { up: "online", partial: "models missing", down: "offline" };
   card.innerHTML = claudeLimits(r.claude) + eps.map((e) => {
@@ -934,7 +934,7 @@ async function loadLLM(force) {
 loadLLM();
 setInterval(() => { if (!document.hidden) loadLLM(); }, 30000);
 
-// ---------- Research tab (research-dispatch monitor) ----------
+// ---------- Research tab (valkyrie-dispatch monitor) ----------
 // /api/research is already allowlisted by the server, but nothing from it is ever shown as HTML:
 // every value goes through textContent or setAttribute, so a hostile payload cannot run or inject anything.
 const RS_STUCK_SECS = 45 * 60;
@@ -950,11 +950,11 @@ const RS_ERROR = { timeout: "agent timed out", aborted_quota: "stopped: quota fl
 const RS_SOURCE = { usage_api: "usage API", probe: "probe", none: "no data", rate_limit_event: "rate-limit event" };
 const RS_SOON = { hobby: "arrives in M2", fintrend: "arrives in M4" };
 const RS_STATE_MSG = {
-  loading: "Checking research-dispatch…",
-  unreachable: "research-dispatch is not reachable. Is the container running? (docker compose ps in PERSONAL/research-dispatch)",
-  unauthorized: "Token rejected: check API_TOKENS in research-dispatch and re-run niu-dash research-token.",
-  incompatible: "research-dispatch has no compatible monitor endpoint (needs monitor.v1).",
-  error: "Could not read the research-dispatch status.",
+  loading: "Checking valkyrie-dispatch…",
+  unreachable: "valkyrie-dispatch is not reachable. Is the container running? (docker compose ps in PERSONAL/valkyrie-dispatch)",
+  unauthorized: "Token rejected: check API_TOKENS in valkyrie-dispatch and re-run niu-dash research-token.",
+  incompatible: "valkyrie-dispatch has no compatible monitor endpoint (needs monitor.v1).",
+  error: "Could not read the valkyrie-dispatch status.",
 };
 const RS_LEVEL = { succeeded: "ok", running: "ok", partial: "warn", waiting_gate: "warn", pending: "warn", skipped: "warn",
   failed: "bad", timed_out: "bad", aborted_quota: "bad", skipped_gate: "bad" };
@@ -1027,9 +1027,9 @@ function rsHealth(r) {
   if (r.state === "ok") {
     const hl = r.data?.service?.health || {};
     const bad = hl.db === false || hl.migrations === false || hl.scheduler === false || hl.claude_auth === false;
-    return bad ? ["partial", "research-dispatch degraded"] : ["up", "research-dispatch ok"];
+    return bad ? ["partial", "valkyrie-dispatch degraded"] : ["up", "valkyrie-dispatch ok"];
   }
-  return { loading: ["partial", "checking…"], not_configured: ["partial", "not configured"], unreachable: ["", "research-dispatch unreachable"],
+  return { loading: ["partial", "checking…"], not_configured: ["partial", "not configured"], unreachable: ["", "valkyrie-dispatch unreachable"],
     unauthorized: ["", "token rejected"], incompatible: ["", "incompatible version"] }[r.state] || ["", "error"];
 }
 
@@ -1105,7 +1105,7 @@ function rsGate(r) {
     kids.push(h("div", "rsline muted", `${RS_SOURCE[p.source] || "unknown"} · checked ${p.checked_at ? `${dur(rsNow() - p.checked_at)} ago` : "never"}`,
       { "data-tip": `Gate floors\n5-hour: stop below ${f.five_hour_min_remaining_pct ?? "?"}% left (plus ${e}% for the run)\nWeekly: stop below ${f.weekly_min_remaining_pct ?? "?"}% left\nAbort a running run below ${f.abort_remaining_pct ?? "?"}% left` }));
   } else {
-    kids.push(h("div", "rsline muted", "No gate preview from research-dispatch yet."));
+    kids.push(h("div", "rsline muted", "No gate preview from valkyrie-dispatch yet."));
     const c = LLM_CLAUDE?.available ? LLM_CLAUDE.windows.filter((w) => w.key === "five_hour" || w.key === "seven_day") : [];
     if (c.length) {
       kids.push(rsMeter(c.map((w) => ({ label: w.label, used: w.used, reset: w.resets_at }))));
@@ -1226,7 +1226,7 @@ function rsLanes(r) {
     root.append(dot);
   }
   box.append(root);
-  if (!feat.runs) box.append(h("div", "rsline muted", "Run history arrives with research-dispatch M2."));
+  if (!feat.runs) box.append(h("div", "rsline muted", "Run history arrives with valkyrie-dispatch M2."));
   else if (!rsRuns(d).some((run) => (run.agents || []).some((a) => a.started_at && (a.finished_at || a.started_at) >= t0))) box.append(h("div", "rsline muted", "No agent runs in the last 36 hours."));
 }
 
@@ -1236,8 +1236,8 @@ function rsStateBlock(r) {
     const box = h("div", "rssetup");
     box.append(h("div", "", "No monitor token is set up yet. One time, in three steps:"));
     const ol = h("ol");
-    for (const [a, code, b] of [["In PERSONAL/research-dispatch run ", "docker compose exec app rd gen-token --name niu-dash --scope monitor", "."],
-      ["Add the printed niu-dash:monitor:… entry to API_TOKENS in research-dispatch's own env file yourself, then run ", "docker compose up -d", "."],
+    for (const [a, code, b] of [["In PERSONAL/valkyrie-dispatch run ", "docker compose exec app rd gen-token --name niu-dash --scope monitor", "."],
+      ["Add the printed niu-dash:monitor:… entry to API_TOKENS in valkyrie-dispatch's own env file yourself, then run ", "docker compose up -d", "."],
       ["On this machine run ", "niu-dash research-token", " in a terminal and paste the token."]]) {
       const li = h("li");
       li.append(h("span", "", a), h("code", "", code), h("span", "", b));
@@ -1272,7 +1272,7 @@ function rsRun(run, title, live) {
   const dg = rsDigest(run.digest);
   if (dg) head.append(h("span", "muted", dg));
   if (live && run.status === "running" && run.started_at && rsNow() - run.started_at > RS_STUCK_SECS) {
-    head.append(h("span", "rsstuck", "possibly stuck · run `docker compose restart app` in research-dispatch; it marks the run interrupted on startup"));
+    head.append(h("span", "rsstuck", "possibly stuck · run `docker compose restart app` in valkyrie-dispatch; it marks the run interrupted on startup"));
   }
   box.append(head);
   const table = h("table", "rstable"), tr = h("tr"), thead = h("thead");
