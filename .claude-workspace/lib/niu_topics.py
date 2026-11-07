@@ -279,8 +279,18 @@ def _terms(v, lo, hi):
     return out, None
 
 
+def _finite(v):
+    """True for a real finite number; a huge int (beyond float range) counts as not finite instead of raising."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    try:
+        return math.isfinite(v)
+    except OverflowError:
+        return False
+
+
 def _weight(v):
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+    if not _finite(v):
         return None, "out_of_range"
     w = round(float(v), 2)
     if not LIMITS["weight_min"] <= w <= LIMITS["weight_max"]:
@@ -395,7 +405,7 @@ def shape_topic(raw):
     if not (isinstance(tid, str) and UUID_RE.fullmatch(tid)) or agent not in AGENT_TYPES or not isinstance(raw.get("name"), str):
         return None
     active, w = raw.get("is_active"), raw.get("weight")
-    if not isinstance(active, bool) or isinstance(w, bool) or not isinstance(w, (int, float)) or not math.isfinite(w):
+    if not isinstance(active, bool) or not _finite(w):
         return None
     name, over = _show(raw["name"], LIMITS["show_name"])
     over = over or len(name) > LIMITS["name"]
@@ -628,11 +638,14 @@ def write(kind, device, b):
         return refuse(p.pop("code"), **p)
     except TokenProblem as t:
         code, extra = ("not_configured", {}) if t.cause == "missing" else ("error", {"cause": t.cause})
+        audit(action, tid, body, device, False, code)
         return refuse(code, **extra)
     except Exception:  # noqa: BLE001
         audit(action, tid, body, device, False, "error")
         return refuse("error", cause="internal")
     topic = shape_topic(doc) if status in (200, 201) else None
+    if status in (200, 201):
+        invalidate()   # the upstream write happened even if its reply is unreadable, so drop the cached list
     if topic is None:
         p = map_upstream_error(status, doc) if status not in (200, 201) else {"code": "error", "cause": "format"}
         audit(action, tid, body, device, False, p["code"])
