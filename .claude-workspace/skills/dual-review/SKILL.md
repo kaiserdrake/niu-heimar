@@ -9,14 +9,10 @@ description: Run the two mandatory reviewers (security-reviewer and test-reviewe
    the branch changes against its base plus uncommitted and untracked files
    (`git status`, `git diff --merge-base origin/HEAD`, `git log origin/HEAD..`). Give the reviewers the list of
    features in the batch (from the commit messages or design docs) so they know what each part is meant to do.
-2. Pick the models. Both reviewers default to Sonnet (their agent files). Run `security-reviewer` on **Opus**
-   (pass `model: "opus"` to the Agent tool) when the PR diff is risky:
-   - it touches hooks or the guard (`hooks/`, `block-env.sh`, `.claude/protected-paths`), permissions or settings templates;
-   - it handles secrets, tokens, credentials, webhooks or redaction;
-   - it touches auth, pairing, merge or other endpoints that act on the user's behalf;
-   - it changes CI workflows, Dockerfiles, compose files or deploy scripts;
-   - or the diff is large (roughly 800+ changed lines of code).
-   Say which model each reviewer runs on and why. `test-reviewer` stays on Sonnet (Opus only if the user asks).
+2. Pick the models. Both reviewers run on **Sonnet** (their agent files), whatever the diff touches; this keeps
+   token use down. Use Opus for a reviewer only when the user explicitly asks for it in chat (pass `model: "opus"`
+   to the Agent tool). For a risky diff (hooks or the guard, secrets or tokens, auth or pairing, CI or deploy, or
+   roughly 800+ changed lines), say so in the verdict so the user can ask for an Opus re-run.
    In a fix round, re-run a reviewer on the same model it used before.
 3. In **one message**, launch both subagents in parallel with the Agent tool:
    - `security-reviewer`, given the target and any context about what the change is meant to do.
