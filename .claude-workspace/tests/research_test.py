@@ -382,6 +382,19 @@ check(out["last_run"]["agents"][0]["research_model"] is None, "bad model id -> N
 check(out["last_run"]["agents"][1]["error_code"] == "unknown" and out["last_run"]["agents"][1]["tokens_in"] == 0, "bad error code; negative count clamped to 0")
 check(out["ledger"]["today"]["equiv_usd"] is None, "non-numeric USD -> None")
 check(len(blob) < 20000, "huge strings do not inflate the output")
+hb, hs = out["brief"], out["schedule"]
+check(hb["state"] == "unknown" and hb["date"] is None and hb["items"] == 0 and hb["updates"] is None and hb["revision"] == 10 ** 12
+      and hb["published_at"] is None and hb["stale"] is None and hb["stale_reason"] == "unknown", f"hostile brief -> unknown/None: {hb}")
+check(hs["next_slot_kind"] == "unknown" and hs["brief_at"] is None and hs["next_brief_at"] is None, f"hostile schedule additions: {hs}")
+check(out["gate"]["pending"]["kind"] == "unknown" and out["last_run"]["kind"] == "unknown" and out["last_run"]["deadline_at"] is None,
+      "hostile kind -> unknown; bad deadline -> None")
+ha = out["last_run"]["agents"][0]
+check(ha["scout_searches"] == 0 and ha["topics_scouted"] is None and ha["topics_changed"] is None, f"hostile scout counters: {ha}")
+check("brief" not in m1 and nr.shape(m1)["brief"] is None and nr.shape(m1)["schedule"]["next_slot_kind"] is None,
+      "the additive fields are optional (m1 has none)")
+sh = nr.shape(m2)
+check(sh["brief"]["state"] == "ready" and sh["brief"]["stale_reason"] == "comprehensive_failed" and sh["last_run"]["kind"] == "comprehensive"
+      and sh["schedule"]["brief_at"] == "08:00" and sh["gate"]["recent"][1]["reason"] == "session_cap", "m2 additive fields survive shape()")
 r = poll(body=HOSTILE)
 check(r["state"] == "ok" and "sk-ant" not in json.dumps(r) and "onerror" not in json.dumps(r), "hostile payload through the poller")
 
@@ -416,6 +429,8 @@ if SCHEMA.exists():
     check(nr.ERRORS == enum("CompactAgent", "error_code"), "error code enum matches the schema")
     check(nr.DIGEST == enum("DigestModel", "status"), "digest enum matches the schema")
     check(nr.SOURCES == enum("GatePreviewModel", "source") | enum("GateRecent", "source"), "gate source enums match the schema")
+    check(nr.KINDS == enum("CompactRun", "kind") == enum("GatePending", "kind") == enum("Schedule", "next_slot_kind"), "run kind enums match")
+    check(nr.BRIEF_STATES == enum("BriefModel", "state") and nr.STALE_REASONS == enum("BriefModel", "stale_reason"), "brief enums match")
     check(nr.TRIGGERS == enum("CompactRun", "trigger") and nr.MODES == enum("CompactRun", "mode"), "trigger / mode enums match")
 else:
     notes.append("PERSONAL/valkyrie-dispatch/schemas/monitor.v1.json not found: fixtures and allowlist not checked against it")

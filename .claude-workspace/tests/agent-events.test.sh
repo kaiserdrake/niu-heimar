@@ -62,21 +62,62 @@ r="$(cd "$SH/lib" && python3 -c 'import sys,niu_events as n;print(n.redact(sys.a
 has "$r" ".claude-workspace/bin/agents-dash"
 hasnt "$r" "9f8e7d6c5b4a"
 
-# Subagent finishes; session stops without test-reviewer -> flagged
+# Subagent finishes; session stops without test-reviewer: an edit-only session is NOT flagged (only release sessions are)
 ev SubagentStop a1 asset-pipeline; ev SubagentStop a2 security-reviewer; ev Stop
 out="$("$SH/bin/agents-dash" --once)"
 has "$out" "○ idle"
-has "$out" "edited without both reviewers"
-has "$out" "1 without reviewers: HOBBY/.niu-test-fixture/voxel-mod"
+hasnt "$out" "without both reviewers"
+hasnt "$out" "release without reviewers"
+json="$("$SH/bin/agents-dash" --json)"
+[[ "$(jq -r '.[] | select(.id=="sess-1111") | [.edited, .release, .flagged] | @csv' <<<"$json")" == "true,false,false" ]] && ok || bad "edit-only session is edited but not flagged"
 
-# Second session runs both reviewers -> not flagged
+# Same session then tags a release without test-reviewer having run -> flagged
+SID=sess-1111
+ev PreToolUse "" "" Bash '{"command":"git tag -a v1.2.3 -m \"release\""}'; ev Stop
+out="$("$SH/bin/agents-dash" --once)"
+has "$out" "release without both reviewers"
+has "$out" "1 release without reviewers: HOBBY/.niu-test-fixture/voxel-mod"
+json="$("$SH/bin/agents-dash" --json)"
+[[ "$(jq -r '.[] | select(.id=="sess-1111") | [.release, .flagged] | @csv' <<<"$json")" == "true,true" ]] && ok || bad "release without reviewers is flagged"
+
+# Second session edits and releases, but runs both reviewers -> a release session, not flagged
 SID=sess-2222
 ev SessionStart; ev UserPromptSubmit; ev PreToolUse "" "" Write '{"file_path":"x.py"}'
+ev PreToolUse "" "" Bash '{"command":"gh release create v2.0.0 --notes x"}'
 ev SubagentStart b1 security-reviewer; ev SubagentStart b2 test-reviewer
 ev SubagentStop b1 security-reviewer; ev SubagentStop b2 test-reviewer; ev Stop
 json="$("$SH/bin/agents-dash" --json)"
-[[ "$(jq -r '.[] | select(.id=="sess-2222") | .flagged' <<<"$json")" == "false" ]] && ok || bad "reviewed session not flagged"
-[[ "$(jq -r '.[] | select(.id=="sess-1111") | .flagged' <<<"$json")" == "true" ]] && ok || bad "unreviewed session flagged"
+[[ "$(jq -r '.[] | select(.id=="sess-2222") | [.release, .flagged] | @csv' <<<"$json")" == "true,false" ]] && ok || bad "released and reviewed session not flagged"
+[[ "$(jq -r '.[] | select(.id=="sess-1111") | .flagged' <<<"$json")" == "true" ]] && ok || bad "unreviewed release session stays flagged"
+
+# Listing tags is not a release, and neither is a read-only gh release call: edit + git tag -l, no reviewers -> not flagged
+SID=sess-2223
+ev SessionStart; ev UserPromptSubmit; ev PreToolUse "" "" Edit '{"file_path":"y.py"}'
+ev PreToolUse "" "" Bash '{"command":"git tag -l \"v*\""}'; ev PreToolUse "" "" Bash '{"command":"git tag --list"}'
+ev PreToolUse "" "" Bash '{"command":"git tag"}'; ev PreToolUse "" "" Bash '{"command":"gh release list"}'; ev Stop
+json="$("$SH/bin/agents-dash" --json)"
+[[ "$(jq -r '.[] | select(.id=="sess-2223") | [.edited, .release, .flagged] | @csv' <<<"$json")" == "true,false,false" ]] && ok || bad "git tag -l / gh release list are not releases"
+
+# The release-please command and the dual-review skill also count
+SID=sess-2224
+ev SessionStart; ev UserPromptSubmit; ev PreToolUse "" "" Edit '{"file_path":"z.py"}'; ev PreToolUse "" "" Skill '{"skill":"dual-review"}'; ev Stop
+SID=sess-2225
+ev SessionStart; ev UserPromptSubmit; ev PreToolUse "" "" Edit '{"file_path":"z.py"}'; ev PreToolUse "" "" Bash '{"command":"npx release-please release-pr --token=x"}'; ev Stop
+json="$("$SH/bin/agents-dash" --json)"
+[[ "$(jq -r '.[] | select(.id=="sess-2224" or .id=="sess-2225") | .flagged' <<<"$json" | tr '\n' ' ')" == "true true " ]] && ok || bad "dual-review skill / release-please are release signals"
+
+# performs_release() table
+r="$(cd "$SH/lib" && python3 - <<'PY'
+import niu_state as n
+yes = [("Bash", "gh release create v1 --notes x"), ("Bash", "cd x && git tag v1.0"), ("Bash", "git tag -a v1 -m msg"), ("Bash", "git -C /w tag -s v2"),
+       ("Bash", "npx release-please release-pr"), ("Skill", "dual-review"), ("Skill", "workspace:dual-review")]
+no = [("Bash", "git tag"), ("Bash", "git tag -l"), ("Bash", "git tag --list 'v*'"), ("Bash", "git tag -d v1"), ("Bash", "git tag -ln"), ("Bash", "gh release list"),
+      ("Bash", "gh release view v1"), ("Bash", "git status && ls"), ("Bash", "echo release"), ("Bash", None), ("Skill", "develop"), ("Edit", "git tag v1")]
+bad = [t for t in yes if not n.performs_release([{"tool": t[0], "summary": t[1]}])] + [t for t in no if n.performs_release([{"tool": t[0], "summary": t[1]}])]
+print("ok" if not bad and not n.performs_release([]) else bad)
+PY
+)"
+[[ "$r" == "ok" ]] && ok || bad "performs_release table: $r"
 
 # Waiting for permission
 SID=sess-3333; ev SessionStart; ev UserPromptSubmit

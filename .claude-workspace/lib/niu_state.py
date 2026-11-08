@@ -67,6 +67,48 @@ def _session_info(summary):
     return {}
 
 
+# A session "performs a release" when one of its tool calls is one of these (Bash summary = first line of the command,
+# redacted, max 120 chars; Skill summary = the skill name). Read-only forms do not count.
+_GH_RELEASE = re.compile(r"(?:^|[\s;&|(])gh\s+release\s+(?!(?:list|view|download)\b)\S")
+_GIT_TAG = re.compile(r"(?:^|[\s;&|(])git(?:\s+-C\s+\S+)?\s+tag\b([^;&|]*)")
+_RELEASE_PLEASE = re.compile(r"(?:^|[\s;&|(/])release-please(?:\s|$|[;&|])")
+_TAG_READONLY_LONG = {"--list", "--delete", "--verify", "--contains", "--no-contains", "--merged", "--no-merged", "--points-at"}
+
+
+def _git_tag_creates(args):
+    """True if the arguments after `git tag` name a tag to create: list/delete/verify/filter forms and a bare `git tag` do not."""
+    positional = False
+    for tok in args.split():
+        if tok.startswith("--"):
+            if tok.split("=")[0] in _TAG_READONLY_LONG:
+                return False
+        elif tok.startswith("-") and len(tok) > 1:
+            if any(c in tok[1:] for c in "ldvn"):  # -l list, -d delete, -v verify, -n lines (a list option)
+                return False
+        else:
+            positional = True
+    return positional
+
+
+def release_signal(tool, summary):
+    """True if one tool call (tool name, summary) is a release action."""
+    summary = summary or ""
+    if tool == "Skill":
+        return summary.strip().rsplit(":", 1)[-1] == "dual-review"
+    if tool != "Bash":
+        return False
+    m = _GIT_TAG.search(summary)
+    return bool(_GH_RELEASE.search(summary) or _RELEASE_PLEASE.search(summary) or (m and _git_tag_creates(m.group(1))))
+
+
+def performs_release(session_events):
+    """Pure. True if a session performs a release: any of its PreToolUse rows (dicts with "tool" and "summary") is
+    a Bash call whose first command line contains `gh release <subcommand>` (not list/view/download), `git tag <name>`
+    (creating; `git tag -l`, `--list`, `-d`, `-v` and a bare `git tag` do not count) or `release-please`, or a Skill call
+    to `dual-review`. A heuristic from what the hook store keeps; a release done by other means is not detected."""
+    return any(e.get("event", "PreToolUse") == "PreToolUse" and release_signal(e.get("tool"), e.get("summary")) for e in session_events)
+
+
 def build(events, now):
     sessions = {}
     open_local = {}  # project_dir -> open niu-local tool calls [{sid, ts, tool, query}]
@@ -89,7 +131,7 @@ def build(events, now):
                 "id": sid, "domain": e["domain"] or "?", "project": e["project"] or "",
                 "project_dir": e["project_dir"] or "", "first": e["ts"], "last": e["ts"],
                 "state": "idle", "since": e["ts"], "current": None, "edited": False,
-                "subagents": {}, "ran": set(), "ended": False,
+                "subagents": {}, "ran": set(), "ended": False, "release": False,
                 "tools": [], "waits": [], "pending_spawns": {}, "messages": [],
             }
         s["last"] = e["ts"]
@@ -139,6 +181,8 @@ def build(events, now):
             target["current"] = (e["tool"], e["summary"], e["ts"], e["tool_use_id"])
             if e["tool"] in EDIT_TOOLS:
                 s["edited"] = True
+            if not s["release"]:
+                s["release"] = performs_release([e])
             if s["state"] in ("idle", "waiting"):
                 set_state("working")
         elif ev == "PostToolUse":
@@ -180,7 +224,7 @@ def build(events, now):
         quiet = now - s["last"]
         if not s["ended"] and s["state"] != "idle" and quiet > (WAITING_STALE_SECS if s["state"] == "waiting" else STALE_SECS):
             s["state"] = "stale"
-        s["flagged"] = s["edited"] and s["state"] in ("idle", "ended", "stale") and not all(m in s["ran"] for m in MANDATORY)
+        s["flagged"] = s["release"] and s["edited"] and s["state"] in ("idle", "ended", "stale") and not all(m in s["ran"] for m in MANDATORY)
     return sessions
 
 
@@ -357,7 +401,7 @@ def to_json(sessions, events, now, domain=None, show_ended=True, feed_n=60):
             "id": s["id"], "domain": s["domain"], "project": s["project"], "state": s["state"],
             "since": s["since"], "first": s["first"], "last": s["last"], "ended": s["ended"],
             "current": list(s["current"][:3]) if s["current"] else None, "note": s.get("note"),
-            "edited": s["edited"], "flagged": s["flagged"], "ran": sorted(s["ran"]),
+            "edited": s["edited"], "release": s["release"], "flagged": s["flagged"], "ran": sorted(s["ran"]),
             "subagents": subs, "pending": pending, "tools": s.get("tools", []),
             "waits": s.get("waits", []), "messages": s.get("messages", []), "local": s.get("local"),
             "title": s.get("title"), "model": s.get("model"), "task": s.get("task"),

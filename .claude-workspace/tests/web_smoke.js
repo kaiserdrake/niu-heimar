@@ -115,7 +115,76 @@ function timelineChecks() {
 const kidsOf = (e) => (e.children || []).filter((c) => c && typeof c === "object");
 const allOf = (e) => [e, ...kidsOf(e).flatMap(allOf)];
 const textOf = (e) => allOf(e).map((n) => n.textContent || "").join(" ");
-const RS_IDS = ["rshead", "rsgate", "rsquota", "rslanes", "rslast", "rserrors"];
+const RS_IDS = ["rshead", "rsgate", "rsquota", "rslanes", "rsgatelog", "rslast", "rserrors"];
+// Gate log: one row per gate check, newest first, linked to the gate dots in the lanes graph by a shared data-gi index.
+async function gateLogChecks(fx) {
+  const fail = (m) => { throw new Error("research gate log: " + m); };
+  const run = (c) => vm.runInContext(c, ctx);
+  const html = fs.readFileSync(require("path").join(require("path").dirname(process.argv[2]), "index.html"), "utf8");
+  if (!/id="rslanes"[^>]*><\/div>\s*<div id="rsgatelog"/.test(html)) fail("#rsgatelog must follow #rslanes directly in index.html");
+  const fire = (id, type, ev) => (els.get(id)._ls[type] || []).forEach((f) => f(ev));
+  const lanes = els.get("rslanes"), log = els.get("rsgatelog");
+  const dots = allOf(lanes).filter((n) => /\brs-dot\b/.test(n.className || ""));
+  const rows = allOf(log).filter((n) => /\brsgrow\b/.test(n.className || ""));
+  if (!/Gate log/.test(textOf(log))) fail("title missing");
+  if (rows.length !== 2 || dots.length !== 2) fail(`expected 2 rows and 2 dots, got ${rows.length} / ${dots.length}`);
+  if (rows.length > 12) fail("more than 12 rows");
+  if (rows[0].getAttribute("data-gi") !== "0" || rows[1].getAttribute("data-gi") !== "1") fail("rows not newest first / indexes: " + rows.map((r) => r.getAttribute("data-gi")));
+  if (!/5h 40% · wk 60%/.test(textOf(rows[0])) || !/usage API/.test(textOf(rows[0])) || !/Run/.test(textOf(rows[0]))) fail("row text: " + textOf(rows[0]));
+  if (!/5h 88% · wk 58%/.test(textOf(rows[1])) || !/daily Claude session cap reached/.test(textOf(rows[1]))) fail("second row text: " + textOf(rows[1]));
+  for (const d of dots) {
+    if (!rows.some((r) => r.getAttribute("data-gi") === d.getAttribute("data-gi"))) fail("dot without a matching row");
+    if (d.getAttribute("tabindex") !== "0" || !/^Gate check/.test(d.getAttribute("aria-label") || "") || d.getAttribute("title") != null || !d.getAttribute("data-tip")) fail("dot attributes (tabindex / aria-label / no title / data-tip)");
+  }
+  const dotOf = (gi) => dots.find((d) => d.getAttribute("data-gi") === gi), rowOf = (gi) => rows.find((r) => r.getAttribute("data-gi") === gi);
+  const on = (el) => ({ target: { closest: () => el } });
+  const list = allOf(log).find((n) => /\brsgl\b/.test(n.className || ""));
+  Object.assign(rows[1], { offsetTop: 500, offsetHeight: 20 }); Object.assign(list, { scrollTop: 0, clientHeight: 100 });
+  fire("rslanes", "pointerover", on(dotOf("1")));
+  if (!rowOf("1").classList.contains("hl") || rowOf("0").classList.contains("hl")) fail("hovering a dot did not highlight its row");
+  if (!dotOf("1").classList.contains("hl") || dotOf("1").getAttribute("r") !== "7") fail("highlighted dot not enlarged");
+  if (list.scrollTop !== 420) fail("the row was not scrolled into view inside its list: " + list.scrollTop);
+  fire("rslanes", "pointerout", on(dotOf("1")));
+  if (rowOf("1").classList.contains("hl") || dotOf("1").classList.contains("hl") || dotOf("1").getAttribute("r") !== "4") fail("mouseout did not clear");
+  fire("rsgatelog", "pointerover", on(rowOf("0")));
+  if (!dotOf("0").classList.contains("hl") || !rowOf("0").classList.contains("hl")) fail("hovering a row did not highlight its dot");
+  fire("rsgatelog", "focusout", on(rowOf("0")));
+  if (dotOf("0").classList.contains("hl")) fail("blur did not clear the dot");
+  fire("rslanes", "focusin", on(dotOf("0")));
+  if (!rowOf("0").classList.contains("hl")) fail("keyboard focus on a dot did not highlight the row");
+  fire("rslanes", "pointerleave", {});
+  if (rowOf("0").classList.contains("hl")) fail("pointerleave did not clear");
+  fire("rslanes", "pointerover", { target: { closest: () => null } });   // elsewhere in the graph: nothing happens
+  // order comes from the time, not the position in the data
+  const d = JSON.parse(JSON.stringify(fx.m2.data)); d.gate.recent.reverse();
+  ctx.RS_CUR = { ...fx.m2, data: d };
+  await run("loadResearch()");
+  const r2 = allOf(els.get("rsgatelog")).filter((n) => /\brsgrow\b/.test(n.className || ""));
+  if (r2[0].getAttribute("data-gi") !== "1" || r2[1].getAttribute("data-gi") !== "0") fail("newest first with reversed data: " + r2.map((r) => r.getAttribute("data-gi")));
+  ctx.RS_CUR = fx.m2;
+  await run("loadResearch()");
+}
+// Unreviewed marker: only release sessions are flagged; release sessions carry a small tag; the Today line counts only those.
+function flagChecks() {
+  const fail = (m) => { throw new Error("flag: " + m); };
+  const run = (c) => vm.runInContext(c, ctx);
+  const cards = (patch) => { run(`(() => { Object.assign(STATE.sessions[0], ${JSON.stringify(patch)}); renderSessions(); })()`); return els.get("sessions").innerHTML; };
+  const saved = JSON.stringify(run("(({ edited, release, flagged, ran }) => ({ edited, release, flagged, ran }))(STATE.sessions[0])"));
+  let h = cards({ edited: true, release: false, flagged: false, ran: [] });
+  if (/class="flagmsg"|class="reltag"|without both reviewers/.test(h)) fail("an edit-only session must show no marker");
+  h = cards({ edited: true, release: true, flagged: true, ran: ["security-reviewer"] });
+  if (!/<div class="flagmsg">⚠ release without both reviewers<\/div>/.test(h) || /edited files without/.test(h)) fail("flag message for a release session");
+  if (!/class="reltag"[^>]*>release<\/span>/.test(h)) fail("release tag missing");
+  h = cards({ edited: true, release: true, flagged: false, ran: ["security-reviewer", "test-reviewer"] });
+  if (/flagmsg/.test(h) || !/release ✓ reviewed/.test(h)) fail("a reviewed release shows the check mark and no flag");
+  run(`(() => { const s = STATE.sessions[0], o = ${saved}; Object.assign(s, o); renderSessions(); })()`);
+  const today = (patch) => { run(`(() => { STATE.today = Object.assign({ sessions: 3, subagent_runs: 4, runs: [], edited: 2, reviewed: 0, flagged: [], flagged_projects: [] }, ${JSON.stringify(patch)}); renderToday(); })()`); return els.get("today").innerHTML; };
+  h = today({});
+  if (/unreviewed/.test(h) || !/<b>0\/2<\/b> reviewed/.test(h) || /class="bad"[^>]*><b>0\/2/.test(h)) fail("edited sessions without a release are counted but not flagged: " + h);
+  h = today({ flagged: ["x"], flagged_projects: ["PERSONAL/app"] });
+  if (!/<b>1<\/b> unreviewed/.test(h) || !/Release sessions without both reviewers: PERSONAL\/app/.test(h)) fail("Today unreviewed span: " + h);
+  return "flag ok";
+}
 async function researchChecks(fx) {
   const fail = (m) => { throw new Error("research: " + m); };
   const run = (c) => vm.runInContext(c, ctx);
@@ -128,7 +197,8 @@ async function researchChecks(fx) {
   need("rslast", /general/, "last-run table lists the agent"); need("rslast", /hobby/); need("rslast", /agent timed out/);
   need("rslast", /held for quiet hours/, "digest status");
   need("rshead", /Next run/); need("rshead", /valkyrie-dispatch ok/); need("rsgate", /Waiting for the gate: attempt 2 of 3/);
-  need("rsgate", /20% weekly floor/, "weekly floor tick label"); need("rsgate", /gate floor/);
+  need("rsgate", /gate floors: 5-hour ≥ \d+% · weekly ≥ \d+% remaining/, "floors as plain text");
+  need("rsgate", /\(overnight run\)/, "pending gate carries the run kind");
   need("rsquota", /Quota today/); need("rserrors", /agent timed out/); need("rserrors", /skipped/);
   const lanes = els.get("rslanes");
   if (!kidsOf(lanes).length) fail("lanes empty");
@@ -137,8 +207,23 @@ async function researchChecks(fx) {
   if (!bars.some((n) => /\brs-bad\b/.test(n.className)) || !bars.some((n) => /\brs-ok\b/.test(n.className))) fail("bar status classes missing");
   if (!allOf(lanes).some((n) => /\brs-dot\b/.test(n.className || ""))) fail("gate dots missing");
   if (!allOf(lanes).some((n) => /\bnowline\b/.test(n.className || ""))) fail("now line missing");
-  if (!allOf(els.get("rsgate")).some((n) => n.tagName === "progress" && /\blim\b/.test(n.className))) fail("gate bars do not reuse progress.lim");
-  if (!allOf(els.get("rsgate")).some((n) => /\bfloor-tick\b/.test(n.className || ""))) fail("floor ticks missing");
+  const gateEl = els.get("rsgate");
+  if (allOf(gateEl).some((n) => n.tagName === "progress" || n.tagName === "svg" || /\bfloor-tick\b|\brsmeter\b/.test(n.className || ""))) fail("the gate card still draws Claude limit meters");
+  if (/\b5h \d|\bwk \d|Gate log/.test(textOf(gateEl))) fail("recent gate checks are still in the gate card");
+  if (!/Gate/.test(textOf(gateEl)) || !/Run/.test(textOf(gateEl))) fail("gate card lost its decision badge");
+  await gateLogChecks(fx);
+  // run kinds: head line (next slot + brief), run header tag, tag after the lane bar, fixed messages only
+  need("rshead", /Next run \d\d:\d\d \(delta\)/, "next slot kind"); need("rshead", /brief stale: overnight run failed/, "stale brief message");
+  need("rslast", /overnight/, "run kind tag");
+  if (!allOf(lanes).some((n) => /\brs-kindtag\b/.test(n.className || "") && n.textContent === "C")) fail("run kind tag missing next to the lane bar");
+  if (!allOf(els.get("rslast")).some((n) => /\bkindtag\b/.test(n.className || ""))) fail("run kind tag missing in the run header");
+  need("rsgatelog", /daily Claude session cap reached/, "session_cap reason");
+  {
+    const d = JSON.parse(JSON.stringify(fx.m2.data)); d.brief = { ...d.brief, stale: false, stale_reason: null, state: "ready" };
+    await show({ ...fx.m2, data: d }); need("rshead", /brief ready 08:00/, "ready brief"); need("rshead", /7 items, 2 updates/);
+    d.brief = { ...d.brief, state: "scheduled", items: null }; await show({ ...fx.m2, data: d }); need("rshead", /brief due 08:00/);
+    await show(fx.m2);
+  }
   const dot = els.get("rsdot");
   if (dot.hidden || !/rs-warn/.test(dot.className)) fail("badge should be amber for a partial conservative run: " + dot.className);
   for (const id of RS_IDS) if (els.get(id).innerHTML) fail(`${id} was filled with innerHTML`);
@@ -154,8 +239,9 @@ async function researchChecks(fx) {
   if (dot.hidden || !/rs-ok/.test(dot.className) || !/pulse/.test(dot.className)) fail("running badge should be green and pulsing: " + dot.className);
   await show(live(50 * 60));
   need("rslast", /possibly stuck/); need("rslast", /docker compose restart app/);
-  // M1: partial data and the M2 note
+  // M1: partial data and the M2 note (no brief, no kinds: the additive fields are optional)
   await show(fx.m1);
+  if (/brief|\(overnight\)|\(delta\)/.test(textOf(els.get("rshead")))) fail("M1 head line shows a brief or run kind: " + textOf(els.get("rshead")));
   need("rslanes", /arrives with valkyrie-dispatch M2/); need("rslast", /No run history yet/); need("rsgate", /Run/); need("rsquota", /weekly limit/);
   if (!dot.hidden) fail("badge should be hidden for a healthy M1 payload: " + dot.className);
   // failure states
@@ -174,6 +260,7 @@ async function researchChecks(fx) {
     if (/sk-ant|<img|<script|onerror|Secret title|evil\.example|webhook|rd_pat_/.test(t)) fail(`hostile text reached #${id}: ${t.slice(0, 120)}`);
     if (els.get(id).innerHTML) fail(`${id} used innerHTML`);
   }
+  if (/Ignore previous|LEAK|agent said|javascript:|<b>/.test(textOf(els.get("rshead")) + textOf(els.get("rslast")) + textOf(els.get("rsgatelog")))) fail("hostile brief / kind text reached the page");
   // disabled: the tab goes away and the view falls back to Agents
   await show({ state: "disabled", data: null });
   if (!els.get("tab-research").hidden || run("VIEW") !== "agents") fail("disabled research should hide the tab and leave the view");
@@ -542,6 +629,7 @@ async function topicsChecks(fx, appSrc) {
     console.log(vm.runInContext(src, ctx, { filename: "app.js" }));
     console.log(await vm.runInContext(extra, ctx, { filename: "extra.js" }));
     console.log(timelineChecks());
+    console.log(flagChecks());
     if (process.argv[4]) console.log(await researchChecks(JSON.parse(fs.readFileSync(process.argv[4], "utf8"))));
     if (process.argv[5]) console.log(await topicsChecks(JSON.parse(fs.readFileSync(process.argv[5], "utf8")), fs.readFileSync(process.argv[2], "utf8")));
   } catch (e) { console.log("ERROR:", e.message, (e.stack || "").split("\n").slice(1,5).join(" ; ")); process.exit(1); }

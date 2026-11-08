@@ -15,7 +15,7 @@ const store = {
 };
 
 let STATE = null, PRS = null, ME = { paired: false }, ES = null, SELECTED = null, LAST_FEED_TS = 0, CLOCK_OFFSET = 0;
-let RESEARCH = null, RS_OFFSET = 0, RS_TIMER = 0, LLM_CLAUDE = null;
+let RESEARCH = null, RS_OFFSET = 0, RS_TIMER = 0;
 let ACTIONS = [], SEEN_ACTIONS = null, ACT_BY = { session: new Map(), pr: new Map() };
 const STATE_LABEL = { working: "working", waiting: "waiting for you", idle: "idle", ended: "ended", stale: "stale" };
 const TOOL_CLASS = (t) => String(t || "").startsWith("mcp__niu-local") ? "local" : t === "Bash" ? "bash" : ["Read", "Grep", "Glob"].includes(t) ? "read"
@@ -192,12 +192,12 @@ function renderSessions() {
       html += `<div class="sess st-${esc(s.state)} ${s.flagged ? "flag" : ""} ${need ? `needs-you ${need.priority >= 3 ? "high" : ""}` : ""}" data-sid="${esc(s.id)}">
         <div class="top"><span class="proj" title="${esc(sessName(s))}"><span class="wspill">${esc(dl(s.domain))}</span>${esc(sessName(s))} ${s.local ? `<span class="localtag" title="Agent running on a local Ollama model">local · ${esc(s.local)}</span>` : ""} ${needTag}</span>
         <span class="pill st-${esc(s.state)}">${esc(STATE_LABEL[s.state] || s.state)} · ${dur(STATE.now - s.since)}</span></div>
-        <div class="muted small">${esc(projLabel(s))}${s.model ? ` · ${esc(shortModel(s.model))}` : ""}${s.local && s.query ? ` · “${esc(trunc(s.query, 50))}”` : ""} · ${esc(s.id.slice(0, 8))}${s.chain?.review_rounds ? ` · <b title="Rounds in which a mandatory reviewer ran">${s.chain.review_rounds} review round${s.chain.review_rounds === 1 ? "" : "s"}</b>` : ""}</div>
+        <div class="muted small">${esc(projLabel(s))}${s.model ? ` · ${esc(shortModel(s.model))}` : ""}${s.local && s.query ? ` · “${esc(trunc(s.query, 50))}”` : ""} · ${esc(s.id.slice(0, 8))}${s.chain?.review_rounds ? ` · <b title="Rounds in which a mandatory reviewer ran">${s.chain.review_rounds} review round${s.chain.review_rounds === 1 ? "" : "s"}</b>` : ""}${s.release ? ` · <span class="reltag" title="This session performed a release (gh release, git tag, release-please or /dual-review)">release${["security-reviewer", "test-reviewer"].every((m) => s.ran.includes(m)) ? " ✓ reviewed" : ""}</span>` : ""}</div>
         ${s.pipeline ? `<div class="pipe" aria-label="/develop progress">${s.pipeline.map((p) =>
           `<span class="stg ${esc(p.status)}" title="${esc(`${p.stage}: ${p.status}${p.at ? ` · ${hhmmss(p.at)}` : ""}`)}">${p.status === "done" ? "✓" : p.status === "active" ? "●" : p.status === "skipped" ? "–" : "○"} ${esc(p.stage)}</span>`).join('<span class="stg-sep">›</span>')}</div>` : ""}
         <div class="cur" title="${esc(cur)}">${esc(cur) || "&nbsp;"}</div>
         <div class="chips">${chips}</div>
-        ${s.flagged ? `<div class="flagmsg">⚠ edited files without both reviewers</div>` : ""}
+        ${s.flagged ? `<div class="flagmsg">⚠ release without both reviewers</div>` : ""}
         ${canDismiss(s) ? `<div class="sessacts"><span class="small muted">quiet ${dur(STATE.now - s.last)} · closed or archived?</span>
           <button class="ghost tiny" data-dismiss="${esc(s.id)}" ${ME.paired ? "" : `disabled title="Pair this browser (menu) to dismiss"`}>${ARMED.sid === s.id && Date.now() < ARMED.until ? "Confirm dismiss" : "Dismiss"}</button></div>` : ""}</div>`;
     }
@@ -773,8 +773,8 @@ function renderToday() {
   const top = t.runs.slice(0, 3).map(([k, v]) => `${k} ${v}`).join(", ");
   $("today").innerHTML = `<span title="Sessions active today"><b>${t.sessions}</b> today</span>` +
     `<span title="${esc(top || "no subagent runs yet")}"><b>${t.subagent_runs}</b> runs</span>` +
-    `<span class="${t.reviewed < t.edited ? "bad" : ""}" title="Editing sessions that ran both mandatory reviewers"><b>${t.reviewed}/${t.edited}</b> reviewed</span>` +
-    (t.flagged_projects.length ? `<span class="bad" title="${esc(t.flagged_projects.map((x) => x.replace("(workspace)", HOST())).join(", "))}">⚠ <b>${t.flagged_projects.length}</b> unreviewed</span>` : "");
+    `<span title="Editing sessions that ran both mandatory reviewers"><b>${t.reviewed}/${t.edited}</b> reviewed</span>` +
+    (t.flagged_projects.length ? `<span class="bad" title="${esc("Release sessions without both reviewers: " + t.flagged_projects.map((x) => x.replace("(workspace)", HOST())).join(", "))}">⚠ <b>${t.flagged_projects.length}</b> unreviewed</span>` : "");
 }
 
 // Session-start events carry JSON (title, model, local agent); show it as words.
@@ -925,8 +925,6 @@ async function loadLLM(force) {
   }
   const eps = r.endpoints || [];
   LLM_EPS = eps;
-  LLM_CLAUDE = r.claude || null;
-  if (VIEW === "research") rsGate(RESEARCH);  // the gate card falls back to these numbers when valkyrie-dispatch has no preview
   const state = (e) => !e.up ? "down" : Object.values(e.models || {}).every((m) => m.present) ? "up" : "partial";
   const word = { up: "online", partial: "models missing", down: "offline" };
   card.innerHTML = claudeLimits(r.claude) + eps.map((e) => {
@@ -952,7 +950,12 @@ setInterval(() => { if (!document.hidden) loadLLM(); }, 30000);
 const RS_STUCK_SECS = 45 * 60;
 const RS_REASON = { ok: "quota is fine", ok_conservative: "quota is tight: conservative run", weekly_low: "weekly limit nearly used up",
   low_quota: "5-hour window too full", probe_warning: "usage probe warning", no_signal: "no usage signal", manual_cap: "manual-run cap reached",
-  grace_expired: "gave up after the grace period", kill_switch: "stopped by the kill switch" };
+  grace_expired: "gave up after the grace period", kill_switch: "stopped by the kill switch", session_cap: "daily Claude session cap reached" };
+const RS_KIND = { standard: "standard", comprehensive: "overnight", delta: "delta" };
+const RS_KIND_LETTER = { standard: "S", comprehensive: "C", delta: "D" };
+const RS_BRIEF_STATE = { scheduled: "brief due", in_progress: "brief being built", ready: "brief ready", empty: "brief empty (nothing new)" };
+const RS_STALE = { comprehensive_missed: "overnight run did not happen", comprehensive_skipped: "overnight run was skipped",
+  comprehensive_failed: "overnight run failed", comprehensive_deadline: "overnight run missed its deadline" };
 const RS_DECISION = { run: "Run", run_conservative: "Run conservatively", retry: "Retry later", skip: "Skip" };
 const RS_STATUS = { waiting_gate: "waiting for the gate", running: "running", succeeded: "succeeded", partial: "partial", failed: "failed",
   skipped_gate: "skipped (gate)", aborted_quota: "stopped: quota", pending: "pending", skipped: "skipped", timed_out: "timed out" };
@@ -1011,7 +1014,7 @@ function renderResearch() {
   if (r.state === "disabled") { if (VIEW === "research") setView("agents"); return; }
   if (VIEW !== "research") return;
   $("rsbody").classList.toggle("stale", !!r.stale);
-  rsHead(r); rsGate(r); rsQuota(r); rsLanes(r); rsLast(r); rsErrors(r);
+  rsHead(r); rsGate(r); rsQuota(r); rsLanes(r); rsGateLog(r); rsLast(r); rsErrors(r);
 }
 
 // Tab badge: red = unreachable/unauthorized, a failed or quota-stopped last run, or a gate skip in the last day;
@@ -1059,9 +1062,17 @@ function rsHead(r) {
     const sch = d.schedule || {};
     if (sch.next_slot_at) {
       const next = h("span", "", "", { "data-tip": [`Next scheduled run`, sch.next_slot_key, [sch.cron, sch.timezone].filter(Boolean).join(" ")].filter(Boolean).join("\n") });
-      next.append(h("span", "", `Next run ${hm(sch.next_slot_at)} · `), h("span", "", rsUntil(sch.next_slot_at), { id: "rscount" }));
+      next.append(h("span", "", `Next run ${hm(sch.next_slot_at)}${RS_KIND[sch.next_slot_kind] ? ` (${RS_KIND[sch.next_slot_kind]})` : ""} · `), h("span", "", rsUntil(sch.next_slot_at), { id: "rscount" }));
       kids.push(next);
     }
+    const b = d.brief;
+    if (b && RS_BRIEF_STATE[b.state]) {
+      const at = sch.brief_at || (b.published_at ? hm(b.published_at) : "");
+      const stale = b.stale === true && RS_STALE[b.stale_reason];
+      const items = b.state === "ready" && b.items != null ? ` · ${b.items} item${b.items === 1 ? "" : "s"}${b.updates ? `, ${b.updates} update${b.updates === 1 ? "" : "s"}` : ""}` : "";
+      kids.push(h("span", stale ? "warnnote" : "", stale ? `brief stale: ${RS_STALE[b.stale_reason]}` : `${RS_BRIEF_STATE[b.state]}${at ? ` ${at}` : ""}${items}`,
+        { "data-tip": `Daily brief${b.revision ? `\nrevision ${b.revision}` : ""}${b.stale === true && !stale ? "\nstale" : ""}` }));
+    } else if (sch.brief_at) kids.push(h("span", "muted", `brief at ${sch.brief_at}`));
     if (sch.enabled === false) kids.push(rsBadgeEl("Scheduler off", "warn"));
     if (sch.manual_runs_today != null && sch.manual_runs_per_day != null) kids.push(h("span", "muted", `Manual runs today ${sch.manual_runs_today}/${sch.manual_runs_per_day}`));
     if (r.state !== "ok") kids.push(h("span", "warnnote", `${rsStateText(r)}${r.ok_at ? ` Showing data as of ${hm(r.ok_at)}.` : ""}`));
@@ -1080,25 +1091,7 @@ function rsTick() {
   if (e && d.current_run?.started_at) e.textContent = dur(rsNow() - d.current_run.started_at);
 }
 
-// ----- gate card: the Claude limits bars, with the gate's floors marked -----
-const rsReset = (ts) => !ts ? "" : "↻ " + (new Date().toDateString() === new Date(ts * 1000).toDateString() ? hm(ts)
-  : `${new Date(ts * 1000).toLocaleDateString([], { weekday: "short" })} ${hm(ts)}`);
-function rsMeter(rows) {
-  const m = h("div", "rsmeter");
-  for (const w of rows) {
-    const used = w.used ?? 0;
-    const lvl = w.floor != null ? (used >= w.floor ? "bad" : used >= w.floor - 10 ? "warn" : "ok") : used >= 90 ? "bad" : used >= 70 ? "warn" : "ok";
-    const prog = h("progress", `lim ${lvl}`, "", { max: "100", value: String(Math.min(100, used)) });
-    m.append(h("span", "nm", w.label), prog, h("span", `limpct ${lvl}`, w.used == null ? "–" : `${Math.round(used)}%`), h("span", "mdl", rsReset(w.reset)));
-    if (w.floor != null) {  // tick position is an SVG attribute, so no inline style is needed (CSP)
-      const x = `${w.floor}%`, sv = svg("svg", { class: "floor", "aria-hidden": "true" });
-      sv.append(svg("line", { class: "floor-tick", x1: x, x2: x, y1: 0, y2: 6 }), svg("text", { class: "floor-lbl", x, y: 15, "text-anchor": "middle" }, w.floorLbl));
-      m.append(h("span"), sv, h("span"), h("span"));
-    }
-  }
-  return m;
-}
-
+// ----- gate card: the decision, the floors as text and the pending gate. The Claude limit meters live in the LLMs card. -----
 function rsGate(r) {
   if (VIEW !== "research") return;
   const box = $("rsgate"), d = r?.data;
@@ -1108,37 +1101,69 @@ function rsGate(r) {
     const line = h("div", "rsline");
     line.append(rsBadgeEl(RS_DECISION[p.decision] || "unknown", RS_DECISION_LEVEL[p.decision] || "warn"), h("span", "", ` ${RS_REASON[p.reason] || ""}`));
     kids.push(line);
-    const f = p.floors || {}, e = p.expected_run_pct || 0;
-    const fiveFloor = f.five_hour_min_remaining_pct != null ? Math.max(0, 100 - f.five_hour_min_remaining_pct - e) : null;
-    const weekFloor = f.weekly_min_remaining_pct != null ? 100 - f.weekly_min_remaining_pct : null;
-    kids.push(rsMeter([
-      { label: "5-hour", used: p.five_hour?.used_pct, reset: p.five_hour?.resets_at, floor: fiveFloor, floorLbl: "gate floor" },
-      { label: "Weekly", used: p.seven_day?.used_pct, reset: p.seven_day?.resets_at, floor: weekFloor, floorLbl: `${f.weekly_min_remaining_pct}% weekly floor` },
-    ]));
-    kids.push(h("div", "rsline muted", `${RS_SOURCE[p.source] || "unknown"} · checked ${p.checked_at ? `${dur(rsNow() - p.checked_at)} ago` : "never"}`,
-      { "data-tip": `Gate floors\n5-hour: stop below ${f.five_hour_min_remaining_pct ?? "?"}% left (plus ${e}% for the run)\nWeekly: stop below ${f.weekly_min_remaining_pct ?? "?"}% left\nAbort a running run below ${f.abort_remaining_pct ?? "?"}% left` }));
+    const f = p.floors || {}, e = p.expected_run_pct || 0, pct = (v) => v == null ? "?" : `${v}%`;
+    kids.push(h("div", "rsline", `gate floors: 5-hour ≥ ${pct(f.five_hour_min_remaining_pct)} · weekly ≥ ${pct(f.weekly_min_remaining_pct)} remaining`,
+      { "data-tip": `Gate floors\n5-hour: stop below ${pct(f.five_hour_min_remaining_pct)} left (plus ${e}% for the run)\nWeekly: stop below ${pct(f.weekly_min_remaining_pct)} left\nAbort a running run below ${pct(f.abort_remaining_pct)} left` }));
+    kids.push(h("div", "rsline muted", `${RS_SOURCE[p.source] || "unknown"} · checked ${p.checked_at ? `${dur(rsNow() - p.checked_at)} ago` : "never"}`));
   } else {
     kids.push(h("div", "rsline muted", "No gate preview from valkyrie-dispatch yet."));
-    const c = LLM_CLAUDE?.available ? LLM_CLAUDE.windows.filter((w) => w.key === "five_hour" || w.key === "seven_day") : [];
-    if (c.length) {
-      kids.push(rsMeter(c.map((w) => ({ label: w.label, used: w.used, reset: w.resets_at }))));
-      kids.push(h("div", "rsline muted", "dashboard reading"));
-    }
   }
   const pend = g.pending;
   if (pend) {
-    kids.push(h("div", "rsline", `Waiting for the gate: attempt ${pend.attempts ?? "?"} of ${pend.max_attempts ?? "?"}, next check ${hm(pend.next_check_at)}` +
+    kids.push(h("div", "rsline", `Waiting for the gate: attempt ${pend.attempts ?? "?"} of ${pend.max_attempts ?? "?"}${RS_KIND[pend.kind] ? ` (${RS_KIND[pend.kind]} run)` : ""}, next check ${hm(pend.next_check_at)}` +
       `, gives up at ${hm(pend.grace_until)}${pend.last_reason ? ` (${RS_REASON[pend.last_reason] || ""})` : ""}`));
   }
-  const rec = (g.recent || []).slice(0, 5);
-  const list = h("div", "rsrecent");
-  if (!rec.length) list.append(h("div", "muted", "No gate checks recorded yet."));
-  for (const x of rec) {
-    list.append(h("div", "", `${rsWhen(x.taken_at)}  ${RS_DECISION[x.decision] || "?"}${x.reason ? ` · ${RS_REASON[x.reason] || ""}` : ""}` +
-      `  5h ${x.five_hour_used ?? "–"}% · wk ${x.seven_day_used ?? "–"}%`));
-  }
-  kids.push(list);
   box.replaceChildren(...kids);
+}
+
+// ----- gate log: the recent gate checks, linked to the gate dots in the lanes graph through a shared data-gi index -----
+const RS_GL = { dots: new Map(), rows: new Map(), list: null, cur: null };
+const RS_DOT_R = 4, RS_DOT_R_HL = 7;
+function rsGateHl(gi, scroll) {
+  const unmark = (k) => {
+    RS_GL.rows.get(k)?.classList.remove("hl");
+    const dot = RS_GL.dots.get(k);
+    if (dot) { dot.classList.remove("hl"); dot.setAttribute("r", RS_DOT_R); }
+  };
+  if (RS_GL.cur != null) unmark(RS_GL.cur);
+  RS_GL.cur = gi;
+  if (gi == null) return;
+  const row = RS_GL.rows.get(gi), dot = RS_GL.dots.get(gi);
+  if (row) row.classList.add("hl");
+  if (dot) { dot.classList.add("hl"); dot.setAttribute("r", RS_DOT_R_HL); }
+  const list = RS_GL.list;
+  if (scroll && row && list) {  // scroll the list itself, never the page
+    const top = row.offsetTop, bottom = top + row.offsetHeight;
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
+  }
+}
+function rsGateRows(d) {  // [{g, gi}] newest first; gi = the position in the data, the same index the dots carry
+  return (d.gate?.recent || []).slice(0, 12).map((g, gi) => ({ g, gi })).sort((a, b) => (b.g.taken_at || 0) - (a.g.taken_at || 0) || a.gi - b.gi);
+}
+for (const [id, scroll] of [["rslanes", true], ["rsgatelog", false]]) {
+  const box = $(id), idx = (e) => e.target?.closest?.("[data-gi]")?.getAttribute("data-gi") ?? null;
+  for (const t of ["pointerover", "focusin"]) box.addEventListener(t, (e) => { const gi = idx(e); if (gi != null) rsGateHl(gi, scroll); });
+  for (const t of ["pointerout", "focusout"]) box.addEventListener(t, (e) => { if (idx(e) != null && !e.relatedTarget?.closest?.("[data-gi]")) rsGateHl(null); });
+  box.addEventListener("pointerleave", () => rsGateHl(null));
+}
+function rsGateLog(r) {
+  const box = $("rsgatelog"), d = r.data;
+  RS_GL.rows = new Map(); RS_GL.list = null; RS_GL.cur = null;
+  if (!d) { box.replaceChildren(); return; }
+  const kids = [h("h3", "", "Gate log")], rows = rsGateRows(d);
+  if (!rows.length) { box.replaceChildren(...kids, h("div", "rsline muted", "No gate checks recorded yet.")); return; }
+  const list = h("div", "rsgl", "", { role: "list" });
+  for (const { g, gi } of rows) {
+    const row = h("div", "rsgrow", "", { "data-gi": String(gi), tabindex: "0", role: "listitem" });
+    row.append(h("span", "gt", rsWhen(g.taken_at)), rsBadgeEl(RS_DECISION[g.decision] || "?", RS_DECISION_LEVEL[g.decision] || "warn"),
+      h("span", "gr", g.reason ? RS_REASON[g.reason] || "" : ""), h("span", "gp", `5h ${g.five_hour_used ?? "–"}% · wk ${g.seven_day_used ?? "–"}%`),
+      h("span", "gs muted", RS_SOURCE[g.source] || ""));
+    RS_GL.rows.set(String(gi), row);
+    list.append(row);
+  }
+  RS_GL.list = list;
+  box.replaceChildren(...kids, list);
 }
 
 // ----- quota card -----
@@ -1193,6 +1218,7 @@ function rsSlots(sch, t0, t1) {  // earlier slot instants, derived from the cron
 }
 function rsLanes(r) {
   if (TIP.dataset.owner === "rslanes") TIP.hidden = true;  // rebuilt from scratch
+  RS_GL.dots = new Map(); RS_GL.cur = null;
   const box = $("rslanes"), d = r.data;
   box.replaceChildren();
   if (!d) return;
@@ -1224,18 +1250,22 @@ function rsLanes(r) {
       const lvl = RS_LEVEL[a.status] || "warn", running = a.status === "running";
       const bar = svg("rect", { x: x(a.started_at), y: li * LH + 3, width: Math.max(3, x(end) - x(a.started_at)), height: LH - 6, rx: 2,
         class: `bar-sub rs-${lvl} ${running ? "running" : ""}` });
-      bar.setAttribute("data-tip", [`${a.agent_type} · ${RS_STATUS[a.status] || a.status}`,
+      bar.setAttribute("data-tip", [`${a.agent_type}${RS_KIND[run.kind] ? ` (${RS_KIND[run.kind]})` : ""} · ${RS_STATUS[a.status] || a.status}`,
         `${hhmmss(a.started_at)} → ${a.finished_at ? hhmmss(a.finished_at) : running ? "running" : "?"}` +
         `${a.num_turns != null ? ` · ${a.num_turns}${a.max_turns != null ? `/${a.max_turns}` : ""} turns` : ""}` +
         `${a.web_searches != null ? ` · ${a.web_searches}${a.max_web_searches != null ? `/${a.max_web_searches}` : ""} searches` : ""}`,
         run.slot_key ? `slot ${run.slot_key}` : "", a.error_code ? RS_ERROR[a.error_code] || a.error_code : ""].filter(Boolean).join("\n"));
       root.append(bar);
+      const tx = Math.max(x(end), x(a.started_at) + 3) + 3;  // the run kind as a one-letter tag right after the bar
+      if (RS_KIND_LETTER[run.kind] && tx + 8 < W) root.append(svg("text", { x: tx, y: li * LH + 3 + (LH - 6) / 2 + 3.5, class: "rs-kindtag", "pointer-events": "none" }, RS_KIND_LETTER[run.kind]));
     }
   }
-  for (const g of d.gate?.recent || []) {
+  for (const { g, gi } of rsGateRows(d)) {
     if (!g.taken_at || g.taken_at < t0) continue;
-    const dot = svg("circle", { cx: x(g.taken_at), cy: 2 + (LH - 4) / 2, r: 4, class: `rs-dot rs-${RS_DECISION_LEVEL[g.decision] || "warn"}` });
+    const dot = svg("circle", { cx: x(g.taken_at), cy: 2 + (LH - 4) / 2, r: RS_DOT_R, class: `rs-dot rs-${RS_DECISION_LEVEL[g.decision] || "warn"}`,
+      "data-gi": String(gi), tabindex: "0", role: "img", "aria-label": `Gate check ${gi + 1}: ${RS_DECISION[g.decision] || "unknown"} at ${hm(g.taken_at)}` });
     dot.setAttribute("data-tip", `gate · ${RS_DECISION[g.decision] || "?"}\n${hhmmss(g.taken_at)}${g.reason ? ` · ${RS_REASON[g.reason] || ""}` : ""}\n5h ${g.five_hour_used ?? "–"}% · wk ${g.seven_day_used ?? "–"}%`);
+    RS_GL.dots.set(String(gi), dot);
     root.append(dot);
   }
   box.append(root);
@@ -1273,7 +1303,9 @@ function rsDigest(dg) {
 
 function rsRun(run, title, live) {
   const box = h("div", "rsrun"), head = h("div", "rsrunh");
-  head.append(h("b", "", title), h("span", "", run.slot_key || "no slot"), h("span", "muted", `${run.trigger} · ${run.mode}`),
+  head.append(h("b", "", title), h("span", "", run.slot_key || "no slot"));
+  if (RS_KIND[run.kind]) head.append(h("span", "kindtag", RS_KIND[run.kind]));
+  head.append(h("span", "muted", `${run.trigger} · ${run.mode}`),
     rsBadgeEl(RS_STATUS[run.status] || "unknown", RS_LEVEL[run.status] || "warn"));
   if (live && run.started_at) {
     const el = h("span", "muted", "running for ");

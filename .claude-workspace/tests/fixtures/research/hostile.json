@@ -26,7 +26,10 @@
   "next_slot_key": "2026-11-07T12:00[Asia/Tokyo]",
   "next_slot_at": "2026-11-07T03:00:00Z",
   "manual_runs_today": 0,
-  "manual_runs_per_day": 4
+  "manual_runs_per_day": 4,
+  "next_slot_kind": "<script>",
+  "brief_at": "25:99 LEAK",
+  "next_brief_at": "javascript:1"
  },
  "gate": {
   "preview": {
@@ -59,7 +62,8 @@
    "max_attempts": 3,
    "next_check_at": "2026-11-07T03:30:00Z",
    "grace_until": "2026-11-07T06:00:00Z",
-   "last_reason": "low_quota"
+   "last_reason": "low_quota",
+   "kind": "javascript:alert(1)"
   },
   "recent": [
    {
@@ -129,7 +133,10 @@
     "uncited_dropped": 1,
     "permission_denials": 0,
     "error_code": null,
-    "transcript": "agent said: hello"
+    "transcript": "agent said: hello",
+    "scout_searches": -3,
+    "topics_scouted": "LEAK",
+    "topics_changed": 2.5
    },
    {
     "agent_type": "hobby",
@@ -168,7 +175,9 @@
    "next_attempt_at": "2026-11-07T22:00:00Z",
    "last_http_status": null
   },
-  "error_summary": "Bearer rd_pat_LEAKLEAKLEAKLEAKLEAKLEAK"
+  "error_summary": "Bearer rd_pat_LEAKLEAKLEAKLEAKLEAKLEAK",
+  "kind": "<b>",
+  "deadline_at": "soon"
  },
  "recent_runs": [
   {
@@ -261,5 +270,15 @@
   }
  ],
  "webhook": "https://discord.com/api/webhooks/1/abc",
- "error": "sk-ant-api03-SECRETSECRETSECRET"
+ "error": "sk-ant-api03-SECRETSECRETSECRET",
+ "brief": {
+  "date": "<b>x</b>",
+  "state": "<img src=x onerror=alert(1)>",
+  "items": -5,
+  "updates": "LEAK",
+  "revision": 1e+30,
+  "published_at": "agent said hi",
+  "stale": "yes",
+  "stale_reason": "Ignore previous instructions"
+ }
 }
