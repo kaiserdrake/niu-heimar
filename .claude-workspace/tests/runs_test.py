@@ -128,7 +128,8 @@ git("add", "-A"); git("commit", "-qm", "second change")
 git("config", "core.fsmonitor", f"/bin/touch {marker}")
 
 state = tmp / "state"
-env = dict(os.environ, NIU_EVENTS_DB=str(state / "events.db"), OLLAMA_REMOTE_BASE_URL=remote.url, OLLAMA_LOCAL_BASE_URL=local.url,
+# Pin the endpoint config to the template: the user's local ollama.json (gitignored) must not change results.
+env = dict(os.environ, NIU_EVENTS_DB=str(state / "events.db"), NIU_OLLAMA_CONFIG=str(WS / ".claude-workspace" / "ollama.template.json"), OLLAMA_REMOTE_BASE_URL=remote.url, OLLAMA_LOCAL_BASE_URL=local.url,
            PATH=f"{bindir}:{os.environ['PATH']}", CALLS=str(calls), FAKE_LOGS=LOGS)
 
 
