@@ -624,6 +624,90 @@ async function topicsChecks(fx, appSrc) {
   ctx.TP_TRAP = false;
   return "topics ok";
 }
+// Weekly usage panel: draws the fixture history (gaps, finished weeks) with no innerHTML, themed tooltips and a text equivalent.
+async function usageChecks(fx) {
+  const fail = (m) => { throw new Error("usage: " + m); };
+  const run = (c) => vm.runInContext(c, ctx);
+  const get = (id) => els.get(id);
+  const cls = (n) => n.className || "";
+  const find = (re, tag) => allOf(get("usagegraph")).filter((n) => (!tag || n.tagName === tag) && re.test(cls(n)));
+  ctx.TP_TRAP = true;   // any innerHTML write while rendering throws
+  try {
+    ctx.USAGE_FX = fx;
+    run("USAGE.h5 = false; USAGE.weeks = 5; renderUsage(USAGE_FX)");
+    if (find(/\bul-week\b/, "path").length < 2) fail("weekly line not drawn in segments");
+    if (find(/\bul-opus\b/, "path").length < 1) fail("opus line missing though reported");
+    if (find(/\bul-sonnet\b/).length) fail("sonnet line drawn though not reported");
+    if (find(/\bul-5h\b/).length) fail("5-hour line drawn while the toggle is off");
+    if (find(/\bgapband\b/, "rect").length < 1) fail("no gap band");
+    if (find(/\breset\b/, "line").length !== 4) fail("reset markers: " + find(/\breset\b/, "line").length);
+    if (find(/\bpace\b/, "line").length !== 1) fail("pace line missing");
+    const text = textOf(get("usagegraph"));
+    if (!/ended 83%/.test(text)) fail("'ended 83%' label missing");
+    if (!/ended ≥67%/.test(text)) fail("'ended ≥67%' label for the partial week missing");
+    if (!/pace ≈ \d+%/.test(text) || !new RegExp(`now ${Math.round(fx.current.used)}%`).test(text)) fail("pace / now label: " + text.slice(-120));
+    const wk = find(/\bwkend\b/, "circle");
+    if (wk.length !== 3 || !wk.some((c) => /\bwarn\b/.test(cls(c))) || !wk.some((c) => /\bok\b/.test(cls(c)))) fail("week-end markers carry a level class: " + wk.map(cls));
+    if (!/[●▲◆] ended/.test(text)) fail("level is also a glyph, not only colour");
+    const hits = find(/\bhit\b/, "rect");
+    if (hits.length < 20 || hits.length > 240 || hits.some((r) => !(r.getAttribute("data-tip") || "").includes("\n"))) fail("tooltip rects: " + hits.length);
+    if (!hits.some((r) => new RegExp(`Weekly ${Math.round(fx.current.used)}%`).test(r.getAttribute("data-tip")))) fail("current value missing from tooltips");
+    if (!/No samples/.test(find(/\bgapband\b/, "rect")[0].getAttribute("data-tip"))) fail("gap tooltip");
+    if (allOf(get("usagegraph")).some((n) => n.getAttribute && n.getAttribute("title") !== null)) fail("native title attribute (not themed)");
+    const sum = textOf(get("usagesum")).trim();
+    if (!sum.startsWith(`Weekly: ${Math.round(fx.current.used)}% now, resets `) || !/on pace for about \d+%/.test(sum) || !sum.endsWith("Last weeks ended at 83%, ≥67%, 72%.")) fail("summary line: " + sum);
+    const svgEl = find(/\busagesvg\b/, "svg")[0];
+    if (!svgEl || svgEl.getAttribute("role") !== "img" || svgEl.getAttribute("aria-label") !== sum) fail("svg role/aria-label must equal the summary line");
+    if (get("usagesum").getAttribute("aria-live") !== null && get("usagesum").getAttribute("aria-live") !== "polite") fail("aria-live");
+    if (!/collecting since/.test(get("usageupd").textContent) || !/usage API/.test(get("usageupd").textContent)) fail("update line: " + get("usageupd").textContent);
+    // 5-hour toggle, range
+    run("USAGE.h5 = true; renderUsage(USAGE_FX)");
+    if (find(/\bul-5h\b/, "path").length < 1) fail("5-hour line missing after the toggle");
+    run("USAGE.h5 = false; USAGE.weeks = 2; renderUsage(USAGE_FX)");
+    if (find(/\bul-week\b/, "path").length < 1) fail("2-week view draws nothing");
+    run("USAGE.weeks = 5");
+    // stale note
+    run("renderUsage({ ...USAGE_FX, current: { ...USAGE_FX.current, stale: true } })");
+    if (!/No new readings since .*usage API is off or unreachable/.test(textOf(get("usagegraph")))) fail("stale note");
+    // fixed state messages
+    const msgs = { loading: /^Loading…$/, empty: /Collecting: the first sample appears within 5 minutes/, disabled: /Usage history is off \(NIU_USAGE_COLLECT=0\)/ };
+    for (const [state, re] of Object.entries(msgs)) {
+      run(`renderUsage({ state: "${state}" })`);
+      if (!re.test(textOf(get("usagegraph")).trim()) || textOf(get("usagesum")).trim() !== "") fail(`${state} message: ` + textOf(get("usagegraph")));
+    }
+    for (const bad of ["null", '{ state: "error", message: "boom <b>x</b>" }', '{ state: "bogus" }', '"text"']) {
+      run(`renderUsage(${bad})`);
+      if (textOf(get("usagegraph")).trim() !== "Can't read usage history from the dashboard server.") fail("error message for " + bad + ": " + textOf(get("usagegraph")));
+    }
+    // hostile payload: wrong types never throw and no server text is shown
+    ctx.USAGE_HOSTILE = { ...fx, tz: "<img onerror=x>", series: { seven_day: { label: "<b>x</b>", points: [[1, "a"], null, "x", [fx.now - 100, 5], [fx.now - 50, 6]] }, five_hour: "no", seven_day_opus: { points: 7 } },
+      weeks: [{ resets_at: "x", ended_pct: "<b>", last_sample: fx.now - 10 }, null, { resets_at: fx.now - 5, ended_pct: 50, last_sample: fx.now - 9, partial: "yes" }],
+      resets: ["a", null, fx.now - 3600], current: { used: "<i>", resets_at: "z", updated: "q", source: "<s>", stale: false }, recorder: { errors: 3, last_error: "<img>" } };
+    run("renderUsage(USAGE_HOSTILE)");
+    if (/<img|<b>|<i>|<s>/.test(textOf(get("usagegraph")) + textOf(get("usagesum")) + get("usageupd").textContent)) fail("hostile text shown");
+    // recorder errors are shown from a fixed table
+    run("renderUsage({ ...USAGE_FX, recorder: { state: 'running', errors: 2, last_error: 'database' } })");
+    if (!/Recorder: the last attempt to save a sample failed \(2 errors/.test(textOf(get("usagegraph")))) fail("recorder error note");
+  } finally { ctx.TP_TRAP = false; }
+  // collapse state and fetching only while the Events tab is visible
+  const calls = [];
+  const realFetch = ctx.fetch;
+  ctx.fetch = (url) => { calls.push(String(url)); return Promise.resolve({ ok: true, json: () => Promise.resolve(fx) }); };
+  run('VIEW = "agents"; USAGE.data = null; USAGE.open = true'); await run("loadUsage()");
+  if (calls.length) fail("fetched while the Events tab is not visible");
+  run('VIEW = "events"'); await run("loadUsage()");
+  if (calls.length !== 1 || calls[0] !== "/api/usage/history?days=35") fail("fetch url: " + calls);
+  run("setUsageOpen(false)"); calls.length = 0; await run("loadUsage()");
+  if (calls.length || get("usagepanel").getAttribute("aria-expanded") !== null && false) fail("fetched while collapsed");
+  if (get("usagetoggle").getAttribute("aria-expanded") !== "false" || !get("usagepanel").classList.contains("collapsed")) fail("collapse state");
+  run("setUsageOpen(true)"); await new Promise((r) => setImmediate(r));
+  if (!calls.length) fail("expanding did not load");
+  ctx.fetch = () => Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
+  run("USAGE.data = null"); await run("loadUsage()");
+  if (!/Can't read usage history/.test(textOf(get("usagegraph")))) fail("fetch failure message");
+  ctx.fetch = realFetch; run('VIEW = "agents"');
+  return "usage ok";
+}
 (async () => {
   try {
     console.log(vm.runInContext(src, ctx, { filename: "app.js" }));
@@ -631,6 +715,7 @@ async function topicsChecks(fx, appSrc) {
     console.log(timelineChecks());
     console.log(flagChecks());
     if (process.argv[4]) console.log(await researchChecks(JSON.parse(fs.readFileSync(process.argv[4], "utf8"))));
+    if (process.argv[6]) console.log(await usageChecks(JSON.parse(fs.readFileSync(process.argv[6], "utf8"))));
     if (process.argv[5]) console.log(await topicsChecks(JSON.parse(fs.readFileSync(process.argv[5], "utf8")), fs.readFileSync(process.argv[2], "utf8")));
   } catch (e) { console.log("ERROR:", e.message, (e.stack || "").split("\n").slice(1,5).join(" ; ")); process.exit(1); }
 })();

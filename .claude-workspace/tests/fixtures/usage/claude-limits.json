@@ -1,0 +1,3 @@
+{"updated": 1762559900, "rate_limits": {"five_hour": {"used_percentage": 12.5, "resets_at": 1762570000},
+ "seven_day": {"used_percentage": 41, "resets_at": 1762819200},
+ "seven_day_opus": {"used_percentage": 20.25, "resets_at": 1762819200}}}

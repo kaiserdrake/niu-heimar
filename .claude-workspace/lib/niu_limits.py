@@ -77,11 +77,11 @@ def _api_limits(now, fetch=None):
         return _api["rate_limits"], _api.get("fetched", 0)
 
 
-def claude_limits(now=None, fetch=None):
-    """{'available': bool, 'updated', 'stale', 'source', 'windows': [{key, label, used, resets_at}]}.
+LIMIT_KEYS = (("five_hour", "5-hour"), ("seven_day", "Weekly"), ("seven_day_opus", "Weekly Opus"), ("seven_day_sonnet", "Weekly Sonnet"))
 
-    Newest of: the terminal status line's last report, and the usage API (unless disabled)."""
-    now = now or time.time()
+
+def _select(now, fetch=None):
+    """Source selection: (updated, source, rate_limits dict) from the newest of the status line's report and the usage API."""
     source = "statusline"
     try:
         data = json.loads((db_path().parent / "claude-limits.json").read_text())
@@ -95,12 +95,13 @@ def claude_limits(now=None, fetch=None):
         rl_api, at = _api_limits(now, fetch)
         if rl_api and at > data.get("updated", 0):
             data, source = {"rate_limits": rl_api, "updated": at}, "api"
-    if not data:
-        return {"available": False}
-    rl = data.get("rate_limits") or {}
-    windows = []
-    for key, label in (("five_hour", "5-hour"), ("seven_day", "Weekly"), ("seven_day_opus", "Weekly Opus"),
-                       ("seven_day_sonnet", "Weekly Sonnet")):
+    rl = data.get("rate_limits")
+    return data.get("updated", 0), source, rl if isinstance(rl, dict) else {}
+
+
+def _raw_windows(rl):
+    out = {}
+    for key, _label in LIMIT_KEYS:
         b = rl.get(key)
         if not isinstance(b, dict):
             continue
@@ -108,9 +109,32 @@ def claude_limits(now=None, fetch=None):
             used = float(b.get("used_percentage"))
         except (TypeError, ValueError):
             continue
-        reset = _epoch(b.get("resets_at"))
+        out[key] = {"used": used, "resets_at": _epoch(b.get("resets_at"))}
+    return out
+
+
+def latest_reading(now=None, fetch=None):
+    """(updated, source, {key: {'used': float, 'resets_at': epoch|None}}) as last reported, or None.
+
+    Raw values: no rounding and no 'window rolled over, so 0' substitution (claude_limits applies that for display)."""
+    updated, source, rl = _select(now or time.time(), fetch)
+    windows = _raw_windows(rl)
+    return (updated, source, windows) if windows else None
+
+
+def claude_limits(now=None, fetch=None):
+    """{'available': bool, 'updated', 'stale', 'source', 'windows': [{key, label, used, resets_at}]}.
+
+    Newest of: the terminal status line's last report, and the usage API (unless disabled)."""
+    now = now or time.time()
+    updated, source, rl = _select(now, fetch)
+    raw = _raw_windows(rl)
+    windows = []
+    for key, label in LIMIT_KEYS:
+        if key not in raw:
+            continue
+        used, reset = raw[key]["used"], raw[key]["resets_at"]
         if reset and reset < now:
             used = 0.0  # the window has rolled over since the last report
         windows.append({"key": key, "label": label, "used": round(used, 1), "resets_at": reset})
-    updated = data.get("updated", 0)
     return {"available": bool(windows), "updated": updated, "source": source, "stale": now - updated > STALE_SECS, "windows": windows}

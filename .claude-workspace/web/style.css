@@ -329,11 +329,20 @@ body.ctrl .wspill { display: inline-block; }
   grid-template-areas: "left graph" "left time"; }
 .p-sessions { grid-area: sess; } .p-graph { grid-area: graph; } .p-timeline { grid-area: time; } .p-feed { grid-area: feed; } .p-prs { grid-area: prs; }
 .mcgrid .panel.p-feed, .mcgrid .panel.p-prs { display: none; }
-/* Events tab: pull requests over the feed */
-.mcgrid[data-view="events"] { grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "left prs" "left feed"; }
+/* Events tab: pull requests, then the usage panels, over the feed.
+   Three columns so a second usage panel (p-tokens) can sit next to p-usage: change the "usage usage" row to "usage tokens" and nothing else reflows. */
+.p-usage { grid-area: usage; } .p-tokens { grid-area: tokens; }
+.mcgrid .panel.p-usage, .mcgrid .panel.p-tokens { display: none; }
+.mcgrid[data-view="events"] { grid-template-columns: minmax(250px, 24%) minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(240px, 1fr); grid-template-areas: "left prs prs" "left usage usage" "left feed feed"; }
 .mcgrid[data-view="events"] .panel.p-graph, .mcgrid[data-view="events"] .panel.p-timeline { display: none; }
 .mcgrid[data-view="events"] .panel.p-feed { display: flex; }
-.mcgrid[data-view="events"] .panel.p-prs { display: flex; max-height: 42vh; }
+.mcgrid[data-view="events"] .panel.p-prs { display: flex; max-height: 30vh; }
+.mcgrid[data-view="events"] .panel.p-usage, .mcgrid[data-view="events"] .panel.p-tokens { display: flex; max-height: 38vh; }
+@media (max-width: 1199px) {
+  .mcgrid[data-view="events"] { grid-template-columns: minmax(250px, 24%) minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(240px, 1fr); grid-template-areas: "left prs" "left usage" "left feed"; }  /* with p-tokens: add the row "left tokens" before "left feed" */
+}
 
 /* left column: sessions take what the status panels don't need; empty panels shrink to their header */
 .leftcol { grid-area: left; display: flex; flex-direction: column; gap: 10px; min-height: 0; min-width: 0; }
@@ -562,3 +571,32 @@ dialog textarea { font-family: var(--mono); resize: vertical; }
   .tpw { flex-direction: row; align-items: center; gap: 8px; grid-column: 2; }
   .tpacts { grid-column: 2; justify-self: start; }
 }
+
+/* Weekly usage panel */
+.usagetoggle { margin-left: 0; padding: 0 7px; }
+.ph .usagetoggle { margin-left: 0; }
+.usage5h { font-size: 11.5px; color: var(--muted); padding: 0; margin-left: 6px; white-space: nowrap; }
+.usage5h input { padding: 0; margin: 0; }
+.p-usage.collapsed { max-height: none; } .p-usage.collapsed .pb { display: none; }
+.p-usage.collapsed .ph { border-bottom: 0; }
+.usagegraph svg { display: block; width: 100%; height: auto; min-width: 320px; }
+.usagenote { padding: 3px 8px; margin-bottom: 4px; border-radius: 6px; background: var(--warn-bg); color: var(--warn); }
+.usagesum { margin: 6px 2px 2px; color: var(--text); }
+.usagesvg .axis { stroke: var(--border); stroke-width: 1; }
+.usagesvg .axis.guide { stroke: var(--muted); stroke-dasharray: 1 4; stroke-linecap: round; opacity: .7; }
+.usagesvg .guidelbl, .usagesvg .resetlbl, .usagesvg .pacelbl { font-size: 10px; }
+.usagesvg .reset { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 5 3; opacity: .65; }
+.usagesvg .ul { fill: none; stroke-linejoin: round; stroke-linecap: round; }
+.usagesvg .ul-week { stroke: var(--accent); stroke-width: 2; }
+.usagesvg .ul-opus { stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 6 3; }
+.usagesvg .ul-sonnet { stroke: var(--ok); stroke-width: 1.5; stroke-dasharray: 1.5 3; }
+.usagesvg .ul-5h { stroke: var(--muted); stroke-width: 1; }
+.usagesvg .udot.ul-week { fill: var(--accent); } .usagesvg .udot.ul-opus { fill: var(--warn); } .usagesvg .udot.ul-sonnet { fill: var(--ok); } .usagesvg .udot.ul-5h { fill: var(--muted); }
+.usagesvg .pace { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 1 4; stroke-linecap: round; }
+.usagesvg .gapband { fill: url(#usagehatch); stroke: var(--border); stroke-width: 1; }
+.usagesvg .hatchln { stroke: var(--muted); stroke-width: 1; opacity: .5; }
+.usagesvg .hit { fill: transparent; }
+.usagesvg .wkend, .usagesvg .nowdot { stroke: var(--card); stroke-width: 1.5; }
+.usagesvg .wkend.ok, .usagesvg .nowdot.ok { fill: var(--ok); } .usagesvg .wkend.warn, .usagesvg .nowdot.warn { fill: var(--warn); } .usagesvg .wkend.bad, .usagesvg .nowdot.bad { fill: var(--bad); }
+.usagesvg .wklbl, .usagesvg .nowlbl { font-weight: 600; }
+.usagesvg .wklbl.ok, .usagesvg .nowlbl.ok { fill: var(--ok); } .usagesvg .wklbl.warn, .usagesvg .nowlbl.warn { fill: var(--warn); } .usagesvg .wklbl.bad, .usagesvg .nowlbl.bad { fill: var(--bad); }

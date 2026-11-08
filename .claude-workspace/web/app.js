@@ -111,7 +111,7 @@ $("bellbtn").addEventListener("click", (e) => {
 });
 
 // ---------- views ----------
-function refit() { if (STATE && VIEW === "agents") { renderGraph(); renderTimeline(); } }
+function refit() { if (STATE && VIEW === "agents") { renderGraph(); renderTimeline(); } if (VIEW === "events") redrawUsage(); }
 let VIEW = "agents";
 function setView(v) {
   VIEW = v === "events" ? "events" : v === "research" ? "research" : "agents";
@@ -124,6 +124,7 @@ function setView(v) {
   if (location.hash !== hash) history.replaceState(null, "", hash || location.pathname);
   connect();
   setTimeout(refit, 50);
+  if (VIEW === "events") loadUsage();
   if (VIEW === "research") { renderResearch(); loadResearch(); if (RSVIEW === "topics") loadTopics(); }
 }
 $("tab-agents").onclick = () => setView("agents");
@@ -235,7 +236,7 @@ function placeTip(e) {
   if (y + r.height > innerHeight - 8) y = Math.max(8, e.clientY - r.height - gap);
   TIP.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
 }
-for (const id of ["graph", "timeline", "llmcard", "rshead", "rsgate", "rsquota", "rslanes", "rslast", "tplist"]) {
+for (const id of ["graph", "timeline", "llmcard", "usagegraph", "rshead", "rsgate", "rsquota", "rslanes", "rslast", "tplist"]) {
   const box = $(id);
   box.addEventListener("pointerover", (e) => {
     const t = e.target.closest?.("[data-tip]");
@@ -943,6 +944,188 @@ async function loadLLM(force) {
 }
 loadLLM();
 setInterval(() => { if (!document.hidden) loadLLM(); }, 30000);
+
+// ---------- Weekly usage panel (Events tab) ----------
+// History comes from /api/usage/history (samples recorded by niu-dash). Everything is built with h()/svg() (textContent and
+// setAttribute only); the fixed message tables below are the only prose, and no server string is ever shown.
+const USAGE = { weeks: [2, 5, 10].includes(store.get("niu.usage.weeks", 5)) ? store.get("niu.usage.weeks", 5) : 5,
+  open: store.get("niu.usage.open", true) !== false, h5: store.get("niu.usage.5h", false) === true, data: null, state: "loading", timer: 0 };
+const USAGE_MSG = {
+  loading: "Loading…",
+  empty: "Collecting: the first sample appears within 5 minutes. Earlier weeks can't be recovered.",
+  disabled: "Usage history is off (NIU_USAGE_COLLECT=0).",
+  error: "Can't read usage history from the dashboard server.",
+};
+const USAGE_REC = { reading: "the last attempt to read the limits failed", database: "the last attempt to save a sample failed", other: "the last sampling attempt failed" };
+const USAGE_GAP_TIP = "No samples\ndashboard down, or no terminal session and the usage API off";
+const USAGE_SRC = { api: "usage API", statusline: "terminal status line" };
+const USAGE_DAY = 86400;
+const usageLevel = (v) => (v >= 90 ? "bad" : v >= 70 ? "warn" : "ok");
+const USAGE_GLYPH = { ok: "●", warn: "▲", bad: "◆" };
+const usageWhen = (ts) => `${new Date(ts * 1000).toLocaleDateString([], { weekday: "short" })} ${hm(ts)}`;
+const usageDay = (ts) => new Date(ts * 1000).toLocaleDateString([], { month: "short", day: "numeric" });
+const usageNum = (v) => (typeof v === "number" && isFinite(v) ? v : null);
+
+function usageSegments(series) {
+  const segs = [[]];
+  for (const p of (series && Array.isArray(series.points) ? series.points : [])) {
+    if (p === null) { if (segs[segs.length - 1].length) segs.push([]); continue; }
+    if (Array.isArray(p) && usageNum(p[0]) !== null && usageNum(p[1]) !== null) segs[segs.length - 1].push([p[0], p[1]]);
+  }
+  return segs.filter((g) => g.length);
+}
+
+const usageWeeks = (u) => (Array.isArray(u.weeks) ? u.weeks : []).filter((w) => w && typeof w === "object" && usageNum(w.ended_pct) !== null && usageNum(w.last_sample) !== null && usageNum(w.resets_at) !== null);
+function usageSummary(u) {
+  const cur = u.current && typeof u.current === "object" ? u.current : null, bits = [];
+  const wk = usageWeeks(u).slice(-4);
+  if (!cur || usageNum(cur.used) === null) bits.push("Weekly: no current reading.");
+  else {
+    let s = `Weekly: ${Math.round(cur.used)}% now`;
+    if (usageNum(cur.resets_at) !== null) s += `, resets ${usageWhen(cur.resets_at)}`;
+    const pace = usagePace(u);
+    if (pace !== null) s += `, on pace for about ${pace}%`;
+    bits.push(s + ".");
+  }
+  if (wk.length) bits.push(`Last weeks ended at ${wk.map((w) => `${w.partial ? "≥" : ""}${Math.round(w.ended_pct)}%`).join(", ")}.`);
+  else bits.push("No finished week recorded yet.");
+  return bits.join(" ");
+}
+// Projection of the current week to its reset; null until 12 hours of the window have passed.
+function usagePace(u) {
+  const c = u.current && typeof u.current === "object" ? u.current : null;
+  if (!c || usageNum(c.resets_at) === null || usageNum(c.used) === null || c.resets_at <= u.now) return null;
+  const elapsed = u.now - (c.resets_at - 7 * USAGE_DAY);
+  if (elapsed < 12 * 3600 || elapsed > 7 * USAGE_DAY) return null;
+  return Math.round(Math.min(100, (c.used / elapsed) * 7 * USAGE_DAY));
+}
+
+function renderUsage(u) {
+  USAGE.data = u && u.state === "ok" ? u : null;
+  const box = $("usagegraph"), sum = $("usagesum"), upd = $("usageupd");
+  const note = (text, cls) => { box.replaceChildren(h("div", cls || "empty", text)); sum.textContent = ""; };
+  if (u && u.state === "loading") { upd.textContent = ""; return note(USAGE_MSG.loading); }
+  if (!u || typeof u !== "object" || !["ok", "empty", "disabled"].includes(u.state) || (u.state === "ok" && usageNum(u.now) === null)) { upd.textContent = ""; return note(USAGE_MSG.error, "msg err"); }
+  if (u.state !== "ok") { upd.textContent = ""; return note(USAGE_MSG[u.state]); }
+  const W = Math.max(320, Math.round(box.clientWidth || 640)), H = 230, L = 40, R = 14, T = 18, B = 28;
+  const days = USAGE.weeks * 7, cur = u.current && typeof u.current === "object" ? u.current : null;
+  const tmax = cur && usageNum(cur.resets_at) !== null && cur.resets_at > u.now ? cur.resets_at : u.now, tmin = tmax - days * USAGE_DAY;
+  const X = (t) => L + ((t - tmin) / (tmax - tmin)) * (W - L - R), Y = (v) => T + (1 - Math.min(100, Math.max(0, v)) / 100) * (H - T - B);
+  const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": usageSummary(u), class: "usagesvg", preserveAspectRatio: "xMidYMid meet" });
+  const defs = svg("defs");
+  const pat = svg("pattern", { id: "usagehatch", width: "6", height: "6", patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" });
+  pat.append(svg("line", { x1: "0", y1: "0", x2: "0", y2: "6", class: "hatchln" }));
+  defs.append(pat); root.append(defs);
+  // axes: 0, 50, 80 (the 20% weekly floor of the research gate) and 100
+  for (const v of [0, 50, 80, 100]) {
+    root.append(svg("line", { x1: L, x2: W - R, y1: Y(v), y2: Y(v), class: `axis${v === 80 ? " guide" : ""}` }));
+    root.append(svg("text", { x: L - 5, y: Y(v) + 3.5, class: "lbl", "text-anchor": "end" }, `${v}%`));
+  }
+  root.append(svg("text", { x: W - R, y: Y(80) - 3, class: "lbl guidelbl", "text-anchor": "end" }, "20% weekly floor"));
+  const step = USAGE.weeks <= 2 ? 2 : USAGE.weeks <= 5 ? 5 : 10;
+  const d0 = new Date(tmin * 1000); d0.setHours(0, 0, 0, 0);
+  for (let d = new Date(d0), n = 0; d.getTime() / 1000 <= tmax && n < 40; d.setDate(d.getDate() + step), n++) {
+    const t = d.getTime() / 1000;
+    if (t < tmin) continue;
+    root.append(svg("line", { x1: X(t), x2: X(t), y1: H - B, y2: H - B + 4, class: "axis" }));
+    root.append(svg("text", { x: X(t), y: H - 10, class: "lbl", "text-anchor": "middle" }, usageDay(t)));
+  }
+  // reset markers (finished weeks and the current reset)
+  const resets = [...(Array.isArray(u.resets) ? u.resets : []), ...(cur && usageNum(cur.resets_at) !== null ? [cur.resets_at] : [])].filter((t) => usageNum(t) !== null && t >= tmin && t <= tmax);
+  for (const t of new Set(resets)) {
+    root.append(svg("line", { x1: X(t), x2: X(t), y1: T, y2: H - B, class: "reset" }));
+    root.append(svg("text", { x: X(t) + 3, y: T + 9, class: "lbl resetlbl" }, `↻ ${usageWhen(t)}`));
+  }
+  // gaps: hatched bands between the segments of the weekly line (and up to now when sampling has stopped)
+  const sd = usageSegments(u.series && u.series.seven_day);
+  const band = (t0, t1) => {
+    if (t1 < tmin || t0 > tmax) return;
+    const x0 = X(Math.max(t0, tmin)), x1 = X(Math.min(t1, tmax));
+    root.append(svg("rect", { x: x0, y: T, width: Math.max(1, x1 - x0), height: H - T - B, class: "gapband", "data-tip": USAGE_GAP_TIP }));
+  };
+  for (let i = 1; i < sd.length; i++) band(sd[i - 1][sd[i - 1].length - 1][0], sd[i][0][0]);
+  if (sd.length && u.now - sd[sd.length - 1][sd[sd.length - 1].length - 1][0] > (u.gap_secs || 1500)) band(sd[sd.length - 1][sd[sd.length - 1].length - 1][0], u.now);
+  // lines: weekly (always), Opus/Sonnet weekly (only when reported), 5-hour (toggle)
+  const line = (key, cls) => {
+    const segs = usageSegments(u.series && u.series[key]);
+    for (const seg of segs) {
+      const pts = seg.filter((p) => p[0] >= tmin && p[0] <= tmax + 1);
+      if (!pts.length) continue;
+      if (pts.length === 1) { root.append(svg("circle", { cx: X(pts[0][0]), cy: Y(pts[0][1]), r: 2.2, class: `udot ${cls}` })); continue; }
+      root.append(svg("path", { d: pts.map((p, i) => `${i ? "L" : "M"}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join(" "), class: `ul ${cls}` }));
+    }
+  };
+  if (USAGE.h5) line("five_hour", "ul-5h");
+  line("seven_day_opus", "ul-opus"); line("seven_day_sonnet", "ul-sonnet"); line("seven_day", "ul-week");
+  // weeks that ended: a marker and "ended N%" ("ended ≥N%" when sampling stopped well before the reset)
+  for (const w of usageWeeks(u)) {
+    if (w.last_sample < tmin) continue;
+    const lvl = usageLevel(w.ended_pct), x = X(w.last_sample), y = Y(w.ended_pct), left = x > L + 90;
+    root.append(svg("circle", { cx: x, cy: y, r: 4, class: `wkend ${lvl}`, "data-tip": `Week ended ${usageWhen(w.resets_at)}\nhighest value ${w.partial ? "at least " : ""}${Math.round(w.ended_pct)}%\n${lvl === "ok" ? "below 70%" : lvl === "warn" ? "70 to 89%" : "90% or more"}${w.partial ? "\nsamples stopped early" : ""}` }));
+    root.append(svg("text", { x: left ? x - 7 : x + 7, y: Math.max(T + 22, y - 7), class: `lbl wklbl ${lvl}`, "text-anchor": left ? "end" : "start" },
+      `${USAGE_GLYPH[lvl]} ended ${w.partial ? "≥" : ""}${Math.round(w.ended_pct)}%`));
+  }
+  // now marker and pace
+  if (cur && usageNum(cur.used) !== null && u.now >= tmin) {
+    const pace = usagePace(u);
+    if (pace !== null) {
+      root.append(svg("line", { x1: X(u.now), y1: Y(cur.used), x2: X(cur.resets_at), y2: Y(pace), class: "pace" }));
+      root.append(svg("text", { x: X(cur.resets_at) - 4, y: Y(pace) + (pace > 85 ? 13 : -5), class: "lbl pacelbl", "text-anchor": "end" }, `pace ≈ ${pace}%`));
+    }
+    const lvl = usageLevel(cur.used);
+    root.append(svg("circle", { cx: X(u.now), cy: Y(cur.used), r: 4, class: `nowdot ${lvl}` }));
+    root.append(svg("text", { x: X(u.now) - 7, y: Y(cur.used) - 7, class: `lbl nowlbl ${lvl}`, "text-anchor": "end" }, `now ${Math.round(cur.used)}%`));
+  }
+  // tooltips: one transparent rect per x bucket (at most 240)
+  const nb = Math.min(240, Math.max(1, Math.floor((W - L - R) / 4))), bw = (tmax - tmin) / nb;
+  const lastIn = (key, t0, t1) => { let v = null; for (const seg of usageSegments(u.series && u.series[key])) for (const p of seg) if (p[0] >= t0 && p[0] < t1) v = p[1]; return v; };
+  for (let i = 0; i < nb; i++) {
+    const t0 = tmin + i * bw, t1 = t0 + bw, wkv = lastIn("seven_day", t0, t1), fh = lastIn("five_hour", t0, t1);
+    const lines = [];
+    if (wkv !== null) lines.push([`Weekly ${Math.round(wkv)}%`, fh !== null ? `5-hour ${Math.round(fh)}%` : ""].filter(Boolean).join(" · "));
+    else lines.push("no samples");
+    for (const [k, n] of [["seven_day_opus", "Opus"], ["seven_day_sonnet", "Sonnet"]]) { const v = lastIn(k, t0, t1); if (v !== null) lines.push(`${n} weekly ${Math.round(v)}%`); }
+    root.append(svg("rect", { x: X(t0), y: T, width: Math.max(1, (W - L - R) / nb), height: H - T - B, class: "hit", "data-tip": `${usageWhen(t0 + bw / 2)}\n${lines.join("\n")}` }));
+  }
+  const kids = [];
+  if (cur && cur.stale) kids.push(h("div", "usagenote warn small", `No new readings since ${hm(cur.updated)}: no terminal Claude session, and the usage API is off or unreachable.`));
+  const rec = u.recorder;
+  if (rec && rec.errors > 0 && USAGE_REC[rec.last_error]) kids.push(h("div", "usagenote warn small", `Recorder: ${USAGE_REC[rec.last_error]} (${rec.errors} error${rec.errors === 1 ? "" : "s"} since the dashboard started).`));
+  box.replaceChildren(...kids, root);
+  sum.textContent = usageSummary(u);
+  upd.textContent = [u.collecting_since ? `collecting since ${usageDay(u.collecting_since)}` : "", cur ? `updated ${hm(cur.updated)}${USAGE_SRC[cur.source] ? ` · ${USAGE_SRC[cur.source]}` : ""}` : ""].filter(Boolean).join(" · ");
+}
+
+function redrawUsage() { if (USAGE.open && USAGE.data) renderUsage(USAGE.data); }
+async function loadUsage() {
+  if (VIEW !== "events" || document.hidden || !USAGE.open) return;
+  const days = USAGE.weeks * 7;
+  if (!USAGE.data) renderUsage({ state: "loading" });
+  const d = await fetch(`/api/usage/history?days=${days}`, { credentials: "same-origin" }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  if (VIEW !== "events" || days !== USAGE.weeks * 7) return;
+  renderUsage(d && typeof d.state === "string" ? d : null);
+}
+function setUsageOpen(open) {
+  USAGE.open = open; store.set("niu.usage.open", open);
+  $("usagepanel").classList.toggle("collapsed", !open);
+  $("usagetoggle").setAttribute("aria-expanded", String(open));
+  $("usagetoggle").setAttribute("aria-label", `${open ? "Collapse" : "Expand"} Weekly usage`);
+  $("usagetoggle").textContent = open ? "▾" : "▸";
+  if (open) loadUsage();
+}
+function setUsageWeeks(n) {
+  USAGE.weeks = n; store.set("niu.usage.weeks", n);
+  for (const w of [2, 5, 10]) { $(`usage-w${w}`).classList.toggle("on", w === n); $(`usage-w${w}`).setAttribute("aria-pressed", String(w === n)); }
+  USAGE.data = null; loadUsage();
+}
+$("usagetoggle").onclick = () => setUsageOpen(!USAGE.open);
+for (const w of [2, 5, 10]) $(`usage-w${w}`).onclick = () => setUsageWeeks(w);
+$("usage5h").checked = USAGE.h5;
+$("usage5h").onchange = () => { USAGE.h5 = $("usage5h").checked; store.set("niu.usage.5h", USAGE.h5); redrawUsage(); };
+setUsageOpen(USAGE.open);
+for (const w of [2, 5, 10]) { $(`usage-w${w}`).classList.toggle("on", w === USAGE.weeks); $(`usage-w${w}`).setAttribute("aria-pressed", String(w === USAGE.weeks)); }
+setInterval(loadUsage, 60000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) loadUsage(); });
 
 // ---------- Research tab (valkyrie-dispatch monitor) ----------
 // /api/research is already allowlisted by the server, but nothing from it is ever shown as HTML:
