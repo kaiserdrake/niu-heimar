@@ -1131,8 +1131,8 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) load
 // /api/research is already allowlisted by the server, but nothing from it is ever shown as HTML:
 // every value goes through textContent or setAttribute, so a hostile payload cannot run or inject anything.
 const RS_STUCK_SECS = 45 * 60;
-const RS_REASON = { ok: "quota is fine", ok_conservative: "quota is tight: conservative run", weekly_low: "weekly limit nearly used up",
-  low_quota: "5-hour window too full", probe_warning: "usage probe warning", no_signal: "no usage signal", manual_cap: "manual-run cap reached",
+const RS_REASON = { ok: "quota is fine", ok_conservative: "usage not readable, coarse check: conservative run", weekly_low: "weekly limit nearly used up",
+  low_quota: "5-hour window too full", probe_warning: "usage not readable, probe warns of a limit", no_signal: "no usage signal", manual_cap: "manual-run cap reached",
   grace_expired: "gave up after the grace period", kill_switch: "stopped by the kill switch", session_cap: "daily Claude session cap reached" };
 const RS_KIND = { standard: "standard", comprehensive: "overnight", delta: "delta" };
 const RS_KIND_LETTER = { standard: "S", comprehensive: "C", delta: "D" };
