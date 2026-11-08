@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.11.0...niu-heimar-v0.12.0) (2026-11-08)
+
+
+### Features
+
+* **dashboard:** Inactive vs Archived topics, icon actions, agent models on the timeline ([#41](https://github.com/kaiserdrake/niu-heimar/issues/41)) ([e2ebaa1](https://github.com/kaiserdrake/niu-heimar/commit/e2ebaa186def7d5babdb4087b14a9bca93f16370))
+
 ## [0.11.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.10.0...niu-heimar-v0.11.0) (2026-11-07)
 
 
