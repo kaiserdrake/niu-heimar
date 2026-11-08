@@ -10,7 +10,7 @@ Only config is tracked here. Projects inside `WORK/`, `PERSONAL/` and `HOBBY/` a
 | Rule | How it's enforced |
 |---|---|
 | Agents can't read `.env` | `permissions.deny` in `~/.claude/settings.json`, plus the `hooks/block-env.sh` PreToolUse hook (also catches `cat .env`, `printenv`, `docker compose config` …). Applies only under this folder. |
-| Two mandatory reviewers | `security-reviewer` and `test-reviewer` agents, the `/dual-review` skill that runs both in parallel, and a rule in `CLAUDE.md`. They run once per PR on the whole batch, not after every edit. |
+| Two mandatory reviewers | `security-reviewer` and `test-reviewer` agents, the `/dual-review` skill that runs both in parallel, and a rule in `CLAUDE.md`. They run once, when a complete feature is released (or when you ask), on the whole feature; not per PR and not after every edit. |
 | Top model for planning | `"model": "opusplan"` in every domain (Opus in plan mode, Sonnet for execution). |
 | Memory per domain | `autoMemoryDirectory` → `<DOMAIN>/.claude/memory/`, plus curated `<DOMAIN>/.claude/LEARNINGS.md`. |
 | Local MCPs and agents | `<DOMAIN>/.claude/mcp.json` + `enabledMcpjsonServers` allow-list. See `.claude-workspace/mcp/README.md`. |
@@ -87,7 +87,7 @@ CLAUDE.md                     common rules (inherited by every project)
   (→ optional local_diff_review, Ollama) → report "done, not yet reviewed"
 
 /workspace-sync  (or the domain's PR/MR flow)          # once per batch of features
-  lint → security-reviewer + test-reviewer on the whole PR diff (Claude) → fix loop (≤3) → branch, commit, PR
+  lint → branch, commit, PR (reviews are deferred to the feature release; `/dual-review` runs them on the whole feature)
 ```
 - **designer** (`agents/designer.md`, Opus): researches, compares options, and writes the design document. It never edits code.
 - **Local agents** (`bin/niu-agent`, exposed to sessions by the `niu-local` MCP server): `local_search`, `local_diff_review`,
@@ -123,7 +123,7 @@ agents-dash --once   # plain-text snapshot; --json for scripts; --domain WORK; -
 - Shows a live tree (domain → project → session → subagents), with each agent's state, how long it has been running, and its current tool.
   Each agent has a tag showing where it comes from (`project`, `domain`, `shared`, `user`, `builtin`). A project's agents that haven't run yet
   show as `not yet run`.
-- The "today" line counts sessions and subagent runs. It also marks sessions whose edits haven't been reviewed yet (informational: the mandatory reviewers run once per PR).
+- The "today" line counts sessions and subagent runs. It also marks sessions whose edits haven't been reviewed yet (informational: the mandatory reviewers run when a complete feature is released).
 - Nested projects (e.g. `HOBBY/games/voxel-mod`) work: the project is the nearest folder with `.claude/` or `.git`.
   Its own agents in `.claude/agents/` sit next to the linked shared reviewers.
 - **Pull requests**: a panel lists open PRs for niu-heimar and for every linked project whose origin is on GitHub

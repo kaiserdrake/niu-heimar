@@ -17,7 +17,7 @@ wrong, stop and say what is unclear instead of guessing.
 - Never commit, push, tag, switch branches, stash or reset, never open, merge or comment on PRs/issues, and never run
   anything else that changes a remote or shared state.
 - Follow the existing code style and the project's own CLAUDE.md. Prefer small, direct changes over new abstractions.
-- Don't run the `security-reviewer` / `test-reviewer` agents; they run once per PR.
+- Don't run the `security-reviewer` / `test-reviewer` agents; they run once, when the complete feature is released.
 
 ## Work
 1. Read the files in scope (and the design doc if the brief names one) before editing.

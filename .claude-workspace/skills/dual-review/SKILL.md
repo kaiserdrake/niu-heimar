@@ -1,14 +1,16 @@
 ---
 name: dual-review
-description: Run the two mandatory reviewers (security-reviewer and test-reviewer) in parallel on the whole PR diff and merge their verdicts. Use before opening a PR/MR or pushing a branch for review (workspace-sync calls it), or when the user asks for a review. Not after every edit.
+description: Run the two mandatory reviewers (security-reviewer and test-reviewer) in parallel on the whole feature diff and merge their verdicts. Use when a complete feature is being released (the user says it is complete or ready to release, or a release PR / tag is about to be cut), or when the user asks for a review. Not per PR and not after every edit.
 ---
 
 # Dual review
 
-1. Work out what to review: the user's target (files, branch, PR), or else **everything the PR will contain**:
-   the branch changes against its base plus uncommitted and untracked files
-   (`git status`, `git diff --merge-base origin/HEAD`, `git log origin/HEAD..`). Give the reviewers the list of
-   features in the batch (from the commit messages or design docs) so they know what each part is meant to do.
+1. Work out what to review: the user's target (files, branch, PR), or else **the whole feature being released**:
+   everything merged for it since the last reviewed release (`git log <last-reviewed-release>..HEAD`,
+   `git diff <last-reviewed-release>...HEAD`; if no release exists yet, the feature's branch changes against its base)
+   plus uncommitted and untracked files (`git status`). If the feature spans several repos, review each repo's range.
+   Give the reviewers the list of PRs/features in the range (from the commit messages or design docs) so they know what
+   each part is meant to do. Ask the user to confirm the range if it is not obvious.
 2. Pick the models. Both reviewers run on **Sonnet** (their agent files), whatever the diff touches; this keeps
    token use down. Use Opus for a reviewer only when the user explicitly asks for it in chat (pass `model: "opus"`
    to the Agent tool). For a risky diff (hooks or the guard, secrets or tokens, auth or pairing, CI or deploy, or
@@ -26,4 +28,4 @@ description: Run the two mandatory reviewers (security-reviewer and test-reviewe
 5. If anything is blocking, fix it (or ask the user for a waiver). Then **re-run only
    the reviewer(s) that blocked** until both pass (at most 3 rounds, then ask the user).
    Batch the fixes: address every blocking finding of a round before re-running.
-6. Don't open the PR while a blocking finding remains without a waiver; record waivers in the PR description.
+6. Don't cut the release while a blocking finding remains without a waiver; record waivers in the release PR description.
