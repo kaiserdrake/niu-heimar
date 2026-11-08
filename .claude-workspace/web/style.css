@@ -515,6 +515,7 @@ svg .slotline { stroke: var(--border); stroke-dasharray: 2 3; }
 .tprow { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: start; gap: 4px 10px; padding: 6px 8px;
   border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); }
 .tprow.tp-archived { opacity: .6; border-style: dashed; }
+.tprow.tp-inactive { opacity: .8; }
 .tprow.busy { opacity: .6; }
 .tprow.tpflash { animation: hl 1.4s ease-out; }
 .tpswitch { appearance: none; -webkit-appearance: none; width: 30px; height: 17px; padding: 0; border-radius: 999px; position: relative; cursor: pointer;
@@ -537,7 +538,15 @@ svg .slotline { stroke: var(--border); stroke-dasharray: 2 3; }
 .tpw { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; font-size: 11.5px; font-variant-numeric: tabular-nums; }
 svg.tpweight { display: block; }
 svg .tpw-bg { fill: var(--border); } svg .tpw-fg { fill: var(--accent); }
-.tpedit { padding: 1px 8px; font-size: 11.5px; }
+.tpicon { display: inline-grid; place-items: center; padding: 3px 5px; line-height: 0; }
+.tpacts { display: inline-flex; gap: 2px; align-items: start; }
+.tpsr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.tphold { position: relative; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.tphold-fill { position: absolute; inset: 0; transform: scaleX(0); transform-origin: left; background: currentColor; opacity: .25; pointer-events: none; }
+.tphold.holding .tphold-fill { transform: scaleX(1); transition: transform 1s linear; }
+@media (prefers-reduced-motion: reduce) { .tphold.holding .tphold-fill { transition: transform 1s steps(4); } }
+svg.tpico { stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+svg .tlmodel { fill: var(--muted); } svg .tlmodel.guess { font-style: italic; }
 dialog textarea, dialog select { width: 100%; font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; }
 dialog textarea { font-family: var(--mono); resize: vertical; }
 #tpdlg { width: min(520px, calc(100vw - 32px)); }
@@ -547,5 +556,5 @@ dialog textarea { font-family: var(--mono); resize: vertical; }
 @media (max-width: 899px) {
   .tprow { grid-template-columns: auto minmax(0, 1fr); }
   .tpw { flex-direction: row; align-items: center; gap: 8px; grid-column: 2; }
-  .tpedit { grid-column: 2; justify-self: start; }
+  .tpacts { grid-column: 2; justify-self: start; }
 }

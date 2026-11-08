@@ -223,15 +223,26 @@ async function topicsChecks(fx, appSrc) {
   if (!get("rsview-topics").classList.contains("on")) fail("segmented control state");
   ctx.TP_TRAP = true;   // from here on, any innerHTML write while rendering fails the run
   run("renderTopics()");
-  if (rowsOf().length !== 3) fail(`expected 3 active rows, got ${rowsOf().length}`);
+  if (rowsOf().length !== 4) fail(`expected 3 active + 1 inactive rows (archived hidden), got ${rowsOf().length}`);
   const list = textOf(get("tplist"));
-  if (!/General · 2\/200/.test(list) || !/Hobby · 1\/200/.test(list)) fail("group counts: " + list.slice(0, 200));
+  if (!/General · 2\/200/.test(list) || !/Hobby · 1\/200 · 1 inactive/.test(list) || /General · 2\/200 · /.test(list)) fail("group counts (active only, 'n inactive' in the header): " + list.slice(0, 200));
   if (!/General 2\/200/.test(textOf(get("tpchips"))) || !/Fintrend 0\/200/.test(textOf(get("tpchips")))) fail("agent chips: " + textOf(get("tpchips")));
   if (!/Fintrend agent arrives in M4/.test(list)) fail("fintrend note missing");
   if (get("tpadd").disabled) fail("Add topic disabled although paired and ok");
   if (!allOf(get("tplist")).some((n) => n.tagName === "svg") || !allOf(get("tplist")).some((n) => /\btpw-fg\b/.test(n.className || ""))) fail("weight bar missing");
   run("TP.archived = true; renderTopics()");
-  if (rowsOf().length !== 4 || !rowsOf().some((n) => /\btp-archived\b/.test(n.className)) || !/Restore/.test(textOf(get("tplist")))) fail("archived toggle");
+  if (rowsOf().length !== 5 || !rowsOf().some((n) => /\btp-archived\b/.test(n.className)) || !/Restore/.test(textOf(get("tplist")))) fail("archived toggle");
+  // three states: Active = switch on; Inactive = switch off + badge + hold button; Archived = Restore + badge, no Edit / hold
+  const rowOf = (id) => rowsOf().find((r) => r.getAttribute("data-id") === id);
+  const part = (row, cls) => allOf(row).find((n) => new RegExp("\\b" + cls + "\\b").test(n.className || ""));
+  const rA = rowOf("00000001-0000-4000-8000-000000000001"), rI = rowOf("00000005-0000-4000-8000-000000000005"), rX = rowOf("00000004-0000-4000-8000-000000000004");
+  if (!part(rA, "tpswitch").checked || /inactive|archived/.test(textOf(rA)) || !part(rA, "tphold") || !part(rA, "tpedit")) fail("active row");
+  if (part(rI, "tpswitch").checked || !/inactive/.test(textOf(rI)) || !/\btp-inactive\b/.test(rI.className) || !part(rI, "tphold") || !part(rI, "tpedit")) fail("inactive row");
+  if (part(rX, "tpswitch") || !part(rX, "tprestore") || !/archived/.test(textOf(rX)) || part(rX, "tphold") || part(rX, "tpedit")) fail("archived row");
+  const ico = part(rA, "tphold");
+  if (!allOf(ico).some((n) => n.tagName === "svg" && /\btpico\b/.test(n.getAttribute("class") || "")) || ico.textContent !== "" || !/Archive topic/.test(ico.getAttribute("aria-label"))) fail("hold button is an svg.tpico icon button with only an aria-label");
+  const order = rowsOf().map((r) => r.getAttribute("data-id").slice(0, 8));
+  if (order.indexOf("00000005") < order.indexOf("00000003") || order.indexOf("00000004") < order.indexOf("00000002")) fail("ordering: " + order);
   run("TP.archived = false; TP.filter = 'moog'; renderTopics()");
   if (rowsOf().length !== 1) fail("text filter");
   run("TP.filter = 'zzzz'; renderTopics()");
@@ -239,7 +250,7 @@ async function topicsChecks(fx, appSrc) {
   run("TP.filter = ''; renderTopics()");
   fuzzyChecks(run, fail);
   // fuzzy search through the real render path: ranking, AND narrowing, counts, highlight, hostile text
-  const mk = (id, agent, name, kw, ex, act = true) => ({ id, agent_type: agent, name, keywords: kw, excluded_terms: ex || [], weight: 1, is_active: act, updated_at: "2026-11-07T00:00:00Z" });
+  const mk = (id, agent, name, kw, ex, act = true) => ({ id, agent_type: agent, name, keywords: kw, excluded_terms: ex || [], weight: 1, is_active: act, is_archived: !act, updated_at: "2026-11-07T00:00:00Z" });
   ctx.TP_CUR = { state: "ok", loaded_at: 1, topics: [
     mk("a", "general", "Philippine politics", ["Rodrigo Duterte", "senate"]),
     mk("b", "hobby", "Final Fantasy Resonance", ["ff14", "dawntrail"], ["leaks"]),
@@ -338,6 +349,7 @@ async function topicsChecks(fx, appSrc) {
   const c = calls.find((x) => x.url === "/api/topics/update");
   if (!c || c.body.id !== t0.id || c.body.if_match !== t0.updated_at || JSON.stringify(c.body.fields) !== '{"is_active":false}') fail("toggle request: " + JSON.stringify(calls));
   if (run("TP.data.topics[0].is_active") !== false) fail("row not replaced by the server record");
+  if (!/inactive/.test(textOf(rowsOf().find((r) => r.getAttribute("data-id") === t0.id)))) fail("switched-off row should show the inactive badge");
   // toggle error: the row shows a fixed message and keeps the server state
   Object.assign(reply, { ok: false, status: 412, data: { ok: false, code: "changed" } });
   await run("tpToggle(TP.data.topics[1], false)");
@@ -362,9 +374,13 @@ async function topicsChecks(fx, appSrc) {
   // duplicate with an archived twin offers Restore; cap names the agent; rate limit and unreachable keep the form
   run("tpDialog(null)");
   get("tpagent").value = "hobby"; get("tpname").value = "Dup"; get("tpkw").value = "x"; get("tpweight").value = "1";
-  Object.assign(reply, { ok: false, status: 409, data: { ok: false, code: "duplicate", existing_id: "00000004-0000-4000-8000-000000000004", existing_active: false } });
+  Object.assign(reply, { ok: false, status: 409, data: { ok: false, code: "duplicate", existing_id: "00000004-0000-4000-8000-000000000004", existing_active: false, existing_archived: true } });
   await fire("tpform", "submit", form);
   if (!/already exists/.test(get("tpformmsg").textContent) || get("tprestoredup").hidden) fail("duplicate handling");
+  if (get("tprestoredup").textContent !== "Restore the archived one") fail("archived twin label: " + get("tprestoredup").textContent);
+  Object.assign(reply, { ok: false, status: 409, data: { ok: false, code: "duplicate", existing_id: "00000005-0000-4000-8000-000000000005", existing_active: false, existing_archived: false } });
+  await fire("tpform", "submit", form);
+  if (get("tprestoredup").textContent !== "Switch the existing one on") fail("inactive twin label: " + get("tprestoredup").textContent);
   Object.assign(reply, { ok: false, status: 409, data: { ok: false, code: "cap" } });
   await fire("tpform", "submit", form);
   if (!/Hobby already has 200 active topics/.test(get("tpformmsg").textContent)) fail("cap message: " + get("tpformmsg").textContent);
@@ -377,7 +393,14 @@ async function topicsChecks(fx, appSrc) {
   Object.assign(reply, { ok: false, status: 400, data: { ok: false, code: "invalid", fields: { name: "forbidden_char", evil: "x" } } });
   await fire("tpform", "submit", form);
   if (!/not allowed/.test(get("tperr-name").textContent)) fail("per-field server error");
-  // edit sends only changed fields; 412 offers Reload; archive needs two clicks
+  Object.assign(reply, { ok: true, status: 200, data: { ok: true, topic: { ...t0, id: "00000005-0000-4000-8000-000000000005", is_active: true } } });
+  calls.length = 0;
+  await get("tprestoredup")._ls.click[0]({});
+  const dupc = calls.find((x) => x.url === "/api/topics/update");
+  if (!dupc || JSON.stringify(dupc.body) !== '{"id":"00000005-0000-4000-8000-000000000005","fields":{"is_active":true}}') fail("duplicate restore still sends is_active:true: " + JSON.stringify(calls));
+  ctx.TP_CUR = fx.ok;
+  await run("loadTopics()");   // the handler's own refresh is a POST that the mock answers with `reply`
+  // edit sends only changed fields; 412 offers Reload
   run("tpDialog(TP.data.topics.find((t) => t.is_active))");
   const cur = run("TP.editing");
   get("tpweight").value = "4";
@@ -389,13 +412,92 @@ async function topicsChecks(fx, appSrc) {
   await fire("tpform", "submit", form);
   const upd = calls.find((x) => x.url === "/api/topics/update");
   if (!upd || JSON.stringify(upd.body.fields) !== '{"weight":4}' || upd.body.if_match !== cur.updated_at) fail("edit sends only changed fields with if_match: " + JSON.stringify(upd));
+  // the dialog has no archive control any more: the hold button is the only way
   run("tpDialog(TP.data.topics.find((t) => t.is_active))");
+  if (els.has("tparchive") || els.has("tparchhelp")) fail("dialog must not reference the removed archive button");
+  // hold to archive (the sandbox setTimeout is captured so the 1000 ms hold can be fired by hand)
+  const timers = [], cleared = [];
+  const realSet = ctx.setTimeout, realClear = ctx.clearTimeout;
+  ctx.setTimeout = (f, ms) => { timers.push({ f, ms, id: timers.length + 1 }); return timers.length; };
+  ctx.clearTimeout = (id) => cleared.push(id);
+  const settle = () => new Promise((r) => setImmediate(r));
+  const holdTimers = () => timers.filter((x) => x.ms === 1000);
+  const fresh = async (id = fx.ok.topics[0].id) => {
+    ctx.TP_CUR = fx.ok; await run("loadTopics()");
+    run("TP.archived = false; TP.filter = ''; TP.agent = 'all'; renderTopics()");
+    timers.length = 0; cleared.length = 0; calls.length = 0;
+    const row = rowOf(id), b = part(row, "tphold");
+    row.querySelector = (q) => part(row, q.slice(1));
+    b.closest = () => row;
+    return { row, b };
+  };
+  let { row, b } = await fresh();
+  b._ls.pointerdown[0]({ button: 0 });
+  if (!b.classList.contains("holding") || calls.length || holdTimers().length !== 1) fail("pointerdown starts the hold, sends nothing");
+  b._ls.pointerup[0]({});
+  if (b.classList.contains("holding") || !cleared.includes(holdTimers()[0].id) || calls.length) fail("early release cancels the hold");
+  b._ls.click[0]({});
+  if (calls.length || !/Hold to archive/.test(textOf(row))) fail("a plain click only shows the hint");
+  b._ls.pointerdown[0]({ button: 2 });
+  if (holdTimers().length !== 1) fail("only the primary button starts a hold");
+  b._ls.pointerdown[0]({ button: 0 });
+  const t0id = fx.ok.topics[0].id, t0im = fx.ok.topics[0].updated_at;
+  Object.assign(reply, { ok: true, status: 200, data: { ok: true, topic: { ...fx.ok.topics[0], is_active: false, is_archived: true, updated_at: "2026-11-07T12:00:00.000000Z" } } });
+  holdTimers()[1].f();
+  await settle();
+  const arch = calls.filter((x) => x.url === "/api/topics/update");
+  if (arch.length !== 1 || arch[0].body.id !== t0id || arch[0].body.if_match !== t0im || JSON.stringify(arch[0].body.fields) !== '{"is_archived":true}') fail("finished hold sends exactly one {is_archived:true}: " + JSON.stringify(calls));
+  if (!/Archived "AI chips"\. Turn on Show archived to restore it\./.test(get("tpmsg").textContent) || rowOf(t0id)) fail("archive confirmation / row hidden: " + get("tpmsg").textContent);
+  // keyboard: Space and Enter hold, repeat does not start a second timer, keyup cancels, click alone never sends
+  ({ row, b } = await fresh("00000002-0000-4000-8000-000000000002"));
+  const key = (k, rep) => ({ key: k, repeat: !!rep, preventDefault() { this.prevented = true; } });
+  const kd = key(" ");
+  b._ls.keydown[0](kd);
+  b._ls.keydown[0](key(" ", true));
+  if (!kd.prevented || holdTimers().length !== 1 || !b.classList.contains("holding")) fail("Space starts one hold; repeat does not restart it");
+  b._ls.keyup[0]({ key: "Enter" });
+  if (!b.classList.contains("holding")) fail("keyup of another key must not cancel");
+  b._ls.keyup[0]({ key: " " });
+  if (b.classList.contains("holding") || calls.length) fail("keyup cancels");
+  b._ls.keydown[0](key("Enter"));
+  if (holdTimers().length !== 2) fail("Enter starts a hold");
+  b._ls.blur[0]({});
+  if (b.classList.contains("holding")) fail("blur cancels");
+  b._ls.click[0]({});
+  if (calls.length) fail("click alone never archives");
+  // pointerleave, and a re-render during the hold clears the timer (a stale button must not fire)
+  b._ls.pointerdown[0]({ button: 0 });
+  b._ls.pointerleave[0]({});
+  if (b.classList.contains("holding")) fail("pointerleave cancels");
+  b._ls.pointerdown[0]({ button: 0 });
+  const live = holdTimers()[holdTimers().length - 1];
+  run("renderTopics()");
+  if (!cleared.includes(live.id) || run("TP.hold") !== null) fail("renderTopics cancels a running hold");
+  live.f();
+  await settle();
+  if (calls.some((x) => x.url === "/api/topics/update")) fail("a cancelled hold's timer must not archive");
+  ctx.setTimeout = realSet; ctx.clearTimeout = realClear;
+  // Restore sends is_archived:false and lands as Inactive
+  ctx.TP_CUR = fx.ok; await run("loadTopics()");
+  run("TP.archived = true; renderTopics()");
+  const xr = rowOf("00000004-0000-4000-8000-000000000004");
+  const x3im = fx.ok.topics[3].updated_at;
+  Object.assign(reply, { ok: true, status: 200, data: { ok: true, topic: { ...fx.ok.topics[3], is_active: false, is_archived: false, updated_at: "2026-11-07T12:00:00.000000Z" } } });
   calls.length = 0;
-  await get("tparchive")._ls.click[0]({});
-  if (calls.length || get("tparchive").textContent !== "Confirm archive") fail("first archive click must only arm");
-  Object.assign(reply, { ok: true, status: 200, data: { ok: true, topic: { ...run("TP.editing"), is_active: false } } });
-  await get("tparchive")._ls.click[0]({});
-  if (!calls.some((x) => x.url === "/api/topics/update" && x.body.fields.is_active === false)) fail("second click archives");
+  await part(xr, "tprestore").onclick();
+  const rc = calls.find((x) => x.url === "/api/topics/update");
+  if (!rc || JSON.stringify(rc.body.fields) !== '{"is_archived":false}' || rc.body.if_match !== x3im) fail("restore request: " + JSON.stringify(calls));
+  const after = rowOf("00000004-0000-4000-8000-000000000004");
+  if (!/inactive/.test(textOf(after)) || !/Restored as inactive/.test(textOf(after)) || part(after, "tpswitch").checked) fail("restored row is Inactive with a note");
+  // old backend: banner, no hold button, Restore falls back to the switch
+  ctx.TP_CUR = { ...fx.ok, states_supported: false, topics: fx.ok.topics.map((t) => ({ ...t, is_archived: !t.is_active })) };
+  await run("loadTopics()");
+  run("TP.archived = true; renderTopics()");
+  if (!/valkyrie-dispatch is older than this dashboard/.test(textOf(get("tphead"))) || allOf(get("tplist")).some((n) => /\btphold\b/.test(n.className || ""))) fail("legacy banner / hold button");
+  calls.length = 0;
+  Object.assign(reply, { ok: true, status: 200, data: { ok: true, topic: { ...fx.ok.topics[3], is_active: true, is_archived: false } } });
+  await run("tpRestore(TP.data.topics.find((t) => t.is_archived))");
+  if (!calls.some((x) => x.url === "/api/topics/update" && JSON.stringify(x.body.fields) === '{"is_active":true}')) fail("legacy restore sends is_active:true: " + JSON.stringify(calls));
   ctx.TP_TRAP = false;
   return "topics ok";
 }
@@ -405,5 +507,5 @@ async function topicsChecks(fx, appSrc) {
     console.log(await vm.runInContext(extra, ctx, { filename: "extra.js" }));
     if (process.argv[4]) console.log(await researchChecks(JSON.parse(fs.readFileSync(process.argv[4], "utf8"))));
     if (process.argv[5]) console.log(await topicsChecks(JSON.parse(fs.readFileSync(process.argv[5], "utf8")), fs.readFileSync(process.argv[2], "utf8")));
-  } catch (e) { console.log("ERROR:", e.message, (e.stack || "").split("\n")[1]); process.exit(1); }
+  } catch (e) { console.log("ERROR:", e.message, (e.stack || "").split("\n").slice(1,5).join(" ; ")); process.exit(1); }
 })();

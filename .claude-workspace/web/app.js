@@ -690,7 +690,7 @@ function renderTimeline() {
   const lanes = [];
   for (const s of list) {
     lanes.push({ label: projLabel(s), start: s.first, stop: s.ended ? s.last : null, tools: s.tools, waits: s.waits, session: true });
-    for (const a of s.subagents) lanes.push({ label: a.type, start: a.start, stop: a.stop, tools: a.tools });
+    for (const a of s.subagents) lanes.push({ label: a.type, start: a.start, stop: a.stop, tools: a.tools, model: a.model ? shortModel(a.model) : "", modelSrc: a.model_src });
   }
   const t0 = Math.max(Math.min(...lanes.map((l) => l.start)), STATE.now - 6 * 3600), t1 = STATE.now;
   const avail = (box.clientHeight || 300) - 22;
@@ -706,10 +706,21 @@ function renderTimeline() {
   lanes.forEach((l, i) => {
     const y = i * LH + 2;
     root.append(svg("rect", { x: LW, y, width: W - LW - 10, height: Math.max(6, LH - 4), class: "lane", rx: 3 }));
-    root.append(svg("text", { x: l.session ? 0 : 12, y: y + Math.min(14, LH - 4), class: l.session ? "" : "muted", "font-size": LH < 18 ? 10.5 : 12 }, trunc(l.label, l.session ? 22 : 20)));
+    const fs = LH < 18 ? 10.5 : 12;
+    const label = svg("text", { x: l.session ? 0 : 12, y: y + Math.min(14, LH - 4), class: l.session ? "" : "muted", "font-size": fs });
+    // Agent lanes: "designer [opus-5-5]". The model is in italics when it's a guess (not read from the agent's transcript).
+    const modelTag = l.model ? `${l.model}${l.modelSrc && l.modelSrc !== "actual" ? ` (${l.modelSrc === "definition" ? "from agent definition" : l.modelSrc})` : ""}` : "";
+    if (l.session) label.textContent = trunc(l.label, 22);
+    else {
+      const room = l.model ? Math.max(6, 25 - l.model.length - 3) : 20;
+      label.append(svg("tspan", {}, trunc(l.label, room)));
+      if (l.model) label.append(svg("tspan", { class: `tlmodel${l.modelSrc && l.modelSrc !== "actual" ? " guess" : ""}`, "font-size": fs - 1.5 }, ` [${trunc(l.model, 14)}]`));
+      label.setAttribute("data-tip", [l.label, modelTag && `model: ${modelTag}`].filter(Boolean).join("\n"));
+    }
+    root.append(label);
     if (!l.session) {
       const bar = svg("rect", { x: x(l.start), y: y + 1, width: Math.max(3, x(l.stop || t1) - x(l.start)), height: Math.max(3, LH - 7), rx: 2, class: `bar-sub ${l.stop ? "" : "running"}` });
-      bar.setAttribute("data-tip", `${l.label}\n${hhmmss(l.start)} → ${l.stop ? hhmmss(l.stop) : "running"}`);
+      bar.setAttribute("data-tip", [l.label, modelTag && `model: ${modelTag}`, `${hhmmss(l.start)} → ${l.stop ? hhmmss(l.stop) : "running"}`].filter(Boolean).join("\n"));
       root.append(bar);
     }
     for (const [ts, tool] of l.tools || []) {
@@ -1334,7 +1345,7 @@ const TP_AGENT_LABEL = { general: "General", hobby: "Hobby", fintrend: "Fintrend
 const TP_CAP = 200, TP_MAXKW = 20, TP_MAXEX = 50, TP_NAME = 120, TP_TERM = 80;
 let RSVIEW = store.get("niu.rsview", "status") === "topics" ? "topics" : "status";
 const TP = { data: null, agent: "all", filter: "", archived: false, editing: null, orig: null, flash: null, busy: new Set(), rowMsg: new Map(),
-  expanded: new Set(), armed: 0, loading: false, saving: false };
+  rowNote: new Map(), expanded: new Set(), hold: null, loading: false, saving: false };
 const TP_STATE_MSG = {
   loading: "Loading topics…",
   not_paired: "Pair this browser to view and edit topics (menu, then Pair). Topics are personal, so they are not shown to unpaired viewers.",
@@ -1347,6 +1358,7 @@ const TP_STATE_MSG = {
   incompatible: "valkyrie-dispatch is too old for the Topics panel (needs /auth/whoami).",
   error: "Could not read the topics.",
 };
+const TP_HOLD_MS = 1000;
 const TP_BAD_STATE = new Set(["wrong_scope", "too_powerful", "unauthorized"]);
 const TP_MSG = {
   changed: "This topic changed elsewhere (CLI, duenext or feedback). Reload it?",
@@ -1358,13 +1370,14 @@ const TP_MSG = {
   unreachable: "valkyrie-dispatch is not reachable; nothing was saved.",
   not_paired: "Pair this browser to edit topics.",
   badjson: "That request could not be read.",
+  incompatible: "valkyrie-dispatch is too old to archive separately; nothing was changed.",
   error: "Could not save; nothing was changed.",
 };
 const TP_FIELD_MSG = {
   required: "Required", too_short: "Required", forbidden_char: "These characters are not allowed: < > ` { } and control characters",
   bad_enum: "Pick one of the listed agents", not_list: "Enter one term per line", empty: "Nothing to save", unknown: "Not an editable field",
   invalid: "Refused by valkyrie-dispatch", not_bool: "Must be on or off", toolarge: "Too much text",
-  out_of_range: "Between 0.1 and 5", too_few: "At least 1 keyword",
+  out_of_range: "Between 0.1 and 5", too_few: "At least 1 keyword", bad_combo: "A topic cannot be active and archived.",
 };
 const tpFieldMsg = (field, code) => code === "too_many" ? `At most ${field === "keywords" ? TP_MAXKW : TP_MAXEX} ${field === "keywords" ? "keywords" : "excluded terms"}`
   : code === "too_long" ? (field === "name" ? `At most ${TP_NAME} characters` : `Each term can have at most ${TP_TERM} characters`)
@@ -1559,6 +1572,7 @@ async function loadTopics(force) {
 // ----- rendering -----
 function tpWritable() { return !!TP.data && TP.data.state === "ok" && !TP.data.stale && ME.paired; }
 function renderTopics() {
+  tpHoldCancel();   // a rebuilt list must never leave a stale hold timer behind
   if (VIEW !== "research" || RSVIEW !== "topics") return;
   const r = TP.data || { state: "loading", topics: [] };
   const ok = r.state === "ok", all = r.topics || [];
@@ -1570,6 +1584,8 @@ function renderTopics() {
     head.push(h("div", `tpstate ${TP_BAD_STATE.has(r.state) ? "bad" : "warn"}`, msg));
     if (r.stale && r.loaded_at) head.push(h("div", "small muted", `Showing the list as of ${hm(r.loaded_at)}. Changes are disabled.`));
   }
+  if (ok && r.states_supported === false) head.push(h("div", "tpstate warn", "valkyrie-dispatch is older than this dashboard: switching a topic off archives it, and Inactive is unavailable."));
+  if (ok && r.inactive_truncated) head.push(h("div", "small muted", "Showing 200 inactive topics; use rd topics list --state inactive for the rest."));
   if (ok && r.archived_truncated) head.push(h("div", "small muted", "Showing 200 archived topics; use rd topics list --all for the rest."));
   if (ok && r.dropped) head.push(h("div", "small muted", `${r.dropped} topic(s) could not be shown (unexpected data).`));
   $("tphead").replaceChildren(...head);
@@ -1589,7 +1605,7 @@ function renderTopics() {
   const list = [], q = TP.filter.trim();
   let cnt = "";
   if (ok || r.stale) {
-    const pool = all.filter((t) => (TP.archived || t.is_active) && (TP.agent === "all" || t.agent_type === TP.agent));
+    const pool = all.filter((t) => (TP.archived || !t.is_archived) && (TP.agent === "all" || t.agent_type === TP.agent));
     let shown = pool;
     const matches = new Map();
     if (q) {
@@ -1601,8 +1617,10 @@ function renderTopics() {
       const rows = shown.filter((t) => t.agent_type === a);
       if (!rows.length) continue;
       const active = all.filter((t) => t.is_active && t.agent_type === a).length;
-      list.push(h("h3", "tpgroup", `${TP_AGENT_LABEL[a]} · ${active}/${TP_CAP}`));
-      for (const t of rows.filter((x) => x.is_active).concat(rows.filter((x) => !x.is_active))) list.push(tpRow(t, matches.get(t.id)));
+      const idle = all.filter((t) => !t.is_active && !t.is_archived && t.agent_type === a).length;
+      list.push(h("h3", "tpgroup", `${TP_AGENT_LABEL[a]} · ${active}/${TP_CAP}${idle ? ` · ${idle} inactive` : ""}`));
+      const rank = (x) => x.is_archived ? 2 : x.is_active ? 0 : 1;
+      for (const t of [0, 1, 2].flatMap((k) => rows.filter((x) => rank(x) === k))) list.push(tpRow(t, matches.get(t.id)));
     }
     if (!shown.length) {
       list.push(h("div", "empty", !all.length ? "No topics yet. Add one, or use rd topics add in valkyrie-dispatch."
@@ -1616,20 +1634,32 @@ function renderTopics() {
   $("tpcount").textContent = cnt;
 }
 
+// Row action icons: monochrome line icons that take the text colour (no coloured glyphs).
+const TP_ICON = {
+  edit: ["M12 20h9", "M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"],
+  archive: ["M3 4h18v4H3Z", "M5 8v12h14V8", "M10 12h4"],
+};
+function tpIcon(paths) {
+  const el = svg("svg", { class: "tpico", width: "14", height: "14", viewBox: "0 0 24 24", "aria-hidden": "true", focusable: "false" });
+  for (const d of paths) el.append(svg("path", { d }));
+  return el;
+}
+
 function tpRow(t, m) {
   const kws = Array.isArray(t.keywords) ? t.keywords : [], exs = Array.isArray(t.excluded_terms) ? t.excluded_terms : [];
   const can = tpWritable() && !TP.busy.has(t.id);
-  const row = h("div", `tprow${t.is_active ? "" : " tp-archived"}${TP.busy.has(t.id) ? " busy" : ""}${TP.flash === t.id ? " tpflash" : ""}`, "", { "data-id": t.id });
-  if (t.is_active) {
+  const st = t.is_archived ? "archived" : t.is_active ? "active" : "inactive";
+  const row = h("div", `tprow${st === "archived" ? " tp-archived" : st === "inactive" ? " tp-inactive" : ""}${TP.busy.has(t.id) ? " busy" : ""}${TP.flash === t.id ? " tpflash" : ""}`, "", { "data-id": t.id });
+  if (st !== "archived") {
     const sw = h("input", "tpswitch", "", { type: "checkbox", role: "switch", "aria-label": `Active: ${t.name}` });
-    sw.checked = true; sw.disabled = !can;
+    sw.checked = st === "active"; sw.disabled = !can;
     if (!ME.paired) sw.setAttribute("title", "Pair this browser to edit");
-    sw.onchange = () => tpToggle(t, false);
+    sw.onchange = () => tpToggle(t, sw.checked);
     row.append(sw);
   } else {
     const b = h("button", "ghost tiny tprestore", "Restore");
     b.disabled = !can;
-    b.onclick = () => tpToggle(t, true);
+    b.onclick = () => tpRestore(t);
     row.append(b);
   }
   const main = h("div", "tpmain");
@@ -1644,7 +1674,7 @@ function tpRow(t, m) {
   }
   title.append(nm);
   if (t.over_api_limits) title.append(h("span", "badge b-warn", "CLI-only limits", { "data-tip": "Created with the CLI; exceeds what the API accepts. Shorten it to edit." }));
-  if (!t.is_active) title.append(h("span", "badge b-off", "archived"));
+  if (st !== "active") title.append(h("span", "badge b-off", st));
   main.append(title);
   const kw = h("div", "tpchips2");
   kws.slice(0, 6).forEach((k, i) => kw.append(h("span", m && m.kw.has(i) ? "tpchip tphit" : "tpchip", k)));
@@ -1667,6 +1697,8 @@ function tpRow(t, m) {
   }
   const msg = TP.rowMsg.get(t.id);
   if (msg) main.append(h("div", "msg err", msg));
+  const note = TP.rowNote.get(t.id);
+  if (note) main.append(h("div", "small muted", note));
   row.append(main);
   const w = h("div", "tpw");
   w.append(h("span", "tpwnum", t.weight.toFixed(1)));
@@ -1675,21 +1707,76 @@ function tpRow(t, m) {
     svg("rect", { class: "tpw-fg", x: "0", y: "0", width: String(Math.round(60 * Math.max(0, Math.min(5, t.weight)) / 5)), height: "6", rx: "3" }));
   w.append(bar);
   row.append(w);
-  const edit = h("button", "ghost tiny tpedit", "Edit");
-  edit.disabled = !can;
-  edit.onclick = () => tpDialog(t);
-  row.append(edit);
+  if (st !== "archived") {
+    const acts = h("div", "tpacts");
+    const edit = h("button", "ghost tiny tpicon tpedit", "", { "aria-label": `Edit topic: ${t.name}`, "data-tip": "Edit" });
+    edit.append(tpIcon(TP_ICON.edit));
+    edit.disabled = !can;
+    edit.onclick = () => tpDialog(t);
+    acts.append(edit);
+    if (!TP.data || TP.data.states_supported !== false) acts.append(tpHoldBtn(t, can));
+    row.append(acts);
+  }
   return row;
 }
 
-// ----- enable / disable (= archive / restore): confirmed, not optimistic -----
-async function tpToggle(t, active) {
-  TP.busy.add(t.id); TP.rowMsg.delete(t.id); renderTopics();
-  const r = await tpPost({ id: t.id, if_match: t.updated_at, fields: { is_active: active } }, "update").catch(() => null);
+// ----- hold to archive: press and hold TP_HOLD_MS (pointer, Space or Enter); release, leave, blur or a re-render cancels -----
+function tpHoldCancel() {
+  const hd = TP.hold;
+  if (!hd) return;
+  clearTimeout(hd.timer);
+  hd.btn.classList.remove("holding");
+  TP.hold = null;
+}
+function tpHoldStart(t, btn, key) {
+  if (TP.hold || TP.busy.has(t.id)) return;
+  const hd = { id: t.id, btn, key, timer: 0 };
+  hd.timer = setTimeout(() => {
+    if (TP.hold !== hd) return;
+    tpHoldCancel();
+    const cur = ((TP.data && TP.data.topics) || []).find((x) => x.id === t.id);
+    if (cur && !TP.busy.has(cur.id) && tpWritable()) tpArchive(cur);
+  }, TP_HOLD_MS);
+  TP.hold = hd;
+  btn.classList.add("holding");
+}
+function tpHoldBtn(t, can) {
+  const b = h("button", "ghost tiny tpicon tphold", "", { "aria-label": `Archive topic: ${t.name}`, "aria-describedby": "tpholdhelp", "data-tip": "Hold to archive" });
+  b.append(tpIcon(TP_ICON.archive), h("span", "tphold-fill", "", { "aria-hidden": "true" }));
+  b.disabled = !can;
+  b.addEventListener("pointerdown", (e) => { if (e.button === 0) tpHoldStart(t, b, null); });
+  for (const ev of ["pointerup", "pointerleave", "pointercancel", "blur"]) b.addEventListener(ev, tpHoldCancel);
+  b.addEventListener("keydown", (e) => {
+    if (e.key !== " " && e.key !== "Enter") return;
+    e.preventDefault();
+    if (!e.repeat) tpHoldStart(t, b, e.key);
+  });
+  b.addEventListener("keyup", (e) => { if (TP.hold && TP.hold.btn === b && TP.hold.key === e.key) tpHoldCancel(); });
+  b.addEventListener("contextmenu", (e) => e.preventDefault());
+  b.addEventListener("click", () => {   // never archives: a short press or Enter's synthetic click only explains the gesture
+    const main = b.closest(".tprow") && b.closest(".tprow").querySelector(".tpmain");
+    if (main && !main.querySelector(".tpholdhint")) main.append(h("div", "small muted tphint tpholdhint", "Hold to archive"));
+  });
+  return b;
+}
+
+// ----- switch (Active / Inactive), Restore and Archive: confirmed, not optimistic -----
+async function tpChange(t, fields, done) {
+  TP.busy.add(t.id); TP.rowMsg.delete(t.id); TP.rowNote.delete(t.id); $("tpmsg").textContent = ""; renderTopics();
+  const r = await tpPost({ id: t.id, if_match: t.updated_at, fields }, "update").catch(() => null);
   TP.busy.delete(t.id);
-  if (r && r.ok) tpApply(r.data.topic);
+  if (r && r.ok) { tpApply(r.data.topic); if (done) done(r.data.topic); }
   else TP.rowMsg.set(t.id, tpErrText(r, t));
   renderTopics();
+}
+const tpToggle = (t, active) => tpChange(t, { is_active: active });
+// Restore goes to Inactive (never the cap, never straight back into a run); an old backend only has the switch, so it turns on.
+function tpRestore(t) {
+  if (TP.data && TP.data.states_supported === false) return tpToggle(t, true);
+  return tpChange(t, { is_archived: false }, (topic) => TP.rowNote.set(topic.id, "Restored as inactive. Switch it on to research it again."));
+}
+function tpArchive(t) {
+  return tpChange(t, { is_archived: true }, () => { $("tpmsg").textContent = `Archived "${t.name}". Turn on Show archived to restore it.`; });
 }
 const tpPost = async (body, kind) => {
   const r = await POST(`/api/topics/${kind}`, body);
@@ -1699,7 +1786,7 @@ const tpPost = async (body, kind) => {
 function tpErrText(r, t) {
   const d = (r && r.data) || {};
   if (!r) return TP_MSG.error;
-  if (d.code === "cap") return `${tpAgentLabel(t && t.agent_type)} already has ${TP_CAP} active topics. Archive one first.`;
+  if (d.code === "cap") return `${tpAgentLabel(t && t.agent_type)} already has ${TP_CAP} active topics. Switch one off first.`;
   return TP_MSG[d.code] || TP_STATE_MSG[d.code] || TP_MSG.error;
 }
 function tpApply(topic) {
@@ -1731,8 +1818,6 @@ function tpDialog(t) {
   $("tpname").value = v.name; $("tpkw").value = v.keywords.join("\n"); $("tpex").value = v.excluded_terms.join("\n"); $("tpweight").value = String(v.weight);
   $("tpformmsg").textContent = ""; $("tpformmsg").className = "msg";
   for (const id of ["tprestoredup", "tpreload"]) $(id).hidden = true;
-  $("tparchive").hidden = !(t && t.is_active); $("tparchhelp").hidden = $("tparchive").hidden;
-  $("tparchive").textContent = "Archive topic"; TP.armed = 0;
   const note = $("tpnote");
   note.hidden = !(t && t.over_api_limits);
   note.textContent = note.hidden ? "" : "This topic was created with the CLI and exceeds what the API accepts. Shorten the highlighted fields to save.";
@@ -1743,7 +1828,7 @@ function tpDialog(t) {
 }
 function tpBusy(on) {
   TP.saving = on;
-  for (const id of ["tpname", "tpkw", "tpex", "tpweight", "tpsave", "tparchive", "tprestoredup", "tpreload"]) $(id).disabled = on;
+  for (const id of ["tpname", "tpkw", "tpex", "tpweight", "tpsave", "tprestoredup", "tpreload"]) $(id).disabled = on;
   $("tpagent").disabled = on || !!TP.editing;
 }
 function tpFormFail(r) {
@@ -1753,7 +1838,10 @@ function tpFormFail(r) {
   msg.textContent = tpErrText(r, TP.editing || { agent_type: $("tpagent").value });
   if (d.fields && typeof d.fields === "object") tpShowErrs(Object.fromEntries(Object.entries(d.fields).filter(([f]) => TP_FIELDS.includes(f))));
   $("tprestoredup").hidden = !(d.code === "duplicate" && d.existing_active === false && typeof d.existing_id === "string");
-  if (!$("tprestoredup").hidden) $("tprestoredup").setAttribute("data-id", d.existing_id);
+  if (!$("tprestoredup").hidden) {
+    $("tprestoredup").setAttribute("data-id", d.existing_id);
+    $("tprestoredup").textContent = d.existing_archived === false ? "Switch the existing one on" : "Restore the archived one";
+  }
   $("tpreload").hidden = d.code !== "changed";
 }
 $("tpform").addEventListener("submit", async (ev) => {
@@ -1789,30 +1877,13 @@ $("tpreload").addEventListener("click", async () => {
   $("tpformmsg").textContent = "Reloaded. Your typed values are kept: review them, then save again.";
   $("tpformmsg").className = "msg";
 });
-// 409 duplicate with an archived twin: offer to restore it
+// 409 duplicate with an inactive or archived twin: offer to switch it on (PATCH is_active:true makes it Active)
 $("tprestoredup").addEventListener("click", async () => {
   const id = $("tprestoredup").getAttribute("data-id");
   tpBusy(true);
   const r = await tpPost({ id, fields: { is_active: true } }, "update").catch(() => null);
   tpBusy(false);
   if (r && r.ok) { $("tpdlg").close(); await loadTopics(true); TP.flash = id; renderTopics(); return; }
-  tpFormFail(r);
-});
-// Archive: two clicks, like Dismiss
-$("tparchive").addEventListener("click", async () => {
-  const t = TP.editing;
-  if (!t) return;
-  if (Date.now() > TP.armed) {
-    TP.armed = Date.now() + 4000;
-    $("tparchive").textContent = "Confirm archive";
-    setTimeout(() => { if ($("tparchive").isConnected && Date.now() >= TP.armed) { $("tparchive").textContent = "Archive topic"; TP.armed = 0; } }, 4100);
-    return;
-  }
-  TP.armed = 0;
-  tpBusy(true);
-  const r = await tpPost({ id: t.id, if_match: t.updated_at, fields: { is_active: false } }, "update").catch(() => null);
-  tpBusy(false);
-  if (r && r.ok) { tpApply(r.data.topic); $("tpdlg").close(); renderTopics(); return; }
   tpFormFail(r);
 });
 $("tpadd").onclick = () => tpDialog(null);
@@ -1828,6 +1899,7 @@ $("tpfilter").addEventListener("keydown", (e) => {
   $("tpfilter").value = ""; TP.filter = ""; renderTopics();
 });
 $("tparch").addEventListener("change", () => { TP.archived = $("tparch").checked; renderTopics(); });
+document.addEventListener("visibilitychange", () => { if (document.hidden) tpHoldCancel(); });
 // Fetched on open, after every write, on Refresh and when the page comes back after 60 s: never polled in the background.
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && VIEW === "research" && RSVIEW === "topics" && TP.data && Date.now() / 1000 - (TP.data.loaded_at || 0) > 60) loadTopics();

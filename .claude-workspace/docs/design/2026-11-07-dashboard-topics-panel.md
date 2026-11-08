@@ -1,5 +1,5 @@
 # Dashboard "Topics" panel: manage valkyrie-dispatch research topics
-Status: proposed · Date: 2026-11-07 · Request: a panel in the workspace dashboard to list, add, edit, enable/disable and remove the research topics held by valkyrie-dispatch, without the dashboard ever holding an admin token.
+Status: proposed (amended by 2026-11-07-topic-inactive-archived.md: three topic states) · Date: 2026-11-07 · Request: a panel in the workspace dashboard to list, add, edit, enable/disable and remove the research topics held by valkyrie-dispatch, without the dashboard ever holding an admin token.
 
 ## Decision (read this first)
 Build **full topic management as a "Topics" sub-view of the existing Research tab**. It is backed by a **new `topics` token scope** in valkyrie-dispatch. That scope can read and write topics and nothing else: not feedback, usage, monitor, `DELETE`, or any future run or digest route. The dashboard checks the scope at runtime through a new `GET /api/v1/auth/whoami` endpoint, and it **refuses to use a token whose scope is not exactly `topics`**. That is how "never an admin token" gets enforced and not just hoped for.

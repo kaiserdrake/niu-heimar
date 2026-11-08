@@ -54,14 +54,15 @@ class Fake(ThreadingHTTPServer):
 
     def __init__(self):
         super().__init__(("127.0.0.1", 0), Handler)
-        self.log, self.scope, self.who_status, self.script, self.topics = [], "topics", 200, {}, []
+        self.log, self.scope, self.who_status, self.script, self.topics, self.features = [], "topics", 200, {}, [], ["topic_states"]
         self.reset()
         threading.Thread(target=self.serve_forever, daemon=True).start()
 
     def reset(self):
         self.log.clear()
-        self.scope, self.who_status, self.script = "topics", 200, {}
+        self.scope, self.who_status, self.script, self.features = "topics", 200, {}, ["topic_states"]
         self.topics = json.loads((FX / "list_ok.json").read_text())
+        self.legacy_hits = 0
 
     @property
     def url(self):
@@ -98,16 +99,23 @@ class Handler(BaseHTTPRequestHandler):
                  "if_match": self.headers.get("If-Match"), "body": json.loads(raw) if raw else None, "ctype": self.headers.get("Content-Type")}
         s.log.append(entry)
         if u.path == WHOAMI:
-            return self.reply(s.who_status, {"name": "fake", "scope": s.scope})
+            return self.reply(s.who_status, {"name": "fake", "scope": s.scope, **({"features": s.features} if s.features is not None else {})})
         if method in s.script:
             sc = s.script[method]
             return self.reply(sc.get("status", 200), sc.get("obj"), sc.get("raw"), sc.get("headers"), sc.get("ctype", "application/json"))
         if method == "GET":
-            rows = [t for t in s.topics if t["is_active"] == (q.get("is_active", "true") == "true")
-                    and ("agent_type" not in q or t["agent_type"] == q["agent_type"])]
+            states = bool(s.features)
+            if states and "state" in q:
+                want = {"active": lambda t: t["is_active"], "inactive": lambda t: not t["is_active"] and not t["is_archived"],
+                        "archived": lambda t: t["is_archived"], "current": lambda t: not t["is_archived"], "all": lambda t: True}[q["state"]]
+            else:   # an old backend ignores `state` (FastAPI drops unknown query parameters) and filters on is_active only
+                want = lambda t: t["is_active"] == (q.get("is_active", "true") == "true")  # noqa: E731
+            rows = [t for t in s.topics if want(t) and ("agent_type" not in q or t["agent_type"] == q["agent_type"])]
+            if not states:
+                rows = [{k: v for k, v in t.items() if k != "is_archived"} for t in rows]
             return self.reply(200, rows[:int(q.get("limit", "100"))])
         if method == "POST":
-            t = {"id": "0000ffff-0000-4000-8000-00000000ffff", "is_active": True, "updated_at": "2026-11-07T09:00:00.000001Z", **entry["body"]}
+            t = {"id": "0000ffff-0000-4000-8000-00000000ffff", "is_active": True, "is_archived": False, "updated_at": "2026-11-07T09:00:00.000001Z", **entry["body"]}
             s.topics.append(t)
             return self.reply(201, t)
         tid = u.path.rsplit("/", 1)[1]
@@ -116,7 +124,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(404, {"error": "not_found", "message": "topic not found"})
         if entry["if_match"] is not None and entry["if_match"] != f'"{t["updated_at"]}"':
             return self.reply(412, {"error": "topic_changed", "message": "SECRETMSG"})
+        if not s.features and "is_archived" in entry["body"]:
+            s.legacy_hits += 1
+            return self.reply(422, {"error": "validation_error", "details": [{"loc": ["body", "is_archived"], "msg": "SECRETMSG"}]})
         t.update(entry["body"])
+        if entry["body"].get("is_archived") is True:
+            t["is_active"] = False
+        if entry["body"].get("is_active") is True:
+            t["is_archived"] = False
         t["updated_at"] = "2026-11-07T10:00:00.000002Z"
         return self.reply(200, t, headers={"ETag": f'"{t["updated_at"]}"'})
 
@@ -226,6 +241,10 @@ PATCH = [
     ({"agent_type": "hobby"}, {"agent_type": "unknown"}), ({"notes": "x"}, {"notes": "unknown"}), ({"id": ID1}, {"id": "unknown"}),
     ({"is_active": "true"}, {"is_active": "not_bool"}), ({"is_active": 1}, {"is_active": "not_bool"}),
     ({"is_active": False}, {"is_active": False}), ({"is_active": True}, {"is_active": True}),
+    ({"is_archived": True}, {"is_archived": True}), ({"is_archived": False}, {"is_archived": False}),
+    ({"is_archived": "true"}, {"is_archived": "not_bool"}), ({"is_archived": 1}, {"is_archived": "not_bool"}),
+    ({"is_active": True, "is_archived": True}, {"is_archived": "bad_combo"}),
+    ({"is_active": False, "is_archived": True}, {"is_active": False, "is_archived": True}),
     ({"name": "New"}, {"name": "New"}), ({"name": "a<"}, {"name": "forbidden_char"}), ({"name": ""}, {"name": "too_short"}),
     ({"keywords": []}, {"keywords": "too_few"}), ({"excluded_terms": []}, {"excluded_terms": []}),
     ({"weight": 10**400}, {"weight": "out_of_range"}), ({"weight": 3}, {"weight": 3.0}), ({"weight": 9}, {"weight": "out_of_range"}),
@@ -242,7 +261,7 @@ check(len(CREATE) + len(PATCH) >= 60, "validation table is large enough")
 # ---------- 2. shape_topic ----------
 hostile = json.loads((FX / "hostile.json").read_text())
 shaped = [nt.shape_topic(r) for r in hostile]
-KEYS = {"id", "agent_type", "name", "keywords", "excluded_terms", "weight", "is_active", "updated_at", "over_api_limits"}
+KEYS = {"id", "agent_type", "name", "keywords", "excluded_terms", "weight", "is_active", "is_archived", "updated_at", "over_api_limits"}
 good = [s for s in shaped if s]
 check(all(set(s) == KEYS for s in good), "shape_topic output keys are exactly the allowlist")
 blob = json.dumps(good)
@@ -250,6 +269,10 @@ for needle in ("Ignore previous", "rd_pat_", "secret", "prompt_text", "AAAAAAAA"
     check(needle not in blob, f"hostile row: {needle!r} does not survive shape_topic")
 check(len([s for s in shaped if s is None]) == 8, f"bad id / agent / weight / flag / non-dict rows dropped: {sum(1 for s in shaped if s is None)}")
 first = good[0]
+check(nt.shape_topic({**json.loads((FX / "list_ok.json").read_text())[0], "is_archived": True}) is None, "active + archived row dropped")
+check(nt.shape_topic({**json.loads((FX / "list_ok.json").read_text())[0], "is_archived": "no"}) is None, "non-bool is_archived dropped")
+leg = json.loads((FX / "list_legacy.json").read_text())
+check([nt.shape_topic(r)["is_archived"] for r in leg] == [False, False, False, True], "legacy rows: is_archived = not is_active")
 check(first["name"] == "<img src=x onerror=alert(1)>" and first["over_api_limits"], "hostile text kept literally (rendered with textContent), flagged")
 check("\x00" not in first["keywords"][1] and "�" in first["keywords"][1], "control characters become U+FFFD")
 big = next(s for s in good if s["name"].startswith("N"))
@@ -266,8 +289,12 @@ check(nt.shape_topic({**json.loads((FX / "list_ok.json").read_text())[0], "id": 
 # ---------- 3. error mapping ----------
 MAP = [
     (409, {"error": "duplicate_topic", "message": "SECRETMSG", "existing_id": ID1, "is_active": False},
-     {"code": "duplicate", "existing_active": False, "existing_id": ID1}),
-    (409, {"error": "duplicate_topic", "existing_id": "../x", "is_active": True}, {"code": "duplicate", "existing_active": True}),
+     {"code": "duplicate", "existing_active": False, "existing_archived": True, "existing_id": ID1}),
+    (409, {"error": "duplicate_topic", "existing_id": ID1, "is_active": False, "is_archived": False},
+     {"code": "duplicate", "existing_active": False, "existing_archived": False, "existing_id": ID1}),
+    (409, {"error": "duplicate_topic", "existing_id": ID1, "is_active": False, "is_archived": True},
+     {"code": "duplicate", "existing_active": False, "existing_archived": True, "existing_id": ID1}),
+    (409, {"error": "duplicate_topic", "existing_id": "../x", "is_active": True}, {"code": "duplicate", "existing_active": True, "existing_archived": False}),
     (409, {"error": "topic_cap_reached", "message": "SECRETMSG"}, {"code": "cap"}), (409, {"error": "conflict"}, {"code": "error", "cause": "server"}),
     (412, {"error": "topic_changed", "message": "SECRETMSG"}, {"code": "changed"}), (404, {}, {"code": "not_found"}),
     (413, {}, {"code": "toolarge"}), (429, {"error": "rate_limited"}, {"code": "rate_limited"}),
@@ -294,7 +321,7 @@ for bad_path in ("/api/v1/usage/gate", "/api/v1/monitor/summary", "/api/v1/topic
     check(raises(lambda p=bad_path: nt._call(cfg, TOKEN, "GET", p), "error", "internal"), f"_call refuses path {bad_path!r}")
 for m in ("DELETE", "PUT", "get", "OPTIONS"):
     check(raises(lambda mm=m: nt._call(cfg, TOKEN, mm, "/api/v1/topics"), "error", "internal"), f"_call refuses method {m}")
-for q in ({"agent_type": "admin"}, {"agent_type": "../x"}, {"is_active": "yes"}, {"limit": "5"}, {"limit": True}, {"x": 1}, {"offset": -1}):
+for q in ({"agent_type": "admin"}, {"agent_type": "../x"}, {"is_active": "yes"}, {"state": "bogus"}, {"state": ["all"]}, {"limit": "5"}, {"limit": True}, {"x": 1}, {"offset": -1}):
     check(raises(lambda qq=q: nt._call(cfg, TOKEN, "GET", "/api/v1/topics", query=qq), "error", "internal"), f"_call refuses query {q}")
 check(raises(lambda: nt._call(cfg, TOKEN, "PATCH", f"/api/v1/topics/{ID1}", body={}, if_match="x\r\nEvil: 1"), "error", "internal"), "If-Match must be a timestamp")
 check(not up.log, f"no request was made for any of the bad paths / ids / queries: {up.log}")
@@ -343,11 +370,32 @@ check(len([x for x in up.log if x["path"] == WHOAMI]) == 2, "whoami asked again 
 # ---------- 6. list, cache, states ----------
 reset()
 res = nt.list_topics()
-check(res["state"] == "ok" and len(res["topics"]) == 4 and res["dropped"] == 0 and not res["stale"] and not res["archived_truncated"],
-      f"list: 3 active + 1 archived: {res['state']} {len(res['topics'])}")
-check(sum(1 for t in res["topics"] if not t["is_active"]) == 1 and res["limits"]["name"] == 120 and res["limits"]["active_per_agent"] == 200, "archived row and limits present")
-calls = [(x["query"].get("agent_type"), x["query"].get("is_active"), x["query"].get("limit")) for x in up.hits()]
-check(calls == [("general", "true", "200"), ("hobby", "true", "200"), ("fintrend", "true", "200"), (None, "false", "200")], f"four list calls: {calls}")
+check(res["state"] == "ok" and len(res["topics"]) == 5 and res["dropped"] == 0 and not res["stale"] and not res["archived_truncated"]
+      and res["states_supported"] is True and res["inactive_truncated"] is False,
+      f"list: 3 active + 1 archived + 1 inactive: {res['state']} {len(res['topics'])}")
+check(sum(1 for t in res["topics"] if t["is_archived"]) == 1 and sum(1 for t in res["topics"] if not t["is_active"] and not t["is_archived"]) == 1 and res["limits"]["name"] == 120 and res["limits"]["active_per_agent"] == 200, "archived row and limits present")
+calls = [(x["query"].get("agent_type"), x["query"].get("state"), x["query"].get("is_active"), x["query"].get("limit")) for x in up.hits()]
+check(calls == [("general", "active", None, "200"), ("hobby", "active", None, "200"), ("fintrend", "active", None, "200"),
+                (None, "inactive", None, "200"), (None, "archived", None, "200")], f"states mode: five list calls: {calls}")
+reset()
+up.features = ["topic_states", "evil<script>"]
+nt.SCOPES.clear()
+check(nt.check_scope(nt.cfg_for() if hasattr(nt, "cfg_for") else cfg_for(), TOKEN) == {"states": True}, "check_scope reports topic_states")
+reset()
+up.features = None
+nt.SCOPES.clear()
+res = nt.list_topics(force=True)
+legacy_calls = [(x["query"].get("agent_type"), x["query"].get("state"), x["query"].get("is_active")) for x in up.hits()]
+check(res["state"] == "ok" and res["states_supported"] is False and len(res["topics"]) == 5 and all(t["is_archived"] == (not t["is_active"]) for t in res["topics"])
+      and legacy_calls == [("general", None, "true"), ("hobby", None, "true"), ("fintrend", None, "true"), (None, None, "false")],
+      f"legacy mode (no features): four is_active calls, derived is_archived: {legacy_calls}")
+reset()
+up.features = ["something_else"]
+nt.SCOPES.clear()
+check(nt.list_topics(force=True)["states_supported"] is False, "unknown feature strings do not enable states")
+reset()
+nt.SCOPES.clear()
+nt.list_topics(force=True)
 check(all(x["auth"] == f"Bearer {TOKEN}" and x["method"] == "GET" for x in up.log), "token sent as a bearer header, GETs only")
 n = len(up.log)
 nt.list_topics()
@@ -368,6 +416,10 @@ reset()
 up.topics = [{**json.loads((FX / "list_ok.json").read_text())[3], "id": f"{i:08x}-0000-4000-8000-{i:012x}"} for i in range(1, 201)]
 res = nt.list_topics()
 check(res["archived_truncated"] is True and len(res["topics"]) == 200, "200 archived topics -> archived_truncated")
+reset()
+up.topics = [{**json.loads((FX / "list_ok.json").read_text())[4], "id": f"{i:08x}-0000-4000-8000-{i:012x}"} for i in range(1, 201)]
+res = nt.list_topics()
+check(res["inactive_truncated"] is True and res["archived_truncated"] is False, "200 inactive topics -> inactive_truncated")
 reset()
 up.script = {"GET": {"obj": hostile}}
 res = nt.list_topics()
@@ -484,7 +536,7 @@ check(st == 404 and p["code"] == "not_found", "unknown topic -> not_found")
 reset()
 up.script = {"POST": {"status": 409, "obj": {"error": "duplicate_topic", "message": "SECRETMSG", "existing_id": ID1, "is_active": False}}}
 st, p = nt.write("create", DEV, BASE)
-check(st == 409 and p == {"ok": False, "code": "duplicate", "existing_active": False, "existing_id": ID1}, f"duplicate mapping: {st} {p}")
+check(st == 409 and p == {"ok": False, "code": "duplicate", "existing_active": False, "existing_archived": True, "existing_id": ID1}, f"duplicate mapping: {st} {p}")
 up.script = {"POST": {"status": 409, "obj": {"error": "topic_cap_reached"}}}
 check(nt.write("create", DEV, BASE)[1]["code"] == "cap", "cap mapping")
 up.script = {"POST": {"status": 201, "obj": {"id": "NOPE"}}}
@@ -493,6 +545,26 @@ check(st == 502 and p["code"] == "error" and p["cause"] == "format", "malformed 
 up.script = {"POST": {"status": 500, "raw": TOKEN.encode()}}
 st, p = nt.write("create", DEV, BASE)
 check(st == 502 and TOKEN not in json.dumps(p), "upstream 500 -> 502 without upstream text")
+# three-state writes
+reset()
+nt.SCOPES.clear()
+nt.WRITES = nt.RateLimiter(clock=lambda: NOW[0])
+st, p = nt.write("update", DEV, {"id": ID1, "fields": {"is_archived": True}})
+patch = [x for x in up.log if x["method"] == "PATCH"]
+check(st == 200 and p["topic"]["is_archived"] is True and p["topic"]["is_active"] is False and patch[-1]["body"] == {"is_archived": True}, f"archive: {st} {p}")
+st, p = nt.write("update", DEV, {"id": ID1, "fields": {"is_archived": False}})
+check(st == 200 and [x for x in up.log if x["method"] == "PATCH"][-1]["body"] == {"is_archived": False}, "restore sends is_archived:false")
+st, p = nt.write("update", DEV, {"id": ID1, "fields": {"is_active": True, "is_archived": True}})
+n = len(up.log)
+check(st == 400 and p == {"ok": False, "code": "invalid", "fields": {"is_archived": "bad_combo"}}, f"both true refused locally: {st} {p}")
+reset()
+up.features = None
+nt.SCOPES.clear()
+st, p = nt.write("update", DEV, {"id": ID1, "fields": {"is_archived": True}})
+check(st == 409 and p == {"ok": False, "code": "incompatible"} and not up.hits() and up.legacy_hits == 0, f"legacy backend: is_archived refused, no upstream topic call: {st} {p} {up.hits()}")
+st, p = nt.write("update", DEV, {"id": ID1, "fields": {"is_active": False}})
+check(st == 200 and [x for x in up.log if x["method"] == "PATCH"][-1]["body"] == {"is_active": False}, "legacy backend: the switch still works")
+reset()
 # unreachable write
 config(url=f"http://127.0.0.1:{dead}")
 nt.SCOPES.clear()
@@ -520,7 +592,7 @@ rows = con.execute("SELECT event, summary, tool, project FROM events WHERE event
 con.close()
 check(rows and all(r[2] == "topics" and r[3] == "valkyrie-dispatch" for r in rows), f"audit rows exist: {len(rows)}")
 okrows = [r[1] for r in rows if r[0] == "TopicChange"]
-pat = re.compile(r"^(create|update|activate|deactivate) [0-9a-f]{8} \[[a-z_,]*\] by laptop$")
+pat = re.compile(r"^(create|update|activate|deactivate|archive|restore) [0-9a-f]{8} \[[a-z_,]*\] by laptop$")
 check(okrows and all(pat.match(s) for s in okrows) or any(pat.match(s) for s in okrows) and all(s.endswith(("by laptop", "by phone")) for s in okrows),
       f"audit summaries match: {okrows[:3]}")
 reset()
@@ -528,12 +600,14 @@ nt.write("create", DEV, {**BASE, "name": "SECRET-NAME", "keywords": ["SECRET-KW"
 nt.write("update", DEV, {"id": ID1, "fields": {"keywords": ["SECRET-KW2"], "weight": 1.5}})
 nt.write("update", DEV, {"id": ID1, "fields": {"is_active": False}})
 nt.write("update", DEV, {"id": ID1, "fields": {"is_active": True}})
+nt.write("update", DEV, {"id": ID1, "fields": {"is_archived": True}})
+nt.write("update", DEV, {"id": ID1, "fields": {"is_archived": False}})
 con = sqlite3.connect(os.environ["NIU_EVENTS_DB"])
-rows = [r[0] for r in con.execute("SELECT summary FROM events WHERE event='TopicChange' ORDER BY id DESC LIMIT 4").fetchall()][::-1]
+rows = [r[0] for r in con.execute("SELECT summary FROM events WHERE event='TopicChange' ORDER BY id DESC LIMIT 6").fetchall()][::-1]
 refused = con.execute("SELECT COUNT(*) FROM events WHERE event='TopicChangeRefused'").fetchone()[0]
 con.close()
 actions = [r.split()[0] for r in rows]
-check(actions == ["create", "update", "deactivate", "activate"], f"actions recorded: {actions}")
+check(actions == ["create", "update", "deactivate", "activate", "archive", "restore"], f"actions recorded: {actions}")
 check(all(pat.match(r) for r in rows) and "[keywords,weight]" in rows[1] and "SECRET" not in " ".join(rows), f"audit has ids and field names only: {rows}")
 check(refused >= 1, "refusals (rate limit, 4xx) are audited too")
 con = sqlite3.connect(os.environ["NIU_EVENTS_DB"])
@@ -590,7 +664,7 @@ try:
     check(req("GET", "/api/topics", headers={"Cookie": "niu_session=wrong"})[0] == 401, "wrong cookie -> 401")
     check(not up.log, "no upstream request for an unpaired caller")
     st, js = req("GET", "/api/topics", headers={"Cookie": f"niu_session={COOKIE}"})
-    check(st == 200 and js["state"] == "ok" and len(js["topics"]) == 4, f"paired GET /api/topics: {st} {js and js.get('state')}")
+    check(st == 200 and js["state"] == "ok" and len(js["topics"]) == 5, f"paired GET /api/topics: {st} {js and js.get('state')}")
     body = {"agent_type": "hobby", "name": "Via server", "keywords": ["k"]}
     check(req("POST", "/api/topics/create", body, {"Origin": ORIGIN})[0] == 403, "create without CSRF header -> 403")
     check(req("POST", "/api/topics/create", body, {"X-Niu-CSRF": "1", "Origin": "https://evil.example"})[0] == 403, "cross-origin create -> 403")

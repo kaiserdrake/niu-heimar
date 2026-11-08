@@ -324,7 +324,7 @@ try:
         def tp_env(name):
             rows = json.loads((SH / "tests" / "fixtures" / "topics" / f"{name}.json").read_text())
             return {"state": "ok", "cause": None, "message": "", "topics": [t for t in map(niu_topics.shape_topic, rows) if t], "archived_truncated": False,
-                    "dropped": 0, "loaded_at": now, "stale": False, "limits": niu_topics.LIMITS, "server_now": now}
+                    "inactive_truncated": False, "states_supported": True, "dropped": 0, "loaded_at": now, "stale": False, "limits": niu_topics.LIMITS, "server_now": now}
         tp_path = tmp / "topics.json"
         tp_path.write_text(json.dumps({"ok": tp_env("list_ok"), "hostile": tp_env("hostile"), "overlimit": tp_env("cli_overlimit"),
                                        "not_paired": {"state": "not_paired", "message": niu_topics.MESSAGES["not_paired"], "topics": []}}))

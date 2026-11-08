@@ -50,10 +50,12 @@ PER_AGENT_LIMIT = 200            # valkyrie-dispatch allows at most this many ac
 LIMITS = {"name": 120, "term": 80, "keywords": 20, "excluded_terms": 50, "weight_min": 0.1, "weight_max": 5.0,
           "show_name": 200, "show_term": 100, "show_list": 50, "active_per_agent": PER_AGENT_LIMIT}
 CREATE_KEYS = ("agent_type", "name", "keywords", "excluded_terms", "weight")
-PATCH_KEYS = ("name", "keywords", "excluded_terms", "weight", "is_active")
+PATCH_KEYS = ("name", "keywords", "excluded_terms", "weight", "is_active", "is_archived")
 FIELD_ALLOW = frozenset(CREATE_KEYS + PATCH_KEYS)
 FIELD_CODES = frozenset("required too_long too_short too_many too_few forbidden_char bad_enum out_of_range not_bool not_list "
-                        "empty unknown toolarge".split())
+                        "empty unknown toolarge bad_combo".split())
+FEATURES = frozenset({"topic_states"})
+LIST_STATES = ("active", "inactive", "archived", "current", "all")
 
 STATES = ("ok", "not_paired", "not_configured", "disabled", "wrong_scope", "too_powerful", "unreachable", "unauthorized",
           "incompatible", "error")
@@ -121,6 +123,8 @@ def _query(q):
         if k == "agent_type" and v in AGENT_TYPES:
             pass
         elif k == "is_active" and v in ("true", "false"):
+            pass
+        elif k == "state" and v in LIST_STATES:
             pass
         elif k in ("limit", "offset") and isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 100_000:
             pass
@@ -213,13 +217,14 @@ def _status_fail(status):
 
 
 def check_scope(cfg, token):
-    """Raises _Fail unless whoami says the token's scope is exactly `topics` (cached per token for SCOPE_TTL)."""
+    """Raises _Fail unless whoami says the token's scope is exactly `topics` (cached per token for SCOPE_TTL).
+    Returns {"states": bool}: whether the backend reports the `topic_states` feature (known strings only)."""
     key = hashlib.sha256(token.encode()).hexdigest()
     now = _clock()
     with LOCK:
         hit = SCOPES.get(key)
     if hit and now - hit["at"] < SCOPE_TTL:
-        scope = hit["scope"]
+        scope, feats = hit["scope"], hit.get("features", frozenset())
     else:
         status, doc = _call(cfg, token, "GET", WHOAMI)
         if status != 200:
@@ -227,12 +232,14 @@ def check_scope(cfg, token):
         scope = doc.get("scope") if isinstance(doc, dict) else None
         if not isinstance(scope, str) or len(scope) > 32:
             raise _Fail("incompatible")
+        raw = doc.get("features")
+        feats = frozenset(f for f in raw if isinstance(f, str) and f in FEATURES) if isinstance(raw, list) else frozenset()
         with LOCK:
             if len(SCOPES) > 8:
                 SCOPES.clear()
-            SCOPES[key] = {"scope": scope, "at": now}
+            SCOPES[key] = {"scope": scope, "features": feats, "at": now}
     if scope == "topics":
-        return
+        return {"states": "topic_states" in feats}
     shown = scope if scope in ("monitor", "read", "admin") else "other"
     raise _Fail("too_powerful" if scope in ("admin", "read") else "wrong_scope", shown)
 
@@ -323,7 +330,7 @@ def _check_fields(d, keys, required):
             clean[k], err = _terms(v, 0, LIMITS["excluded_terms"])
         elif k == "weight":
             clean[k], err = _weight(v)
-        elif k == "is_active":
+        elif k in ("is_active", "is_archived"):
             if isinstance(v, bool):
                 clean[k] = v
             else:
@@ -358,6 +365,8 @@ def validate_patch(d):
     clean, errs = _check_fields(d, PATCH_KEYS, ())
     if errs:
         return None, errs
+    if clean.get("is_active") is True and clean.get("is_archived") is True:
+        return None, {"is_archived": "bad_combo"}
     if not _sized(clean):
         return None, {"body": "toolarge"}
     return clean, None
@@ -407,13 +416,16 @@ def shape_topic(raw):
     active, w = raw.get("is_active"), raw.get("weight")
     if not isinstance(active, bool) or not _finite(w):
         return None
+    archived = raw["is_archived"] if "is_archived" in raw else not active
+    if not isinstance(archived, bool) or (active and archived):
+        return None
     name, over = _show(raw["name"], LIMITS["show_name"])
     over = over or len(name) > LIMITS["name"]
     kw, o1 = _shown_terms(raw.get("keywords"), LIMITS["term"], LIMITS["keywords"])
     ex, o2 = _shown_terms(raw.get("excluded_terms"), LIMITS["term"], LIMITS["excluded_terms"])
     upd = raw.get("updated_at")
     return {"id": tid, "agent_type": agent, "name": name, "keywords": kw, "excluded_terms": ex,
-            "weight": round(max(0.0, min(5.0, float(w))), 2), "is_active": active,
+            "weight": round(max(0.0, min(5.0, float(w))), 2), "is_active": active, "is_archived": archived,
             "updated_at": upd if isinstance(upd, str) and len(upd) <= 40 and TS_RE.fullmatch(upd) else None,
             "over_api_limits": bool(over or o1 or o2 or not LIMITS["weight_min"] <= w <= LIMITS["weight_max"])}
 
@@ -433,6 +445,7 @@ def map_upstream_error(status, body):
     err = b.get("error") if isinstance(b.get("error"), str) else ""
     if status == 409 and err == "duplicate_topic":
         out = {"code": "duplicate", "existing_active": b.get("is_active") is True}
+        out["existing_archived"] = b["is_archived"] is True if "is_archived" in b else not out["existing_active"]
         if isinstance(b.get("existing_id"), str) and UUID_RE.fullmatch(b["existing_id"]):
             out["existing_id"] = b["existing_id"]
         return out
@@ -529,7 +542,9 @@ def _envelope(state, cause=None, scope=None, cfg=None):
                                              scope=scope or "other")
     good = CACHE["good"] if state in ("unreachable", "unauthorized", "incompatible", "error") else None
     return {"state": state, "cause": cause, "message": msg, "topics": good["topics"] if good else [],
-            "archived_truncated": good["archived_truncated"] if good else False, "dropped": good["dropped"] if good else 0,
+            "archived_truncated": good["archived_truncated"] if good else False,
+            "inactive_truncated": good["inactive_truncated"] if good else False,
+            "states_supported": good["states_supported"] if good else True, "dropped": good["dropped"] if good else 0,
             "loaded_at": good["loaded_at"] if good else None, "stale": bool(good), "limits": LIMITS, "server_now": _clock()}
 
 
@@ -542,24 +557,25 @@ def list_topics(force=False):
         cfg = None
         try:
             cfg, token = _setup()
-            check_scope(cfg, token)
+            states = check_scope(cfg, token)["states"]
             rows, dropped = [], 0
-            for agent in AGENT_TYPES:
-                status, doc = _call(cfg, token, "GET", BASE, query={"agent_type": agent, "is_active": "true", "limit": PER_AGENT_LIMIT},
-                                    max_body=MAX_LIST_BODY)
+            if states:
+                queries = [{"agent_type": ag, "state": "active", "limit": PER_AGENT_LIMIT} for ag in AGENT_TYPES]
+                queries += [{"state": "inactive", "limit": PER_AGENT_LIMIT}, {"state": "archived", "limit": PER_AGENT_LIMIT}]
+            else:
+                queries = [{"agent_type": ag, "is_active": "true", "limit": PER_AGENT_LIMIT} for ag in AGENT_TYPES]
+                queries += [{"is_active": "false", "limit": PER_AGENT_LIMIT}]
+            full = []
+            for q in queries:
+                status, doc = _call(cfg, token, "GET", BASE, query=q, max_body=MAX_LIST_BODY)
                 if status != 200:
                     raise _status_fail(status)
                 part, d = _shape_all(doc)
                 rows += part
                 dropped += d
-            status, doc = _call(cfg, token, "GET", BASE, query={"is_active": "false", "limit": PER_AGENT_LIMIT}, max_body=MAX_LIST_BODY)
-            if status != 200:
-                raise _status_fail(status)
-            part, d = _shape_all(doc)
-            rows += part
-            dropped += d
-            good = {"topics": rows, "archived_truncated": isinstance(doc, list) and len(doc) >= PER_AGENT_LIMIT, "dropped": dropped,
-                    "loaded_at": now}
+                full.append(isinstance(doc, list) and len(doc) >= PER_AGENT_LIMIT)
+            good = {"topics": rows, "archived_truncated": full[-1], "inactive_truncated": states and full[-2],
+                    "states_supported": states, "dropped": dropped, "loaded_at": now}
             res = {"state": "ok", "cause": None, "message": "", **good, "stale": False, "limits": LIMITS, "server_now": now}
             CACHE.update(result=res, at=now, good=good)
             return res
@@ -591,8 +607,14 @@ def invalidate():
 def _write_action(kind, body):
     if kind == "create":
         return "create"
-    if set(body) == {"is_active"}:
-        return "activate" if body["is_active"] else "deactivate"
+    if body and set(body) <= {"is_active", "is_archived"}:
+        if body.get("is_archived") is True:
+            return "archive"
+        if body.get("is_active") is True:
+            return "activate"
+        if body.get("is_archived") is False and "is_active" not in body:
+            return "restore"
+        return "deactivate"
     return "update"
 
 
@@ -630,7 +652,9 @@ def write(kind, device, b):
     action = _write_action(kind, body)
     try:
         cfg, token = _setup()
-        check_scope(cfg, token)
+        if check_scope(cfg, token)["states"] is False and "is_archived" in body:
+            audit(action, tid, body, device, False, "incompatible")
+            return refuse("incompatible", 409)
         status, doc = _call(cfg, token, method, path, body=body, if_match=if_match)
     except _Fail as f:
         p = _fail_payload(f)
