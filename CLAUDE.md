@@ -14,18 +14,22 @@ these rules but never relax them.
   data, real ledgers and so on): don't read, list, copy or edit those paths, and don't try to work around the block.
 - Never commit secrets, tokens, or private hostnames. If you find one, stop and say so.
 
-## 2. Two reviewers are mandatory before a PR (reviews run per PR, not per edit)
-No pull request / merge request is opened, and no branch is pushed for review, until both reviewers
-have run on the **whole PR diff** (branch vs. its base, plus anything uncommitted):
+## 2. Two reviewers are mandatory when a complete feature is released (not per PR, not per edit)
+A complete feature is released only after both reviewers have run on the **whole feature diff**
+(everything merged for it since the last reviewed release, plus anything uncommitted):
 1. `security-reviewer`: security-focused review.
 2. `test-reviewer`: static analysis plus running the tests (dynamic).
 
-- **While developing**, work in batches: several features or fixes can go on one branch and into one PR.
-  After each change, run the tests for what you touched (and `local_diff_review` if you want a cheap first look),
-  but do **not** run `security-reviewer` / `test-reviewer` per edit. Report such work as *done, not yet reviewed*.
-- **At PR time**, run them once, in parallel, with the `dual-review` skill (`/dual-review`); `/workspace-sync`
-  does this for the workspace repo. Fix every blocking finding and re-run only the reviewer(s) that blocked,
-  or get the user's explicit waiver and record it in the PR description.
+- **While developing and at PR time**, do not run `security-reviewer` / `test-reviewer`. Work in batches, run the
+  tests for what you touched (and `local_diff_review` if you want a cheap first look), and open the PR. Report the work
+  as *done, not yet reviewed*, and put the line `Reviews: deferred to the feature release` in the PR description.
+  Never merge-gate on the reviewers at PR time; the user decides when to merge.
+- **At feature release**, run them once, in parallel, with the `dual-review` skill (`/dual-review`) on the whole
+  feature range (for example `git diff <last-reviewed-release>...HEAD`, or all the PRs of the feature). Fix every
+  blocking finding and re-run only the reviewer(s) that blocked, or get the user's explicit waiver and record it in
+  the release PR description. A release is: the user says a feature is complete or ready to release, or a release PR /
+  tag is about to be cut. If you are unsure whether the work is a complete feature, ask the user.
+- The user can ask for a review at any time (`/dual-review`), for any diff.
 - A direct commit to a protected branch never skips this: it doesn't happen (see §6 and the domain rules).
 - Domains may add more reviewers but never remove these two.
 
@@ -39,7 +43,7 @@ planning, deciding, integrating and talking to the user, and hand the bulk work 
 - **Searching and reading widely:** the built-in `Explore` agent or the `niu-local` tools (`local_search`, `local_ask`),
   not reading many files in the main session.
 - **Opus agents** only where judgment pays: `designer` (design docs). Both reviewers always run on Sonnet; `/dual-review`
-  uses Opus for one only when the user asks, and flags risky PRs (hooks/guard, secrets, auth, CI/deploy, very large diffs) so they can.
+  uses Opus for one only when the user asks, and flags risky diffs (hooks/guard, secrets, auth, CI/deploy, very large diffs) so they can.
 
 ## 4. Memory and learning are per domain
 - Auto-memory for every project in a domain is shared under `<DOMAIN>/.claude/memory/`.
@@ -54,7 +58,7 @@ tell the user to run `claude-init` in it and restart the session.
 
 ## 5b. Design first, and local agents for cheap work
 - For any non-trivial feature or change, use `/develop <task>`. The `designer` agent (Opus) writes a design under
-  `docs/design/`, the user approves it, you implement and run the tests. The two mandatory reviewers run later, once per PR (§2).
+  `docs/design/`, the user approves it, you implement and run the tests. The two mandatory reviewers run later, when the complete feature is released (§2).
 - For broad codebase lookups ("where/how is X done", "what uses Y"), prefer the `niu-local` MCP tools
   (`local_search`, `local_diff_review`, `local_ask`). They run read-only agents on the user's Ollama machines (GPU box
   first, local CPU as fallback) and save Claude tokens. Treat their answers as leads, and confirm with Read before you rely on them.

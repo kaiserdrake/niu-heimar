@@ -1,9 +1,9 @@
 ---
 name: develop
-description: Design-first development workflow. Use when the user asks to build, add or change a feature (or runs /develop <task>). The designer agent (Opus) plans, the user approves, then you implement and test. Several features can be batched on one branch; the two mandatory Claude reviewers run once, when the PR is opened.
+description: Design-first development workflow. Use when the user asks to build, add or change a feature (or runs /develop <task>). The designer agent (Opus) plans, the user approves, then you implement and test. Several features can be batched on one branch; the two mandatory Claude reviewers run once, when the complete feature is released.
 ---
 
-# /develop: design → approve → build → test (review at PR time)
+# /develop: design → approve → build → test (review at feature release)
 
 You are the orchestrator. Run these steps in order and keep the user informed with a one-line update per step.
 Never commit, push, or open a merge request without asking.
@@ -33,11 +33,12 @@ Never commit, push, or open a merge request without asking.
 - Run the tests for what you changed and fix failures. That is the per-change gate.
 - `local_diff_review` is optional (free, advisory): use it for larger or risky changes, with `focus` from the design's
   risks. Fix the real findings, note the ignored ones. If both endpoints are down, skip it.
-- Do **not** run `security-reviewer` / `test-reviewer` here. They run once per PR on the whole batch (workspace CLAUDE.md §2).
+- Do **not** run `security-reviewer` / `test-reviewer` here or at PR time. They run once, when the complete feature is released (workspace CLAUDE.md §2).
 
 ## 5. Report
 - Summarise: what changed (files), the design document path, test results, local review findings fixed or ignored,
-  and that the change is **not yet reviewed** (the reviewers run at PR time).
-- Offer the next step and wait: build the next feature on the same branch (batch), or open the PR, which runs
-  `/dual-review` on the whole branch first (`/workspace-sync` for the workspace repo, the domain's PR/MR flow elsewhere).
+  and that the change is **not yet reviewed** (the reviewers run when the complete feature is released).
+- Offer the next step and wait: build the next piece of the feature, or open the PR (`/workspace-sync` for the workspace
+  repo, the domain's PR/MR flow elsewhere) with `Reviews: deferred to the feature release` in the description. If this
+  piece completes the feature, offer to run `/dual-review` on the whole feature before it is released.
   Never commit, push or open a PR without asking.
