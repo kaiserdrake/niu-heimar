@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.13.0...niu-heimar-v0.14.0) (2026-11-08)
+
+
+### Features
+
+* **dashboard:** Weekly usage graph in the Events tab with a background Claude usage recorder (B1) ([#47](https://github.com/kaiserdrake/niu-heimar/issues/47)) ([673e5d6](https://github.com/kaiserdrake/niu-heimar/commit/673e5d683e8d744142bdc9375e4d51788c6eaeaf))
+
 ## [0.13.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.12.0...niu-heimar-v0.13.0) (2026-11-08)
 
 
