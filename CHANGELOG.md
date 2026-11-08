@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.12.0...niu-heimar-v0.13.0) (2026-11-08)
+
+
+### Features
+
+* **dashboard:** Research tab shows S2 fields, gate log linked to the timeline dots, no duplicate Claude meters; unreviewed marker only for release sessions ([#45](https://github.com/kaiserdrake/niu-heimar/issues/45)) ([47d3d94](https://github.com/kaiserdrake/niu-heimar/commit/47d3d94be2112edc65d438f361d6c2a50c383500))
+
 ## [0.12.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.11.0...niu-heimar-v0.12.0) (2026-11-08)
 
 
