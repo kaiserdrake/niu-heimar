@@ -123,7 +123,7 @@ agents-dash --once   # plain-text snapshot; --json for scripts; --domain WORK; -
 - Shows a live tree (domain → project → session → subagents), with each agent's state, how long it has been running, and its current tool.
   Each agent has a tag showing where it comes from (`project`, `domain`, `shared`, `user`, `builtin`). A project's agents that haven't run yet
   show as `not yet run`.
-- The "today" line counts sessions and subagent runs. It also marks sessions whose edits haven't been reviewed yet (informational: the mandatory reviewers run when a complete feature is released).
+- The "today" line counts sessions and subagent runs. It also marks release sessions whose edits haven't been reviewed yet ("release without both reviewers"; informational: the mandatory reviewers run when a complete feature is released). A session counts as performing a release when one of its tool calls is `gh release` (create/upload/edit; not list/view/download), `git tag <name>` (creating a tag; `git tag -l`, `--list`, `-d` and a bare `git tag` do not count), `release-please`, or the `dual-review` skill (a heuristic over the first line of each Bash command and the skill name; a release done by other means is not detected). Release sessions carry a small "release" tag, with a check mark once both reviewers ran. Edit-only sessions are never flagged.
 - Nested projects (e.g. `HOBBY/games/voxel-mod`) work: the project is the nearest folder with `.claude/` or `.git`.
   Its own agents in `.claude/agents/` sit next to the linked shared reviewers.
 - **Pull requests**: a panel lists open PRs for niu-heimar and for every linked project whose origin is on GitHub

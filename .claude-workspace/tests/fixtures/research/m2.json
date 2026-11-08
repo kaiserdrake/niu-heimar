@@ -26,7 +26,10 @@
   "next_slot_key": "2026-11-07T12:00[Asia/Tokyo]",
   "next_slot_at": "2026-11-07T03:00:00Z",
   "manual_runs_today": 0,
-  "manual_runs_per_day": 4
+  "manual_runs_per_day": 4,
+  "next_slot_kind": "delta",
+  "brief_at": "08:00",
+  "next_brief_at": "2026-11-07T23:00:00Z"
  },
  "gate": {
   "preview": {
@@ -58,7 +61,8 @@
    "max_attempts": 3,
    "next_check_at": "2026-11-07T03:30:00Z",
    "grace_until": "2026-11-07T06:00:00Z",
-   "last_reason": "low_quota"
+   "last_reason": "low_quota",
+   "kind": "comprehensive"
   },
   "recent": [
    {
@@ -74,7 +78,7 @@
     "taken_at": "2026-11-06T14:00:00Z",
     "source": "usage_api",
     "decision": "retry",
-    "reason": "low_quota",
+    "reason": "session_cap",
     "five_hour_used": 88.0,
     "seven_day_used": 58.0,
     "run_id": null
@@ -127,7 +131,10 @@
     },
     "uncited_dropped": 1,
     "permission_denials": 0,
-    "error_code": null
+    "error_code": null,
+    "scout_searches": 4,
+    "topics_scouted": 12,
+    "topics_changed": 3
    },
    {
     "agent_type": "hobby",
@@ -165,7 +172,9 @@
    "sections_sent": 0,
    "next_attempt_at": "2026-11-07T22:00:00Z",
    "last_http_status": null
-  }
+  },
+  "kind": "comprehensive",
+  "deadline_at": "2026-11-06T21:30:00Z"
  },
  "recent_runs": [
   {
@@ -191,7 +200,8 @@
      "finished_at": "2026-11-06T15:07:04Z",
      "error_code": "timeout"
     }
-   ]
+   ],
+   "kind": "comprehensive"
   },
   {
    "id": "00000000-0000-4000-8000-000000000003",
@@ -201,7 +211,8 @@
    "status": "skipped_gate",
    "started_at": "2026-11-06T03:00:05Z",
    "finished_at": "2026-11-06T03:00:09Z",
-   "agents": []
+   "agents": [],
+   "kind": "delta"
   }
  ],
  "ledger": {
@@ -247,5 +258,15 @@
     "equiv_usd": 0.31
    }
   ]
+ },
+ "brief": {
+  "date": "2026-11-07",
+  "state": "ready",
+  "items": 7,
+  "updates": 2,
+  "revision": 1,
+  "published_at": "2026-11-06T23:00:00Z",
+  "stale": true,
+  "stale_reason": "comprehensive_failed"
  }
 }

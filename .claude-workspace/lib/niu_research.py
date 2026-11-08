@@ -44,12 +44,16 @@ MODEL_RE = re.compile(r"[a-z0-9.-]{1,40}")
 TZ_RE = re.compile(r"[A-Za-z0-9_+/-]{1,40}")
 CRON_RE = re.compile(r"[0-9*/, -]{1,40}")
 VERSION_RE = re.compile(r"[0-9A-Za-z.+-]{1,32}")
+HHMM_RE = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
 
 RUN_STATUS = frozenset("waiting_gate running succeeded partial failed skipped_gate aborted_quota".split())
 AGENT_STATUS = frozenset("pending running succeeded failed skipped timed_out aborted_quota".split())
 AGENT_TYPES = ("general", "hobby", "fintrend")
 DECISIONS = frozenset(("run", "run_conservative", "retry", "skip"))
-REASONS = frozenset("ok ok_conservative weekly_low low_quota probe_warning no_signal manual_cap grace_expired kill_switch".split())
+REASONS = frozenset("ok ok_conservative weekly_low low_quota probe_warning no_signal manual_cap grace_expired kill_switch session_cap".split())
+KINDS = frozenset(("standard", "comprehensive", "delta"))
+BRIEF_STATES = frozenset(("scheduled", "in_progress", "ready", "empty"))
+STALE_REASONS = frozenset("comprehensive_missed comprehensive_skipped comprehensive_failed comprehensive_deadline".split())
 SOURCES = frozenset(("usage_api", "probe", "none", "rate_limit_event"))
 ERRORS = frozenset("timeout aborted_quota max_turns max_budget structure_invalid no_sources rate_limited auth interrupted network internal".split())
 TRIGGERS = frozenset(("cron", "manual", "catchup"))
@@ -368,7 +372,7 @@ def _pending(p):
     if not isinstance(p, dict):
         return None
     return {"run_id": _re(p.get("run_id"), UUID_RE), "slot_key": _re(p.get("slot_key"), SLOT_RE), "attempts": _cnt(p.get("attempts")),
-            "max_attempts": _cnt(p.get("max_attempts")), "next_check_at": _ts(p.get("next_check_at")),
+            "max_attempts": _cnt(p.get("max_attempts")), "kind": _nenum(p.get("kind"), KINDS), "next_check_at": _ts(p.get("next_check_at")),
             "grace_until": _ts(p.get("grace_until")), "last_reason": _nenum(p.get("last_reason"), REASONS)}
 
 
@@ -391,7 +395,8 @@ def _agent(a):
             "items_kept": _cnt(a.get("items_kept")), "items_filtered": _cnt(a.get("items_filtered")),
             "filtered_by": {"duplicate": _cnt(fb.get("duplicate")), "excluded": _cnt(fb.get("excluded")),
                             "no_update": _cnt(fb.get("no_update"))} if fb else None,
-            "uncited_dropped": _cnt(a.get("uncited_dropped")), "permission_denials": _cnt(a.get("permission_denials")),
+            "uncited_dropped": _cnt(a.get("uncited_dropped")), "scout_searches": _cnt(a.get("scout_searches")),
+            "topics_scouted": _cnt(a.get("topics_scouted")), "topics_changed": _cnt(a.get("topics_changed")), "permission_denials": _cnt(a.get("permission_denials")),
             "error_code": _nenum(a.get("error_code"), ERRORS)}
 
 
@@ -412,14 +417,14 @@ def _digest(d):
 
 def _run_head(r):
     return {"id": _re(r.get("id"), UUID_RE), "slot_key": _re(r.get("slot_key"), SLOT_RE), "trigger": _enum(r.get("trigger"), TRIGGERS),
-            "mode": _enum(r.get("mode"), MODES), "status": _enum(r.get("status"), RUN_STATUS),
+            "mode": _enum(r.get("mode"), MODES), "kind": _nenum(r.get("kind"), KINDS), "status": _enum(r.get("status"), RUN_STATUS),
             "started_at": _ts(r.get("started_at")), "finished_at": _ts(r.get("finished_at"))}
 
 
 def _run(r):
     if not isinstance(r, dict):
         return None
-    return {**_run_head(r), "scheduled_for": _ts(r.get("scheduled_for")), "duration_s": _cnt(r.get("duration_s")),
+    return {**_run_head(r), "scheduled_for": _ts(r.get("scheduled_for")), "deadline_at": _ts(r.get("deadline_at")), "duration_s": _cnt(r.get("duration_s")),
             "gate_attempts": _cnt(r.get("gate_attempts")), "gate_reason": _nenum(r.get("gate_reason"), REASONS),
             "gate_source": _nenum(r.get("gate_source"), SOURCES), "five_hour_used_before": _pct(r.get("five_hour_used_before")),
             "five_hour_used_after": _pct(r.get("five_hour_used_after")), "window_share_pct": _pct(r.get("window_share_pct")),
@@ -437,6 +442,14 @@ def _ledger_day(d):
             "web_searches": _cnt(d.get("web_searches")), "equiv_usd": _usd(d.get("equiv_usd"))}
 
 
+def _brief(b):
+    if not isinstance(b, dict):
+        return None
+    return {"date": _re(b.get("date"), DAY_RE), "state": _enum(b.get("state"), BRIEF_STATES), "items": _cnt(b.get("items")),
+            "updates": _cnt(b.get("updates")), "revision": _cnt(b.get("revision")), "published_at": _ts(b.get("published_at")),
+            "stale": _bool(b.get("stale")), "stale_reason": _nenum(b.get("stale_reason"), STALE_REASONS)}
+
+
 def shape(raw, now=None):
     """Rebuild a monitor.v1 document from an allowlist. Times become epoch seconds; anything off-spec becomes None or "unknown"."""
     raw = _dict(raw)
@@ -451,10 +464,12 @@ def shape(raw, now=None):
                     "health": {k: _bool(health.get(k)) for k in ("db", "migrations", "scheduler", "claude_auth")}},
         "schedule": {"enabled": _bool(sch.get("enabled")), "running": _bool(sch.get("running")), "cron": _re(sch.get("cron"), CRON_RE),
                      "timezone": _re(sch.get("timezone"), TZ_RE), "next_slot_key": _re(sch.get("next_slot_key"), SLOT_RE),
-                     "next_slot_at": _ts(sch.get("next_slot_at")), "manual_runs_today": _cnt(sch.get("manual_runs_today")),
+                     "next_slot_kind": _nenum(sch.get("next_slot_kind"), KINDS), "next_slot_at": _ts(sch.get("next_slot_at")),
+                     "brief_at": _re(sch.get("brief_at"), HHMM_RE), "next_brief_at": _ts(sch.get("next_brief_at")), "manual_runs_today": _cnt(sch.get("manual_runs_today")),
                      "manual_runs_per_day": _cnt(sch.get("manual_runs_per_day"))},
         "gate": {"preview": _preview(gate.get("preview")), "pending": _pending(gate.get("pending")),
                  "recent": [_gate_row(g) for g in _list(gate.get("recent"), 12)]},
+        "brief": _brief(raw.get("brief")),
         "current_run": _run(raw.get("current_run")),
         "last_run": _run(raw.get("last_run")),
         "recent_runs": [_compact_run(r) for r in _list(raw.get("recent_runs"), 6)],

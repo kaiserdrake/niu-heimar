@@ -90,6 +90,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .src { font-size: 10px; text-transform: uppercase; letter-spacing: .03em; font-weight: 600; }
 .src-project { color: var(--project); } .src-domain { color: var(--domain); } .src-shared { color: var(--shared); } .src-builtin, .src-user { color: var(--builtin); }
 .flagmsg { color: var(--bad); font-size: 12px; margin-top: 6px; }
+.reltag { font-size: 10.5px; padding: 0 6px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); }
 
 .sessacts { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
 .sessacts .tiny { margin-left: auto; padding: 1px 8px; font-size: 11.5px; }
@@ -463,16 +464,19 @@ progress.lim.bad::-webkit-progress-value { background: var(--bad); } progress.li
 .rscard:empty, .rssec:empty { display: none; }
 .rssec h3 { margin: 0 0 6px; }
 .rsline { font-size: 12px; margin: 4px 0; overflow-wrap: anywhere; }
-.rsmeter { display: grid; grid-template-columns: 62px minmax(60px, 1fr) 40px 62px; align-items: center; column-gap: 6px; row-gap: 0; font-size: 12px; }
-.rsmeter .nm { font-weight: 600; } .rsmeter .mdl { color: var(--muted); font-size: 11px; white-space: nowrap; }
-.rsmeter progress.lim { width: 100%; }
-.rsmeter svg.floor { grid-column: 2; width: 100%; height: 16px; overflow: visible; }
-svg .floor-tick { stroke: var(--text); stroke-width: 1.5; }
-svg .floor-lbl { font-size: 10px; fill: var(--muted); }
 .rskv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 12px; }
 .rskv dt { color: var(--muted); } .rskv dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
-.rsrecent { font-family: var(--mono); font-size: 11.5px; }
-.rsrecent div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 1px 0; }
+.rsgl { position: relative; max-height: 190px; overflow-y: auto; font-size: 11.5px; border: 1px solid var(--border); border-radius: 6px; }
+.rsgrow { display: grid; grid-template-columns: 7.5em 10.5em minmax(0, 1fr) 11em 7em; align-items: center; gap: 0 10px; padding: 2px 8px 2px 5px;
+  border-left: 3px solid transparent; font-variant-numeric: tabular-nums; }
+.rsgrow + .rsgrow { border-top: 1px solid var(--border); }
+.rsgrow > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rsgrow.hl { font-weight: 700; border-left-color: var(--accent); background: var(--accent-bg); }
+.rsgrow:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.kindtag { font-size: 10.5px; padding: 0 6px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); }
+svg .rs-kindtag { font-size: 9.5px; font-weight: 700; fill: var(--text); }
+svg .rs-dot.hl { stroke: var(--text); stroke-width: 2.5; }
+svg .rs-dot:focus-visible { outline: 2px solid var(--accent); }
 .rslanes { overflow-x: auto; min-height: 40px; }
 .rslanes svg { display: block; }
 svg .bar-sub.rs-ok { stroke: var(--ok); fill: var(--ok-bg); }
@@ -491,7 +495,7 @@ svg .slotline { stroke: var(--border); stroke-dasharray: 2 3; }
 .rssetup { font-size: 12.5px; } .rssetup ol { margin: 6px 0 0 18px; padding: 0; } .rssetup li { margin: 3px 0; }
 .rssetup code { overflow-wrap: anywhere; }
 .rsstuck { color: var(--bad); font-weight: 600; }
-@media (max-width: 899px) { .rsgrid { grid-template-columns: minmax(0, 1fr); } .rsbody { overflow-x: auto; } }
+@media (max-width: 899px) { .rsgrow { grid-template-columns: 7em 9em minmax(0, 1fr); } .rsgrow .gp, .rsgrow .gs { display: none; } .rsgrid { grid-template-columns: minmax(0, 1fr); } .rsbody { overflow-x: auto; } }
 
 /* ---- Topics sub-view of the Research tab (existing colour variables only) ---- */
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; flex: none; }

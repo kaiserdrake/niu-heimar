@@ -51,8 +51,10 @@ def tree_lines(sessions, now, domain=None, show_ended=False):
                 elif s["current"]:
                     t, summ, _, _ = s["current"]
                     line.append((f"  ▸ {t}: {summ}", ""))
+                if s.get("release") and not s["flagged"] and all(m in s["ran"] for m in MANDATORY):
+                    line.append(("  release ✓ reviewed", "muted"))
                 if s["flagged"]:
-                    line.append(("  ⚠ edited without both reviewers", "bad"))
+                    line.append(("  ⚠ release without both reviewers", "bad"))
                 out.append(line)
                 spre = pre + ("  " if slast else "│ ")
                 rows = []
@@ -92,7 +94,7 @@ def today_line(sessions, now):
     line = [(f" sessions {t['sessions']} · subagent runs {t['subagent_runs']} ({top}) · dual-review ", ""),
             (f"{t['reviewed']}/{t['edited']} editing sessions", "ok" if t["reviewed"] == t["edited"] else "warn")]
     if t["flagged"]:
-        line.append((f" · {len(t['flagged'])} without reviewers: {', '.join(t['flagged_projects'])}", "bad"))
+        line.append((f" · {len(t['flagged'])} release without reviewers: {', '.join(t['flagged_projects'])}", "bad"))
     return line
 
 
