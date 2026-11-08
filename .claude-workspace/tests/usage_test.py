@@ -19,7 +19,8 @@ FX = SH / "tests" / "fixtures" / "usage"
 tmp = Path(tempfile.mkdtemp())
 state = tmp / "state"
 os.environ.update(NIU_EVENTS_DB=str(state / "events.db"), NIU_USAGE_DB=str(state / "sub" / "usage.db"), NIU_CLAUDE_USAGE_API="0",
-                  NIU_CLAUDE_CREDENTIALS="/nonexistent/creds.json", TZ="Asia/Tokyo")
+                  NIU_CLAUDE_CREDENTIALS="/nonexistent/creds.json", TZ="Asia/Tokyo",
+                  NIU_USAGE_TOKENS="0", CLAUDE_CONFIG_DIR=str(tmp / "no-claude"))   # the transcript scanner has its own suite (tokens_test.py)
 os.environ.pop("NIU_USAGE_COLLECT", None)
 sys.path.insert(0, str(SH / "lib"))
 import niu_limits  # noqa: E402
@@ -65,7 +66,7 @@ check(U.record(rd(T0, 10), now=T0 + 5) == 1, "first reading stored")
 check(stat.S_IMODE(p.stat().st_mode) == 0o600, f"usage.db mode 600: {oct(p.stat().st_mode)}")
 check(stat.S_IMODE(p.parent.stat().st_mode) == 0o700, "usage dir mode 700")
 con = U.connect(readonly=True)
-check(con.execute("PRAGMA user_version").fetchone()[0] == 1, "user_version 1")
+check(con.execute("PRAGMA user_version").fetchone()[0] == 2, "user_version 2 (limit samples and token tables)")
 idx = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='index'")}
 check("limit_samples_ts" in idx, "ts index exists")
 try:
@@ -371,7 +372,7 @@ try:
     check(req("GET", "/api/usage/history?days=36")[2]["current"]["used"] == 90.0, "cache is per days value")
     for m in ("POST", "PUT", "DELETE"):
         check(req(m, "/api/usage/history")[0] in (404, 405, 501), f"{m} not served")
-    check(req("GET", "/api/usage/other")[0] == 404, "no other usage routes in B1")
+    check(req("GET", "/api/usage/other")[0] == 404, "no other usage routes")
     check("sk-ant" not in json.dumps(js), "no credential text in the payload")
 finally:
     srv.terminate()

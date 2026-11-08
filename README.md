@@ -192,6 +192,35 @@ default), a dotted **pace** line that projects the current week to its reset, an
   restart; the panel then says so. To start over, delete `usage.db*` in the state folder. The browser fetches
   `GET /api/usage/history?days=35` (7 to 70, cached for 60 seconds, read-only) only while the Events tab is visible.
 
+**Token usage** (Events tab, next to *Weekly usage* on screens 1200 px wide or more, stacked under it on narrower ones;
+collapsible): how many tokens Claude Code used, by agent type and by model. *Today / 7 days / 30 days* boxes show the totals
+(with the output share). *By agent type* and *By model* rank horizontal bars split into **input, output, cache write and
+cache read**, each with its share. The *metric* picker (Total, Output, Input + cache write, Cache read) re-ranks the rows and
+recomputes the shares; *Per day* stacks the totals by model family (opus, sonnet, haiku, other; hourly for *Today*), and the
+*Agent × model table* is the same data as plain numbers. The research bot's own tokens (from the Research tab's ledger) appear
+as a muted row, outside the totals and shares. The header's domain filter applies; *All domains* includes sessions outside
+the workspace as `(outside)`.
+- *Cache reads dominate the totals:* every call re-reads the conversation from the prompt cache, so a long session adds many
+  millions of cache-read tokens. Use the *Output* metric to see what the models wrote. Tokens are not the plan's limit
+  units: the weekly % above stays the authoritative measure.
+- *What is read:* the Claude Code transcripts, `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/<folder>/<session>.jsonl` and the
+  subagent files `<folder>/<session>/subagents/agent-<id>.jsonl` (type from the sibling `agent-<id>.meta.json`). Only those two
+  shapes, regular files you own, no symlinks. From each assistant line only the message id, model name, the four token
+  counters and the time are kept; the working folder is used once to find the domain and project (nothing outside the
+  workspace is kept). Prompts, replies, file paths and the task-result `totalTokens` summaries are never stored, shown or
+  logged. A response written as several lines is counted once. Sessions the dashboard did not observe (other devices,
+  claude.ai chats, transcripts Claude Code already deleted, 30 days by default) are missing; local-model agents (`niu-agent`)
+  are not counted.
+- *When:* the same background thread as above scans every 60 seconds, incrementally (each file's read position is remembered),
+  within 32 MiB / 1.5 seconds per pass, so the first backfill takes a few minutes and the panel shows
+  "Reading transcripts for the first time: N of M files". Rows are kept for 90 days in `usage.db`. `NIU_USAGE_TOKENS=0`
+  turns scanning off (`NIU_USAGE_COLLECT=0` turns off both recorders); the panel then says so. The browser fetches
+  `GET /api/usage/tokens?range=today|7d|30d&domain=` (cached for 60 seconds, read-only; nothing over HTTP can start a scan)
+  only while the Events tab is visible.
+- *`niu-dash usage-scan [--full]`* reads everything in the foreground and prints counts only (files, messages, corrupt
+  lines); `--full` forgets all read positions and reads every transcript again (the totals do not change). To start over,
+  delete `usage.db*` in the state folder.
+
 **Research tab** (monitors the valkyrie-dispatch agents in `PERSONAL/valkyrie-dispatch`): the next scheduled run with a
 countdown, the usage gate (the same bars as the Claude limits, with the gate's floors marked), today's quota ledger,
 36-hour run lanes per agent, the last run per agent and recent errors. The research agents are Claude Agent SDK sessions in
