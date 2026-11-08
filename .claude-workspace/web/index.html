@@ -107,14 +107,15 @@
       <div id="tphead" class="tphead"></div>
       <div class="tpbar">
         <span id="tpchips" class="tpchips" role="group" aria-label="Agent filter"></span>
-        <input id="tpfilter" type="search" placeholder="Search topics (typos ok)" aria-label="Search topics" autocomplete="off">
+        <input id="tpfilter" type="search" placeholder="Search topics" aria-label="Search topics" autocomplete="off">
         <span id="tpcount" class="small muted" role="status" aria-live="polite"></span>
         <label class="check"><input type="checkbox" id="tparch"> Show archived</label>
-        <button id="tpadd" class="primary tiny">Add topic</button>
+        <button id="tpadd" class="primary tiny" aria-label="Add topic" title="Add topic">+ Add</button>
         <button id="tprefresh" class="ghost tiny">Refresh</button>
         <span id="tpupd" class="small muted"></span>
       </div>
       <div id="tpmsg" class="msg" aria-live="polite"></div>
+      <span id="tpholdhelp" class="tpsr">Press and hold for one second to archive. Archived topics stop being researched and can be restored.</span>
       <div id="tplist" class="tplist"></div>
     </div>
     <div id="rsbody" class="pb rsbody">
@@ -173,9 +174,7 @@
     <p id="tpformmsg" class="msg" aria-live="polite"></p>
     <div class="row"><button type="button" id="tprestoredup" class="ghost" hidden>Restore the archived one</button>
       <button type="button" id="tpreload" class="ghost" hidden>Reload</button></div>
-    <p id="tparchhelp" class="small muted" hidden>Archived topics stop being researched and can be restored. Nothing is deleted.</p>
     <div class="row end">
-      <button type="button" id="tparchive" class="danger" hidden>Archive topic</button>
       <button type="button" id="tpcancel" class="ghost">Cancel</button>
       <button id="tpsave" value="save" class="primary">Save</button>
     </div>

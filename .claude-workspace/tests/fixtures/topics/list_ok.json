@@ -13,7 +13,8 @@
   ],
   "weight": 2.5,
   "is_active": true,
-  "updated_at": "2026-11-07T08:00:00.123456Z"
+  "updated_at": "2026-11-07T08:00:00.123456Z",
+  "is_archived": false
  },
  {
   "id": "00000002-0000-4000-8000-000000000002",
@@ -26,7 +27,8 @@
   "excluded_terms": [],
   "weight": 1.0,
   "is_active": true,
-  "updated_at": "2026-11-07T08:00:00.123456Z"
+  "updated_at": "2026-11-07T08:00:00.123456Z",
+  "is_archived": false
  },
  {
   "id": "00000003-0000-4000-8000-000000000003",
@@ -46,7 +48,8 @@
   ],
   "weight": 0.5,
   "is_active": true,
-  "updated_at": "2026-11-07T08:00:00.123456Z"
+  "updated_at": "2026-11-07T08:00:00.123456Z",
+  "is_archived": false
  },
  {
   "id": "00000004-0000-4000-8000-000000000004",
@@ -58,6 +61,20 @@
   "excluded_terms": [],
   "weight": 1.0,
   "is_active": false,
+  "updated_at": "2026-11-07T08:00:00.123456Z",
+  "is_archived": true
+ },
+ {
+  "id": "00000005-0000-4000-8000-000000000005",
+  "agent_type": "hobby",
+  "name": "Quiet topic",
+  "keywords": [
+   "pause"
+  ],
+  "excluded_terms": [],
+  "weight": 1.0,
+  "is_active": false,
+  "is_archived": false,
   "updated_at": "2026-11-07T08:00:00.123456Z"
  }
 ]
