@@ -3,8 +3,13 @@
 
 Usage:
   niu-dash serve [--port 8765]      serve on 127.0.0.1 only (publish it with `tailscale serve`)
-                                    (also records Claude plan usage samples every 5 min into usage.db for the Events tab's Weekly usage graph;
-                                    set NIU_USAGE_COLLECT=0 to stop that, NIU_CLAUDE_USAGE_API=0 to stop the background usage API calls)
+                                    (also records Claude plan usage samples every 5 min into usage.db for the Events tab's Weekly usage graph
+                                    and scans Claude Code transcripts every minute for the Token usage panel;
+                                    set NIU_USAGE_COLLECT=0 to stop both, NIU_USAGE_TOKENS=0 to stop the transcript scan only,
+                                    NIU_CLAUDE_USAGE_API=0 to stop the background usage API calls)
+  niu-dash usage-scan [--full]      read Claude Code transcripts into usage.db in the foreground until done; prints counts only
+                                    (files, messages, corrupt lines). --full forgets all offsets and reads everything again.
+                                    (the server does the same in small steps every minute; NIU_USAGE_TOKENS=0 turns that off)
   niu-dash pair [--name laptop]     show a one-time code to pair a browser (interactive terminal only)
   niu-dash devices                  list paired browsers
   niu-dash revoke ID|all            remove paired browsers
@@ -268,6 +273,10 @@ class Handler(BaseHTTPRequestHandler):
             # Aggregate percentages only, read-only, cached 60 s; `days` is clamped to 7-70 (anything else gives 35).
             days = parse_qs(urlparse(self.path).query).get("days", [None])[0]
             self._json(niu_usage.history_cached(days))
+        elif path == "/api/usage/tokens":
+            # Token totals from usage.db (aggregates only: no paths, no text). range is an enum, domain is validated; cached 60 s.
+            q = parse_qs(urlparse(self.path).query)
+            self._json(niu_usage.tokens_cached(q.get("range", [None])[0], q.get("domain", [""])[0]))
         elif path == "/api/me":
             d = device_for(self._cookie())
             self._json({"paired": bool(d), "device": d and {"id": d["id"], "name": d["name"]}})
@@ -459,6 +468,22 @@ def cmd_serve(args):
         niu_usage.stop_background()
 
 
+def cmd_usage_scan(args):
+    if niu_usage.tokens_disabled():
+        sys.exit("niu-dash: token scanning is off (NIU_USAGE_COLLECT=0 or NIU_USAGE_TOKENS=0)")
+    if niu_usage.claude_root() is None:
+        sys.exit("niu-dash: no Claude Code transcripts folder found (CLAUDE_CONFIG_DIR or ~/.claude/projects)")
+    try:
+        r = niu_usage.scan_to_completion(full=args.full)
+    except Exception as e:  # noqa: BLE001 - counts only; never print exception text (it could carry a path)
+        sys.exit(f"niu-dash: scan failed ({type(e).__name__})")
+    print(f"files read: {r['files']} (of {r['files_total']} found)")
+    print(f"messages: {r['messages']} (stored: {r['stored']})")
+    print(f"corrupt lines: {r['corrupt_lines']}")
+    if r["skipped_files"]:
+        print(f"skipped files: {r['skipped_files']}")
+
+
 def cmd_pair(args):
     if not niu_prs.can_prompt():
         sys.exit("niu-dash: pair needs an interactive terminal (you pair each browser yourself)")
@@ -525,6 +550,9 @@ def main():
     s = sub.add_parser("serve")
     s.add_argument("--port", type=int, default=int(os.environ.get("NIU_DASH_PORT", "8765")))
     s.set_defaults(fn=cmd_serve)
+    u = sub.add_parser("usage-scan")
+    u.add_argument("--full", action="store_true")
+    u.set_defaults(fn=cmd_usage_scan)
     p = sub.add_parser("pair")
     p.add_argument("--name", default="")
     p.set_defaults(fn=cmd_pair)

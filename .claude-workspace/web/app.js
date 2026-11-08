@@ -124,7 +124,7 @@ function setView(v) {
   if (location.hash !== hash) history.replaceState(null, "", hash || location.pathname);
   connect();
   setTimeout(refit, 50);
-  if (VIEW === "events") loadUsage();
+  if (VIEW === "events") { loadUsage(); loadTokens(); }
   if (VIEW === "research") { renderResearch(); loadResearch(); if (RSVIEW === "topics") loadTopics(); }
 }
 $("tab-agents").onclick = () => setView("agents");
@@ -236,7 +236,7 @@ function placeTip(e) {
   if (y + r.height > innerHeight - 8) y = Math.max(8, e.clientY - r.height - gap);
   TIP.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
 }
-for (const id of ["graph", "timeline", "llmcard", "usagegraph", "rshead", "rsgate", "rsquota", "rslanes", "rslast", "tplist"]) {
+for (const id of ["graph", "timeline", "llmcard", "usagegraph", "tokbody", "rshead", "rsgate", "rsquota", "rslanes", "rslast", "tplist"]) {
   const box = $(id);
   box.addEventListener("pointerover", (e) => {
     const t = e.target.closest?.("[data-tip]");
@@ -875,7 +875,7 @@ $("pairform").addEventListener("submit", async (ev) => {
 $("paircode").addEventListener("input", () => { $("pairmsg").textContent = ""; });
 $("unpair").addEventListener("click", async () => { await POST("/api/unpair"); loadMe(); });
 $("prrefresh").onclick = () => POST("/api/prs/refresh");
-$("domain").onchange = () => { G.first = true; connect(); };
+$("domain").onchange = () => { G.first = true; connect(); TOK.data = null; loadTokens(); };
 $("since").onchange = connect;
 $("ended").checked = store.get("niu.ended", false);
 $("calm").checked = store.get("niu.calm", false);
@@ -1126,6 +1126,237 @@ setUsageOpen(USAGE.open);
 for (const w of [2, 5, 10]) { $(`usage-w${w}`).classList.toggle("on", w === USAGE.weeks); $(`usage-w${w}`).setAttribute("aria-pressed", String(w === USAGE.weeks)); }
 setInterval(loadUsage, 60000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loadUsage(); });
+
+// ---------- Token usage panel (Events tab) ----------
+// Numbers come from /api/usage/tokens (aggregates of Claude Code transcripts, read and stored by niu-dash). Everything is built with
+// h()/svg() (textContent and setAttribute), every number is checked first, and class names come from fixed lists: a hostile payload
+// can neither inject markup nor break the layout.
+const TOK_KINDS = [["input", "input", "tk-in"], ["output", "output", "tk-out"], ["cache_write", "cache write", "tk-cw"], ["cache_read", "cache read", "tk-cr"]];
+const TOK_METRICS = { total: ["Total", ["input", "output", "cache_write", "cache_read"]], output: ["Output", ["output"]],
+  inout: ["Input + cache write", ["input", "cache_write"]], cache_read: ["Cache read", ["cache_read"]] };
+const TOK_RANGES = { today: "Today", "7d": "7 days", "30d": "30 days" };
+const FAMILY = ["opus", "sonnet", "haiku", "other"];
+const TOK = { range: Object.hasOwn(TOK_RANGES, store.get("niu.tokens.range", "7d")) ? store.get("niu.tokens.range", "7d") : "7d",
+  metric: Object.hasOwn(TOK_METRICS, store.get("niu.tokens.metric", "total")) ? store.get("niu.tokens.metric", "total") : "total",
+  open: store.get("niu.tokens.open", true) !== false, data: null, asof: 0, seq: 0, stale: false };
+const TOK_MSG = {
+  loading: "Loading…",
+  empty: "No Claude usage found in the transcripts yet.",
+  disabled: "Token statistics are off (NIU_USAGE_TOKENS=0 or NIU_USAGE_COLLECT=0).",
+  error: "Can't read token usage from the dashboard server.",
+};
+const tokNum = (v) => (typeof v === "number" && isFinite(v) && v > 0 ? v : 0);
+const tokName = (v, d) => (typeof v === "string" && v ? v.slice(0, 80) : d);
+const tokFmt = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}G` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}k` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(Math.round(n)));
+const tokInt = (n) => Math.round(n).toLocaleString();
+const tokPct = (p) => (p > 0 && p < 0.5 ? "<1%" : `${Math.round(p)}%`);
+const tokVal = (row, metric) => TOK_METRICS[metric][1].reduce((a, k) => a + tokNum(row[k]), 0);
+const tokFam = (f) => (FAMILY.includes(f) ? f : "other");
+function tokRows(list, metric, nameKey) {
+  const rows = (Array.isArray(list) ? list : []).filter((r) => r && typeof r === "object").map((r) => ({
+    name: tokName(r[nameKey], "?"), family: tokFam(r.family), input: tokNum(r.input), output: tokNum(r.output), cache_write: tokNum(r.cache_write),
+    cache_read: tokNum(r.cache_read), messages: tokNum(r.messages), sessions: tokNum(r.sessions) }));
+  const folded = (r) => /^other \(\d+\)$/.test(r.name);
+  rows.sort((a, b) => (folded(a) - folded(b)) || tokVal(b, metric) - tokVal(a, metric) || (a.name < b.name ? -1 : 1));
+  const sum = rows.reduce((a, r) => a + tokVal(r, metric), 0);
+  for (const r of rows) { r.v = tokVal(r, metric); r.share = sum > 0 ? (r.v / sum) * 100 : 0; r.total = tokVal(r, "total"); }
+  return rows;
+}
+function tokBar(row, max, metric) {
+  const root = svg("svg", { class: "tokbar", viewBox: "0 0 100 8", preserveAspectRatio: "none", role: "presentation", "aria-hidden": "true" });
+  root.append(svg("rect", { x: 0, y: 0, width: 100, height: 8, class: "tk-bg" }));
+  let x = 0;
+  for (const [key, , cls] of TOK_KINDS) {
+    if (!TOK_METRICS[metric][1].includes(key) || !(max > 0)) continue;
+    const w = (tokNum(row[key]) / max) * 100;
+    if (w > 0) { root.append(svg("rect", { x, y: 0, width: w, height: 8, class: cls })); x += w; }
+  }
+  return root;
+}
+function tokTip(row, what) {
+  return [`${row.name} · ${tokPct(row.share)}`, `input ${tokFmt(row.input)} · output ${tokFmt(row.output)}`, `cache write ${tokFmt(row.cache_write)} · cache read ${tokFmt(row.cache_read)}`,
+    what === "agent" ? `${tokInt(row.messages)} calls · ${tokInt(row.sessions)} session${row.sessions === 1 ? "" : "s"}` : `${row.family}`].join("\n");
+}
+function tokSwatch(cls) {
+  const sw = svg("svg", { class: "lgsw", viewBox: "0 0 8 8", width: 8, height: 8, "aria-hidden": "true" });
+  sw.append(svg("rect", { width: 8, height: 8, class: cls }));
+  return sw;
+}
+function tokRankBlock(title, rows, metric, what) {
+  const max = Math.max(0, ...rows.map((r) => r.v));
+  const head = h("div", "tokrow tokhead small muted");
+  head.append(h("span", "", what === "agent" ? "agent type" : "model"), h("span", ""), h("span", "r", "share"), h("span", "r", "total"), h("span", "r", "out"));
+  const kids = [h("h3", "tokh", title), head];
+  for (const r of rows) {
+    const row = h("div", "tokrow", "", { "data-tip": tokTip(r, what) });
+    const nm = h("span", "tokname", r.name);
+    if (what === "agent" && r.sessions) nm.append(h("span", "muted small", ` ${tokInt(r.sessions)}`));
+    row.append(nm, tokBar(r, max, metric), h("span", "r", tokPct(r.share)), h("span", "r", tokFmt(r.total)), h("span", "r", tokFmt(r.output)));
+    kids.push(row);
+  }
+  if (!rows.length) kids.push(h("div", "empty small", "nothing in this range"));
+  return kids;
+}
+function tokResearchRow() {
+  const led = RESEARCH && RESEARCH.state === "ok" && RESEARCH.data && RESEARCH.data.ledger;
+  if (!led || typeof led !== "object") return null;
+  const days = Array.isArray(led.last_7_days) ? led.last_7_days : [];
+  const pick = TOK.range === "today" ? [led.today] : days;
+  const rows = pick.filter((d) => d && typeof d === "object");
+  const tin = rows.reduce((a, d) => a + tokNum(d.tokens_in), 0), tout = rows.reduce((a, d) => a + tokNum(d.tokens_out), 0);
+  const row = h("div", "tokrow tokrs muted small", "", { "data-tip": "Research bot (valkyrie-dispatch)\nSeparate population on the same plan: shown for reference, never included in the totals or shares above." });
+  row.append(h("span", "tokname", "research bot"), h("span", "tokrsn", `valkyrie-dispatch (separate, not in totals): in ${tokFmt(tin)} · out ${tokFmt(tout)}${TOK.range === "30d" ? " · last 7 days only" : ""}`));
+  const go = h("button", "ghost tiny", "→ Research tab");
+  go.onclick = () => setView("research");
+  row.append(go);
+  return row;
+}
+function tokDaily(daily, range) {
+  const days = (Array.isArray(daily) ? daily : []).filter((d) => d && typeof d === "object" && d.by_family && typeof d.by_family === "object");
+  const kids = [h("h3", "tokh", range === "today" ? "Per hour (stacked by model family)" : "Per day (stacked by model family)")];
+  if (!days.length) return kids.concat(h("div", "empty small", "no data"));
+  const W = Math.max(60, days.length * 14), H = 56, bw = W / days.length;
+  const max = Math.max(1, ...days.map((d) => FAMILY.reduce((a, f) => a + tokNum(d.by_family[f]), 0)));
+  const root = svg("svg", { class: "tokdaily", viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", role: "img", "aria-label": "Tokens per " + (range === "today" ? "hour" : "day") + ", stacked by model family; see the numbers in the table below" });
+  const defs = svg("defs");
+  const hatch = svg("pattern", { id: "tokhatch", width: "4", height: "4", patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" });
+  hatch.append(svg("rect", { width: 4, height: 4, class: "pat-sonnet-bg" }), svg("line", { x1: 0, y1: 0, x2: 0, y2: 4, class: "pat-sonnet-ln" }));
+  const dots = svg("pattern", { id: "tokdots", width: "4", height: "4", patternUnits: "userSpaceOnUse" });
+  dots.append(svg("rect", { width: 4, height: 4, class: "pat-haiku-bg" }), svg("circle", { cx: 2, cy: 2, r: 0.9, class: "pat-haiku-dot" }));
+  defs.append(hatch, dots);
+  root.append(defs);
+  days.forEach((d, i) => {
+    let y = H;
+    const parts = [];
+    for (const f of FAMILY) {
+      const v = tokNum(d.by_family[f]);
+      if (v <= 0) continue;
+      const hh = (v / max) * (H - 4);
+      y -= hh;
+      root.append(svg("rect", { x: i * bw + 1, y, width: Math.max(1, bw - 2), height: hh, class: `fam-${f}` }));
+      parts.push(`${f} ${tokFmt(v)}`);
+    }
+    root.append(svg("rect", { x: i * bw, y: 0, width: bw, height: H, class: "hit", "data-tip": `${tokName(d.label, "?")}\n${parts.length ? parts.join(" · ") : "no usage"}\ntotal ${tokFmt(FAMILY.reduce((a, f) => a + tokNum(d.by_family[f]), 0))}` }));
+  });
+  kids.push(root);
+  const lg = h("div", "toklegend small muted");
+  for (const f of FAMILY) { const it = h("span", "lgitem", f); it.prepend(tokSwatch(`fam-${f}`)); lg.append(it); }
+  kids.push(lg);
+  kids.push(h("div", "small muted", `${tokName(days[0].label, "")} → ${tokName(days[days.length - 1].label, "")}`));
+  return kids;
+}
+function tokMatrix(m) {
+  const det = h("details", "tokmatrix");
+  det.append(h("summary", "", "Agent × model table"));
+  if (!m || !Array.isArray(m.agents) || !Array.isArray(m.models) || !Array.isArray(m.total)) return det;
+  const tbl = h("table", "rstable");
+  const hr = h("tr");
+  hr.append(h("th", "", "agent type"), ...m.models.map((x) => h("th", "", tokName(x, "?"))));
+  const thead = h("thead");
+  thead.append(hr);
+  const tb = h("tbody");
+  m.agents.forEach((a, i) => {
+    const tr = h("tr");
+    tr.append(h("td", "", tokName(a, "?")));
+    const rowv = Array.isArray(m.total[i]) ? m.total[i] : [];
+    m.models.forEach((_, j) => tr.append(h("td", "r", tokInt(tokNum(rowv[j])))));
+    tb.append(tr);
+  });
+  tbl.append(thead, tb);
+  det.append(tbl);
+  return det;
+}
+function tokCounted() {
+  const det = h("details", "tokcounted");
+  det.append(h("summary", "", "What is counted"),
+    h("p", "small", "Counted from Claude Code transcripts on this host (~/.claude/projects), for terminal and desktop sessions and their subagents. With All domains this includes projects outside the workspace."),
+    h("p", "small", "Cache reads dominate the totals: every call re-reads the whole conversation from the cache, so a long session adds many millions of cache-read tokens. Switch the metric to Output to see what the models wrote."),
+    h("p", "small", "Not counted: sessions the dashboard did not observe (other devices, claude.ai chats, transcripts already deleted by Claude Code's cleanup, 30 days by default), local-model agents (niu-agent), and the research bot, which is shown separately."),
+    h("p", "small", "Tokens are not the plan's limit units: the weekly % in Weekly usage is the authoritative measure."));
+  return det;
+}
+function tokSummary(t, k) {
+  const tot = tokNum(t.totals.total) || 0;
+  const bits = [`Token usage, ${TOK_RANGES[TOK.range].toLowerCase()}: ${tokFmt(tot)} tokens`];
+  if (tot > 0) bits[0] += ` (cache reads ${tokPct((tokNum(t.totals.cache_read) / tot) * 100)}, output ${tokPct((tokNum(t.totals.output) / tot) * 100)})`;
+  const a = k.agents[0], m = k.models[0];
+  if (a && m && tot > 0) bits.push(`Most by ${a.name} (${tokPct(a.share)}) and model ${m.name} (${tokPct(m.share)}) by ${TOK_METRICS[TOK.metric][0].toLowerCase()}.`);
+  return bits.join(". ").replace(/\.\./g, ".").replace(/([^.])$/, "$1.");
+}
+function renderTokens(t) {
+  const box = $("tokbody"), sum = $("toksum"), upd = $("tokupd");
+  TOK.data = t && (t.state === "ok" || t.state === "scanning") ? t : null;
+  const note = (text, cls) => { box.replaceChildren(h("div", cls || "empty", text)); sum.textContent = ""; };
+  if (t && t.state === "loading") { upd.textContent = ""; return note(TOK_MSG.loading); }
+  const okShape = t && typeof t === "object" && t.totals && typeof t.totals === "object" && t.kpis && typeof t.kpis === "object" && Array.isArray(t.by_agent) && Array.isArray(t.by_model);
+  if (!t || typeof t !== "object" || !["ok", "scanning", "empty", "disabled"].includes(t.state) || (["ok", "scanning"].includes(t.state) && !okShape)) { TOK.data = null; upd.textContent = ""; return note(TOK_MSG.error, "msg err"); }
+  const cov = t.coverage && typeof t.coverage === "object" ? t.coverage : {};
+  if (t.state === "empty" || t.state === "disabled") {
+    upd.textContent = "";
+    if (t.state === "empty" && cov.scanning) return note(`Reading transcripts for the first time: ${tokInt(tokNum(cov.files_done))} of ${tokInt(tokNum(cov.files_total))} files`);
+    return note(TOK_MSG[t.state]);
+  }
+  const metric = TOK.metric;
+  const agents = tokRows(t.by_agent, metric, "agent_type"), models = tokRows(t.by_model, metric, "model");
+  const kids = [];
+  if (t.state === "scanning") kids.push(h("div", "usagenote small", `Reading transcripts for the first time: ${tokInt(tokNum(cov.files_done))} of ${tokInt(tokNum(cov.files_total))} files. The numbers below are partial.`, { role: "status" }));
+  if (TOK.stale) kids.push(h("div", "usagenote warn small", `Can't reach the dashboard server: showing the data as of ${hm(TOK.asof)}.`));
+  if (tokNum(cov.corrupt_lines) > 0) kids.push(h("div", "usagenote warn small", `${tokInt(cov.corrupt_lines)} transcript line${cov.corrupt_lines === 1 ? "" : "s"} could not be read and ${cov.corrupt_lines === 1 ? "was" : "were"} skipped.`));
+  const kp = h("div", "tokkpis");
+  for (const r of ["today", "7d", "30d"]) {
+    const v = t.kpis[r] && typeof t.kpis[r] === "object" ? t.kpis[r] : {};
+    const stat = h("div", `stat tokkpi${r === TOK.range ? " on" : ""}`, "", { "data-tip": `${TOK_RANGES[r]}\ntotal ${tokInt(tokNum(v.total))} tokens\noutput ${tokInt(tokNum(v.output))} tokens` });
+    stat.append(h("span", "small muted", TOK_RANGES[r]), h("b", "", tokFmt(tokNum(v.total))), h("span", "small muted", `output ${tokFmt(tokNum(v.output))}`));
+    kp.append(stat);
+  }
+  kids.push(kp);
+  const T = t.totals;
+  kids.push(h("div", "toktotals small", `${TOK_RANGES[TOK.range]} · in ${tokFmt(tokNum(T.input))} · out ${tokFmt(tokNum(T.output))} · cache write ${tokFmt(tokNum(T.cache_write))} · cache read ${tokFmt(tokNum(T.cache_read))} · ${tokInt(tokNum(T.messages))} calls · ${tokInt(tokNum(T.sessions))} sessions`));
+  const lg = h("div", "toklegend small muted");
+  for (const [, label, cls] of TOK_KINDS) { const it = h("span", "lgitem", label); it.prepend(tokSwatch(cls)); lg.append(it); }
+  kids.push(lg);
+  kids.push(...tokRankBlock("By agent type (ranked by " + TOK_METRICS[metric][0].toLowerCase() + ")", agents, metric, "agent"));
+  const rs = tokResearchRow();
+  if (rs) kids.push(rs);
+  kids.push(...tokRankBlock("By model", models, metric, "model"));
+  kids.push(...tokDaily(t.daily, t.range));
+  kids.push(tokMatrix(t.matrix), tokCounted());
+  box.replaceChildren(...kids);
+  sum.textContent = tokSummary(t, { agents, models });
+  upd.textContent = [`updated ${hm(TOK.asof || t.now)}`, tokNum(cov.oldest) ? `data from ${usageDay(cov.oldest)}` : ""].filter(Boolean).join(" · ");
+}
+function redrawTokens() { if (TOK.open && TOK.data) renderTokens(TOK.data); }
+async function loadTokens() {
+  if (VIEW !== "events" || document.hidden || !TOK.open) return;
+  const mine = ++TOK.seq, range = TOK.range, dom = $("domain").value;
+  if (!TOK.data) renderTokens({ state: "loading" });
+  const url = `/api/usage/tokens?range=${range}${dom ? `&domain=${encodeURIComponent(dom)}` : ""}`;
+  const d = await fetch(url, { credentials: "same-origin" }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  if (VIEW !== "events" || mine !== TOK.seq) return;
+  if (d && typeof d.state === "string") { TOK.stale = false; TOK.asof = Date.now() / 1000; renderTokens(d); return; }
+  if (TOK.data) { TOK.stale = true; renderTokens(TOK.data); } else renderTokens(null);
+}
+function setTokOpen(open) {
+  TOK.open = open; store.set("niu.tokens.open", open);
+  $("tokpanel").classList.toggle("collapsed", !open);
+  $("toktoggle").setAttribute("aria-expanded", String(open));
+  $("toktoggle").setAttribute("aria-label", `${open ? "Collapse" : "Expand"} Token usage`);
+  $("toktoggle").textContent = open ? "▾" : "▸";
+  if (open) loadTokens();
+}
+function setTokRange(r) {
+  TOK.range = r; store.set("niu.tokens.range", r);
+  for (const k of Object.keys(TOK_RANGES)) { $(`tok-r-${k}`).classList.toggle("on", k === r); $(`tok-r-${k}`).setAttribute("aria-pressed", String(k === r)); }
+  TOK.data = null; loadTokens();
+}
+$("toktoggle").onclick = () => setTokOpen(!TOK.open);
+for (const r of Object.keys(TOK_RANGES)) $(`tok-r-${r}`).onclick = () => setTokRange(r);
+$("tokmetric").value = TOK.metric;
+$("tokmetric").onchange = () => { const v = $("tokmetric").value; if (!Object.hasOwn(TOK_METRICS, v)) return; TOK.metric = v; store.set("niu.tokens.metric", v); redrawTokens(); };
+setTokOpen(TOK.open);
+for (const r of Object.keys(TOK_RANGES)) { $(`tok-r-${r}`).classList.toggle("on", r === TOK.range); $(`tok-r-${r}`).setAttribute("aria-pressed", String(r === TOK.range)); }
+setInterval(loadTokens, 60000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) loadTokens(); });
 
 // ---------- Research tab (valkyrie-dispatch monitor) ----------
 // /api/research is already allowlisted by the server, but nothing from it is ever shown as HTML:

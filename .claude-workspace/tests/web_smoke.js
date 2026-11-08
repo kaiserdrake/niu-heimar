@@ -708,6 +708,131 @@ async function usageChecks(fx) {
   ctx.fetch = realFetch; run('VIEW = "agents"');
   return "usage ok";
 }
+// Token usage panel: ranked bars, KPI boxes, metric picker, the research-bot row kept out of the totals, states and hostile values.
+async function tokenChecks(fx) {
+  const fail = (m) => { throw new Error("tokens: " + m); };
+  const run = (c) => vm.runInContext(c, ctx);
+  const get = (id) => els.get(id);
+  const cls = (n) => n.className || "";
+  const find = (re, tag) => allOf(get("tokbody")).filter((n) => (!tag || n.tagName === tag) && re.test(cls(n)));
+  const rowsOf = () => find(/\btokrow\b/, "div").filter((n) => !/\btokhead\b|\btokrs\b/.test(cls(n)));
+  const names = () => rowsOf().map((n) => textOf(n.children[0]).trim().replace(/\s+\d+$/, ""));
+  ctx.TP_TRAP = true;   // any innerHTML write while rendering throws
+  try {
+    ctx.TOK_FX = fx;
+    run('TOK.range = "7d"; TOK.metric = "total"; TOK.stale = false; RESEARCH = null; renderTokens(TOK_FX)');
+    const text = textOf(get("tokbody"));
+    const kp = find(/\btokkpi\b/, "div");
+    if (kp.length !== 3 || !/Today/.test(textOf(kp[0])) || !/7 days/.test(textOf(kp[1])) || !/30 days/.test(textOf(kp[2])) || !/output 120k/.test(textOf(kp[0]))) fail("KPI boxes: " + kp.map(textOf));
+    if (!/4\.8M/.test(textOf(kp[0])) || !/150\.0M/.test(textOf(kp[2]))) fail("KPI numbers: " + kp.map(textOf));
+    if (!/7 days · in .* · out .* · cache write .* · cache read .* · 3,560 calls · 32 sessions/.test(text)) fail("totals line: " + text.slice(0, 300));
+    const nm = names();
+    if (nm[0] !== "session" || nm[1] !== "implementer") fail("agent ranking: " + nm);
+    if (!nm.includes("other (4)") || nm.indexOf("other (4)") !== 4) fail("folded row stays last in its list: " + nm);
+    if (!nm.includes("<b>evil</b>") || !nm.includes("<img onerror=x>")) fail("hostile names must show as literal text: " + nm);
+    if (!nm.includes("opus-5-5") || nm.indexOf("opus-5-5") < 5) fail("models listed after the agents: " + nm);
+    for (const k of ["tk-in", "tk-out", "tk-cw", "tk-cr"]) if (!find(new RegExp("\\b" + k + "\\b"), "rect").length) fail("bar segment " + k);
+    for (const f of ["fam-opus", "fam-sonnet", "fam-haiku"]) if (!find(new RegExp("\\b" + f + "\\b"), "rect").length) fail("daily column " + f);
+    const hits = find(/\bhit\b/, "rect");
+    if (hits.length !== fx.daily.length || hits.some((r) => !(r.getAttribute("data-tip") || "").includes("\n"))) fail("daily tooltips: " + hits.length);
+    const tips = rowsOf().map((n) => n.getAttribute("data-tip") || "");
+    if (tips.some((t) => !t.includes("\n")) || !/^session · \d+%\ninput .* · output .*\ncache write .* · cache read .*\n3,000 calls · 12 sessions$/.test(tips[0])) fail("row tooltip: " + JSON.stringify(tips[0]));
+    if (allOf(get("tokbody")).some((n) => n.getAttribute && n.getAttribute("title") !== null)) fail("native title attribute (not themed)");
+    if (!/input/.test(text) || !/output/.test(text) || !/cache write/.test(text) || !/cache read/.test(text)) fail("legend names the four kinds");
+    if (!/What is counted/.test(text) || !/Cache reads dominate/.test(text) || !/did not observe/.test(text)) fail("'What is counted' note");
+    if (!/Agent × model table/.test(text) || !/opus-5-5/.test(textOf(find(/\btokmatrix\b/, "details")[0]))) fail("matrix fallback table");
+    if (find(/\btokdaily\b/, "svg")[0].getAttribute("role") !== "img" || !/stacked by model family/.test(find(/\btokdaily\b/, "svg")[0].getAttribute("aria-label"))) fail("daily chart aria-label");
+    const sum = textOf(get("toksum")).trim();
+    if (!sum.startsWith("Token usage, 7 days:") || !/Most by session/.test(sum) || !/cache reads \d+%/.test(sum)) fail("summary: " + sum);
+    if (get("toksum").getAttribute("aria-live") !== null && get("toksum").getAttribute("aria-live") !== "polite") fail("aria-live");
+    if (!/updated/.test(get("tokupd").textContent) || !/data from/.test(get("tokupd").textContent)) fail("update line: " + get("tokupd").textContent);
+    if (find(/\btokrs\b/, "div").length) fail("research row shown without research data");
+    // research bot row: shown muted below the agents, never in totals or shares
+    const before = JSON.stringify(run("tokRows(TOK_FX.by_agent, 'total', 'agent_type').map((r) => [r.name, r.total, r.share])"));
+    run('RESEARCH = { state: "ok", data: { ledger: { today: { tokens_in: 1200000, tokens_out: 80000 }, last_7_days: [{ tokens_in: 100, tokens_out: 5 }, { tokens_in: 900, tokens_out: 15 }] } } }; renderTokens(TOK_FX)');
+    const rs = find(/\btokrs\b/, "div");
+    if (rs.length !== 1 || !/research bot/.test(textOf(rs[0])) || !/separate, not in totals/.test(textOf(rs[0])) || !/in 1\.0k · out 20/.test(textOf(rs[0]))) fail("research row (7 days): " + rs.map(textOf));
+    if (allOf(rs[0]).filter((n) => n.tagName === "button").length !== 1 || typeof allOf(rs[0]).find((n) => n.tagName === "button").onclick !== "function") fail("research link");
+    if (names().includes("research bot")) fail("research row is not a ranked row");
+    if (JSON.stringify(run("tokRows(TOK_FX.by_agent, 'total', 'agent_type').map((r) => [r.name, r.total, r.share])")) !== before) fail("research row changed the shares");
+    if (!/Token usage, 7 days: 4[0-9.]+M tokens/.test(textOf(get("toksum")))) fail("totals changed by the research row: " + textOf(get("toksum")));
+    run('TOK.range = "today"; renderTokens(TOK_FX)');
+    if (!/in 1\.2M · out 80k/.test(textOf(find(/\btokrs\b/, "div")[0]))) fail("research row (today)");
+    run('TOK.range = "30d"; renderTokens(TOK_FX)');
+    if (!/last 7 days only/.test(textOf(find(/\btokrs\b/, "div")[0]))) fail("research row (30 days) note");
+    run('TOK.range = "7d"; RESEARCH = { state: "error", data: null }; renderTokens(TOK_FX)');
+    if (find(/\btokrs\b/, "div").length) fail("research row hidden when Research is not ok");
+    run("RESEARCH = null");
+    // metric picker: ranking and shares follow the chosen metric
+    for (const m of ["output", "inout", "cache_read", "total"]) {
+      run(`TOK.metric = "${m}"; renderTokens(TOK_FX)`);
+      const sh = run("tokRows(TOK_FX.by_agent, TOK.metric, 'agent_type').map((r) => r.share)");
+      if (Math.abs(sh.reduce((a, b) => a + b, 0) - 100) > 0.001) fail("shares sum to 100 for " + m);
+      if (!new RegExp("ranked by " + {output: "output", inout: "input \\+ cache write", cache_read: "cache read", total: "total"}[m]).test(textOf(get("tokbody")))) fail("heading names the metric " + m);
+    }
+    run('TOK.metric = "output"; renderTokens(TOK_FX)');
+    if (rowsOf().some((r) => allOf(r).some((n) => /\btk-(cr|in|cw)\b/.test(cls(n))))) fail("output metric draws only output segments");
+    run('TOK.metric = "total"');
+    // states
+    const msgs = { loading: /^Loading…$/, empty: /No Claude usage found in the transcripts yet\./, disabled: /Token statistics are off \(NIU_USAGE_TOKENS=0/ };
+    for (const [state, re] of Object.entries(msgs)) {
+      run(`renderTokens({ state: "${state}" })`);
+      if (!re.test(textOf(get("tokbody")).trim()) || textOf(get("toksum")).trim() !== "") fail(`${state} message: ` + textOf(get("tokbody")));
+    }
+    run('renderTokens({ state: "empty", coverage: { scanning: true, files_done: 412, files_total: 1930 } })');
+    if (!/Reading transcripts for the first time: 412 of 1[,.]?930 files/.test(textOf(get("tokbody")))) fail("scanning progress with no data yet: " + textOf(get("tokbody")));
+    run('renderTokens({ ...TOK_FX, state: "scanning", coverage: { ...TOK_FX.coverage, scanning: true, files_done: 412, files_total: 1930 } })');
+    if (!/Reading transcripts for the first time: 412 of 1[,.]?930 files\. The numbers below are partial/.test(textOf(get("tokbody"))) || !names().includes("session")) fail("scanning state keeps the partial data");
+    run('renderTokens({ ...TOK_FX, coverage: { ...TOK_FX.coverage, corrupt_lines: 3 } })');
+    if (!/3 transcript lines could not be read/.test(textOf(get("tokbody")))) fail("corrupt lines note");
+    for (const bad of ["null", '{ state: "error", message: "boom <b>x</b>" }', '{ state: "bogus" }', '"text"', '{ state: "ok" }', '{ state: "ok", totals: {}, kpis: {}, by_agent: 5, by_model: [] }']) {
+      run(`renderTokens(${bad})`);
+      if (textOf(get("tokbody")).trim() !== "Can't read token usage from the dashboard server.") fail("error message for " + bad + ": " + textOf(get("tokbody")));
+    }
+    // hostile payload: wrong types never throw and no server text becomes markup
+    ctx.TOK_HOSTILE = { ...fx, tz: "<img onerror=x>", kpis: { today: "x", "7d": { total: "<b>", output: -5 }, "30d": null },
+      totals: { input: "a", output: NaN, cache_write: Infinity, cache_read: -1, total: "<i>", messages: "q", sessions: null },
+      by_agent: [null, "x", { agent_type: "<script>alert(1)</script>", input: "9", output: 1e308, cache_write: -4, cache_read: null, share: "<b>", sessions: "z", family: "javascript:x" }, { agent_type: 5 }],
+      by_model: [{ model: { a: 1 }, family: "<svg onload=x>", input: 1 }, { model: "m".repeat(500), family: "opus", output: 3 }],
+      matrix: { agents: ["a", 7, null], models: ["m"], total: [[1, "x"], "no", null] }, daily: [null, { label: "<b>", by_family: "no" }, { label: 5, by_family: { opus: "x", sonnet: -3, haiku: 1e300 } }],
+      coverage: { oldest: "x", last_scan: "y", scanning: "yes", files_done: -1, files_total: "<b>", corrupt_lines: "<i>" } };
+    run("renderTokens(TOK_HOSTILE)");
+    const ht = textOf(get("tokbody")) + textOf(get("toksum")) + get("tokupd").textContent;
+    if (!ht.includes("<script>alert(1)</script>")) fail("hostile agent name must appear as literal text");
+    if (find(/javascript|<svg/, "rect").length || allOf(get("tokbody")).some((n) => /javascript|<svg|onload/.test(cls(n)))) fail("hostile family leaked into a class");
+    if (allOf(get("tokbody")).some((n) => n.tagName === "script" || n.tagName === "img" || n.tagName === "b" && n.textContent === "<b>x</b>")) fail("markup created from payload text");
+    run("renderTokens({ ...TOK_FX, by_agent: [], by_model: [], daily: [], matrix: null })");
+    if (!textOf(get("tokbody")).includes("nothing in this range")) fail("empty lists render");
+  } finally { ctx.TP_TRAP = false; }
+  // fetching only while the Events tab is visible, URL, collapse, failure keeps the last data
+  const calls = [];
+  const realFetch = ctx.fetch;
+  ctx.fetch = (url) => { calls.push(String(url)); return Promise.resolve({ ok: true, json: () => Promise.resolve(fx) }); };
+  get("domain").value = "";
+  run('VIEW = "agents"; TOK.data = null; TOK.open = true; TOK.range = "7d"'); await run("loadTokens()");
+  if (calls.length) fail("fetched while the Events tab is not visible");
+  run('VIEW = "events"'); await run("loadTokens()");
+  if (calls.length !== 1 || calls[0] !== "/api/usage/tokens?range=7d") fail("fetch url: " + calls);
+  get("domain").value = "PER SONAL&x";
+  run("TOK.data = null"); calls.length = 0; await run("loadTokens()");
+  if (calls[0] !== "/api/usage/tokens?range=7d&domain=PER%20SONAL%26x") fail("domain is encoded: " + calls);
+  get("domain").value = "";
+  run("setTokRange('30d')"); await new Promise((r) => setImmediate(r));
+  if (!calls.some((u) => u === "/api/usage/tokens?range=30d") || get("tok-r-30d").getAttribute("aria-pressed") !== "true" || get("tok-r-7d").getAttribute("aria-pressed") !== "false") fail("range buttons: " + calls);
+  run("setTokRange('7d')");
+  run("setTokOpen(false)"); calls.length = 0; await run("loadTokens()");
+  if (calls.length) fail("fetched while collapsed");
+  if (get("toktoggle").getAttribute("aria-expanded") !== "false" || !get("tokpanel").classList.contains("collapsed")) fail("collapse state");
+  run("setTokOpen(true)"); await new Promise((r) => setImmediate(r));
+  if (!calls.length) fail("expanding did not load");
+  ctx.fetch = () => Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
+  await run("loadTokens()");
+  if (!/showing the data as of/.test(textOf(get("tokbody"))) || !names().includes("session")) fail("a failed refresh keeps the last data with 'as of'");
+  run("TOK.data = null; TOK.stale = false"); await run("loadTokens()");
+  if (textOf(get("tokbody")).trim() !== "Can't read token usage from the dashboard server.") fail("fetch failure message: " + textOf(get("tokbody")));
+  ctx.fetch = realFetch; run('VIEW = "agents"; TOK.stale = false; TOK.data = null');
+  return "tokens ok";
+}
 (async () => {
   try {
     console.log(vm.runInContext(src, ctx, { filename: "app.js" }));
@@ -716,6 +841,7 @@ async function usageChecks(fx) {
     console.log(flagChecks());
     if (process.argv[4]) console.log(await researchChecks(JSON.parse(fs.readFileSync(process.argv[4], "utf8"))));
     if (process.argv[6]) console.log(await usageChecks(JSON.parse(fs.readFileSync(process.argv[6], "utf8"))));
+    if (process.argv[7]) console.log(await tokenChecks(JSON.parse(fs.readFileSync(process.argv[7], "utf8"))));
     if (process.argv[5]) console.log(await topicsChecks(JSON.parse(fs.readFileSync(process.argv[5], "utf8")), fs.readFileSync(process.argv[2], "utf8")));
   } catch (e) { console.log("ERROR:", e.message, (e.stack || "").split("\n").slice(1,5).join(" ; ")); process.exit(1); }
 })();

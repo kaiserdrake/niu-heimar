@@ -17,7 +17,7 @@ SH = WS / ".claude-workspace"
 tmp = Path(tempfile.mkdtemp())
 env = dict(os.environ, NIU_EVENTS_DB=str(tmp / "state" / "events.db"),
            FAKE_GH_LOG=str(tmp / "gh.log"), FAKE_PR_FILE=str(tmp / "pr_state"), NIU_HOST_LABEL="testhost",
-           NIU_USAGE_COLLECT="0", NIU_USAGE_DB=str(tmp / "state" / "usage.db"),  # no background sampling in tests
+           NIU_USAGE_COLLECT="0", NIU_USAGE_DB=str(tmp / "state" / "usage.db"), CLAUDE_CONFIG_DIR=str(tmp / "no-claude"),  # no background sampling or transcript scanning in tests
            NIU_CLAUDE_USAGE_API="0", NIU_CLAUDE_CREDENTIALS="/nonexistent/creds.json",  # never the real login
            NIU_RESEARCH_TOKEN_FILE=str(tmp / "no-such-research.token"), NIU_RESEARCH_CONFIG=str(tmp / "no-such-research.json"),  # nor the real token
            NIU_TOPICS_TOKEN_FILE=str(tmp / "state" / "topics-test.token"))
@@ -129,17 +129,26 @@ try:
     # Weekly usage panel (Events tab): markup, route, and the render code never uses innerHTML
     check(b"p-usage" in raw and b'id="usagegraph"' in raw and b'id="usagesum"' in raw and b'aria-live="polite"' in raw, "Weekly usage panel markup")
     check(raw.index(b'id="prs"') < raw.index(b'id="usagebody"') < raw.index(b'id="feed"'), "Weekly usage sits between Pull requests and the Event feed")
-    check(b".p-usage" in css and b'"left usage usage"' in css and b"max-width: 1199px" in css, "Events grid areas for the usage panel")
-    check(b"p-tokens" not in raw, "no Token usage panel yet (B2)")
+    check(b".p-usage" in css and b'"left usage tokens"' in css and b'"left usage" "left tokens" "left feed"' in css and b"max-width: 1199px" in css, "Events grid areas: usage | tokens, stacked under 1200px")
+    check(b"p-tokens" in raw and b'id="tokbody"' in raw and b'id="toksum"' in raw and b'id="tokmetric"' in raw and b'aria-live="polite"' in raw, "Token usage panel markup")
+    check(raw.index(b'id="usagebody"') < raw.index(b'id="tokbody"') < raw.index(b'id="feed"'), "Token usage sits after Weekly usage and before the Event feed")
+    check(b" onclick=" not in raw and b" style=" not in raw.split(b'id="tokpanel"')[1].split(b"</section>")[0], "no inline handlers or styles in the Token usage markup")
     appjs = req("GET", "/app.js")[3].decode()
     ub = appjs[appjs.index("// ---------- Weekly usage panel"):appjs.index("// ---------- Research tab")]
     check("innerHTML" not in ub and "insertAdjacentHTML" not in ub and "title=" not in ub and "setAttribute(\"title\"" not in ub, "usage render code: no innerHTML, no native titles")
-    check('"llmcard", "usagegraph"' in appjs, "usage graph is bound to the themed tooltip")
+    check('"llmcard", "usagegraph", "tokbody"' in appjs, "usage graph and token panel are bound to the themed tooltip")
     st, _, js, _ = req("GET", "/api/usage/history")
     check(st == 200 and js["state"] == "disabled", f"usage history: disabled when collection is off: {js}")
     for q in ("?days=-1", "?days=abc", "?days=%3Cscript%3E", "?days=9999", "?range=../../x"):
         check(req("GET", "/api/usage/history" + q)[0] == 200, f"usage history {q} answered normally")
     check(req("POST", "/api/usage/history", {}, POSTH)[0] == 404, "no POST on /api/usage/*")
+    st, _, js, _ = req("GET", "/api/usage/tokens")
+    check(st == 200 and js["state"] == "disabled" and js["range"] == "7d" and js["domain"] == "", f"usage tokens: disabled when collection is off: {js}")
+    for q in ("?range=../../x", "?range=%3Cscript%3E&domain=%3Cscript%3E", "?range=30d&domain=" + "a" * 3000, "?domain=bogus"):
+        check(req("GET", "/api/usage/tokens" + q)[0] == 200, f"usage tokens {q[:40]} answered normally")
+    check(req("GET", "/api/usage/tokens?range=today")[2]["range"] == "today", "range=today accepted")
+    check(req("POST", "/api/usage/tokens", {}, POSTH)[0] == 404, "no POST on /api/usage/tokens")
+    check(b"tokens" in appjs.encode() and "/api/usage/tokens?range=" in appjs, "front end uses /api/usage/tokens")
     st, _, js, rawr = req("GET", "/api/research")
     check(st == 200 and js["state"] == "not_configured" and js["data"] is None, f"/api/research without a token file: {js and js.get('state')}")
     check(req("POST", "/api/research/refresh", {}, {"Origin": ORIGIN})[0] == 403, "research refresh without CSRF header -> 403")
@@ -344,9 +353,9 @@ try:
         tp_path.write_text(json.dumps({"ok": tp_env("list_ok"), "hostile": tp_env("hostile"), "overlimit": tp_env("cli_overlimit"),
                                        "not_paired": {"state": "not_paired", "message": niu_topics.MESSAGES["not_paired"], "topics": []}}))
         r = subprocess.run([node, str(SH / "tests" / "web_smoke.js"), str(SH / "web" / "app.js"), str(st_path), str(rs_path), str(tp_path),
-                            str(SH / "tests" / "fixtures" / "usage" / "history.json")],
+                            str(SH / "tests" / "fixtures" / "usage" / "history.json"), str(SH / "tests" / "fixtures" / "usage" / "tokens.json")],
                            capture_output=True, text=True, timeout=60)
-        check(r.returncode == 0 and "rendered" in r.stdout and "llm ok" in r.stdout and "research ok" in r.stdout and "topics ok" in r.stdout and "timeline ok" in r.stdout and "flag ok" in r.stdout and "usage ok" in r.stdout,
+        check(r.returncode == 0 and "rendered" in r.stdout and "llm ok" in r.stdout and "research ok" in r.stdout and "topics ok" in r.stdout and "timeline ok" in r.stdout and "flag ok" in r.stdout and "usage ok" in r.stdout and "tokens ok" in r.stdout,
               f"app.js renders without errors (Agents, Timeline, Research and Topics views): {r.stdout.strip()} {r.stderr.strip()[:300]}")
     else:
         print("web: node not found, front-end smoke run skipped")
