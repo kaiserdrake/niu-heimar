@@ -330,8 +330,8 @@ try:
                                        "not_paired": {"state": "not_paired", "message": niu_topics.MESSAGES["not_paired"], "topics": []}}))
         r = subprocess.run([node, str(SH / "tests" / "web_smoke.js"), str(SH / "web" / "app.js"), str(st_path), str(rs_path), str(tp_path)],
                            capture_output=True, text=True, timeout=60)
-        check(r.returncode == 0 and "rendered" in r.stdout and "llm ok" in r.stdout and "research ok" in r.stdout and "topics ok" in r.stdout,
-              f"app.js renders without errors (Agents, Research and Topics views): {r.stdout.strip()} {r.stderr.strip()[:300]}")
+        check(r.returncode == 0 and "rendered" in r.stdout and "llm ok" in r.stdout and "research ok" in r.stdout and "topics ok" in r.stdout and "timeline ok" in r.stdout,
+              f"app.js renders without errors (Agents, Timeline, Research and Topics views): {r.stdout.strip()} {r.stderr.strip()[:300]}")
     else:
         print("web: node not found, front-end smoke run skipped")
 

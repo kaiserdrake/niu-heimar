@@ -103,7 +103,8 @@ envfile = proj / (".e" + "nv")
 envfile.write_text("API_TOKEN=ENVSECRET\n")
 
 state = tmp / "state"
-base_env = dict(os.environ, NIU_EVENTS_DB=str(state / "events.db"), NIU_AGENT_CONFIG_DIR=str(tmp / "agentcfg"),
+# Pin the endpoint config to the template: the user's local ollama.json (gitignored) must not change results.
+base_env = dict(os.environ, NIU_EVENTS_DB=str(state / "events.db"), NIU_OLLAMA_CONFIG=str(WS / ".claude-workspace" / "ollama.template.json"), NIU_AGENT_CONFIG_DIR=str(tmp / "agentcfg"),
                 FAKE_CLAUDE_LOG=str(log), OLLAMA_REMOTE_BASE_URL=remote.url, OLLAMA_LOCAL_BASE_URL=local.url,
                 PATH=f"{tmp / 'bin'}:{os.environ['PATH']}", CLAUDE_CODE_OAUTH_TOKEN="PARENT-OAUTH-SECRET",
                 ANTHROPIC_API_KEY="PARENT-API-KEY", CLAUDECODE="1")

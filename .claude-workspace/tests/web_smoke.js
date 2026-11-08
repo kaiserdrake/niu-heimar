@@ -75,6 +75,42 @@ ctx.fetchLLM = async () => {
   if (!/<span class="nm">online<\/span>/.test(html)) throw new Error("up endpoint not online");
   return "llm ok";
 };
+// Timeline: agent lanes carry the model ("designer [opus-5-5]"), muted and italic when it is a guess, plus a themed tooltip.
+function timelineChecks() {
+  const fail = (m) => { throw new Error("timeline: " + m); };
+  const run = (c) => vm.runInContext(c, ctx);
+  run(`(() => {
+    const s0 = STATE.sessions[0], t = STATE.now;
+    globalThis.TL_SAVED = s0.subagents;
+    s0.subagents = [
+      { id: "tl-a", type: "designer", start: t - 300, stop: t - 60, tools: [], parent: s0.id, model: "claude-opus-5-5", model_src: "actual" },
+      { id: "tl-b", type: "implementer", start: t - 200, stop: null, tools: [], parent: s0.id, model: "claude-sonnet-5-5-20261001", model_src: "definition" },
+      { id: "tl-c", type: "test-reviewer", start: t - 100, stop: null, tools: [], parent: s0.id, model: null, model_src: null },
+      { id: "tl-d", type: "an-extremely-long-agent-type-name", start: t - 50, stop: null, tools: [], parent: s0.id, model: "claude-haiku-5-5", model_src: "inherited" },
+    ];
+    renderTimeline();
+  })()`);
+  const nodes = allOf(els.get("timeline"));
+  const label = (type) => nodes.find((n) => n.tagName === "text" && (n.getAttribute("data-tip") || "").split("\n")[0] === type);
+  const tag = (n) => kidsOf(n).find((k) => k.tagName === "tspan" && /\btlmodel\b/.test(k.className || k.getAttribute("class") || ""));
+  const a = label("designer");
+  if (!a || !tag(a) || tag(a).textContent !== " [opus-5-5]") fail("actual model label: " + (a && textOf(a)));
+  if (/\bguess\b/.test(tag(a).getAttribute("class"))) fail("actual model marked as a guess");
+  if (a.getAttribute("data-tip") !== "designer\nmodel: opus-5-5") fail("actual model tooltip: " + a.getAttribute("data-tip"));
+  const b = label("implementer");
+  if (!b || !tag(b) || tag(b).textContent !== " [sonnet-5-5]") fail("date suffix not stripped: " + (b && textOf(b)));
+  if (!/\bguess\b/.test(tag(b).getAttribute("class"))) fail("definition model not marked as a guess");
+  if (!/model: sonnet-5-5 \(from agent definition\)/.test(b.getAttribute("data-tip"))) fail("definition tooltip: " + b.getAttribute("data-tip"));
+  const c = label("test-reviewer");
+  if (!c || tag(c) || kidsOf(c).length !== 1 || c.getAttribute("data-tip") !== "test-reviewer") fail("lane without a model should have no model tag");
+  const d = label("an-extremely-long-agent-type-name");
+  if (!d || !tag(d) || !/model: haiku-5-5 \(inherited\)/.test(d.getAttribute("data-tip"))) fail("inherited model lane");
+  if (kidsOf(d)[0].textContent.length >= "an-extremely-long-agent-type-name".length) fail("long agent type not truncated to make room for the model");
+  const bar = nodes.find((n) => n.tagName === "rect" && /^implementer\nmodel: sonnet-5-5/.test(n.getAttribute("data-tip") || ""));
+  if (!bar) fail("bar tooltip lacks the model");
+  run("STATE.sessions[0].subagents = globalThis.TL_SAVED; renderTimeline()");
+  return "timeline ok";
+}
 // Research tab: optional 4th argument = JSON file with /api/research envelopes {m1, m2, hostile} (data already shaped by the server).
 const kidsOf = (e) => (e.children || []).filter((c) => c && typeof c === "object");
 const allOf = (e) => [e, ...kidsOf(e).flatMap(allOf)];
@@ -505,6 +541,7 @@ async function topicsChecks(fx, appSrc) {
   try {
     console.log(vm.runInContext(src, ctx, { filename: "app.js" }));
     console.log(await vm.runInContext(extra, ctx, { filename: "extra.js" }));
+    console.log(timelineChecks());
     if (process.argv[4]) console.log(await researchChecks(JSON.parse(fs.readFileSync(process.argv[4], "utf8"))));
     if (process.argv[5]) console.log(await topicsChecks(JSON.parse(fs.readFileSync(process.argv[5], "utf8")), fs.readFileSync(process.argv[2], "utf8")));
   } catch (e) { console.log("ERROR:", e.message, (e.stack || "").split("\n").slice(1,5).join(" ; ")); process.exit(1); }
