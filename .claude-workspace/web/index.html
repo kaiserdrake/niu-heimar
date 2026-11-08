@@ -97,6 +97,20 @@
     <div id="prs" class="pb"></div>
   </section>
 
+  <section id="usagepanel" class="panel p-usage" aria-label="Weekly Claude usage">
+    <div class="ph"><h2>Weekly usage</h2>
+      <button id="usagetoggle" class="ghost tiny usagetoggle" aria-expanded="true" aria-controls="usagebody" aria-label="Collapse Weekly usage">▾</button>
+      <span class="seg" role="group" aria-label="Weeks shown">
+        <button id="usage-w2" class="segbtn" aria-pressed="false">2w</button><button id="usage-w5" class="segbtn on" aria-pressed="true">5w</button><button id="usage-w10" class="segbtn" aria-pressed="false">10w</button>
+      </span>
+      <label class="check usage5h"><input type="checkbox" id="usage5h"> 5-hour</label>
+      <span id="usageupd" class="small muted"></span></div>
+    <div id="usagebody" class="pb usagebody">
+      <div id="usagegraph" class="usagegraph"></div>
+      <p id="usagesum" class="usagesum small" aria-live="polite"></p>
+    </div>
+  </section>
+
   <section class="panel p-research" aria-label="Research agents">
     <div class="ph"><h2>Research agents</h2>
       <span class="seg" role="group" aria-label="Research view">

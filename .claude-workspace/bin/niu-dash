@@ -3,6 +3,8 @@
 
 Usage:
   niu-dash serve [--port 8765]      serve on 127.0.0.1 only (publish it with `tailscale serve`)
+                                    (also records Claude plan usage samples every 5 min into usage.db for the Events tab's Weekly usage graph;
+                                    set NIU_USAGE_COLLECT=0 to stop that, NIU_CLAUDE_USAGE_API=0 to stop the background usage API calls)
   niu-dash pair [--name laptop]     show a one-time code to pair a browser (interactive terminal only)
   niu-dash devices                  list paired browsers
   niu-dash revoke ID|all            remove paired browsers
@@ -31,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import niu_prs  # noqa: E402
 import niu_research  # noqa: E402
 import niu_topics  # noqa: E402
+import niu_usage  # noqa: E402
 from niu_events import connect, db_path, host_label  # noqa: E402
 from niu_state import SYSTEM_SESSIONS, live, mark_dirty, parse_since  # noqa: E402
 
@@ -261,6 +264,10 @@ class Handler(BaseHTTPRequestHandler):
             if not device_for(self._cookie()):
                 return self._json({"state": "not_paired", "message": niu_topics.MESSAGES["not_paired"], "topics": []}, 401)
             self._json(niu_topics.list_topics())
+        elif path == "/api/usage/history":
+            # Aggregate percentages only, read-only, cached 60 s; `days` is clamped to 7-70 (anything else gives 35).
+            days = parse_qs(urlparse(self.path).query).get("days", [None])[0]
+            self._json(niu_usage.history_cached(days))
         elif path == "/api/me":
             d = device_for(self._cookie())
             self._json({"paired": bool(d), "device": d and {"id": d["id"], "name": d["name"]}})
@@ -442,11 +449,14 @@ def cmd_serve(args):
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     srv.daemon_threads = True
     refresh_prs(force=True)
+    niu_usage.start_background()  # samples the Claude limits every 5 min for the Weekly usage graph (NIU_USAGE_COLLECT=0 turns it off)
     print(f"niu-dash: serving on http://127.0.0.1:{args.port} (publish with: tailscale serve --bg --https=8443 http://127.0.0.1:{args.port})", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        niu_usage.stop_background()
 
 
 def cmd_pair(args):

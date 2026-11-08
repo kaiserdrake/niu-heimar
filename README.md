@@ -173,6 +173,25 @@ not a hard security boundary against processes running as your own user.
   set `NIU_CLAUDE_USAGE_API=0` in the service's environment (`systemctl --user edit niu-dash`, and the same for
   `niu-notify`, adding `Environment=NIU_CLAUDE_USAGE_API=0` under `[Service]`).
 
+**Weekly usage** (Events tab, between *Pull requests* and the event feed; collapsible): a graph of the weekly Claude usage %
+over the last 2, 5 or 10 weeks. It shows each weekly reset as a dashed marker, an **"ended N%"** label per finished week
+(the highest value seen before it reset; **"ended ≥N%"** when sampling stopped more than 6 hours before the reset), the
+Opus and Sonnet weekly lines only when Anthropic reports them, an optional 5-hour line (the *5-hour* checkbox, off by
+default), a dotted **pace** line that projects the current week to its reset, and a plain-text summary underneath.
+- *Where it comes from:* while `niu-dash serve` runs (also with no browser open), a background thread reads the Claude limits
+  every 5 minutes (the same two sources as above) and stores a sample in `~/.local/state/niu-heimar/usage.db` (mode 600,
+  next to `events.db`). A sample is stored only when the value changes, plus a heartbeat every 10 minutes; each row carries the
+  reading's own time, so a stale reading is never stored twice. Only the limit name, a time, a percentage and the reset time
+  are kept: never the OAuth token or any session data. Samples are kept for 70 days and then deleted.
+- *History starts when the dashboard first runs:* earlier weeks can't be recovered. While the dashboard is down, or when no
+  terminal Claude session runs and the usage API is off or unreachable, no samples arrive; the graph draws those stretches
+  (more than 25 minutes without a sample) as hatched **gaps** instead of joining the points.
+- *Background calls:* the usage API is now also called while no browser is open, still at most once every 5 minutes (288 a day).
+  `NIU_CLAUDE_USAGE_API=0` turns those calls off (the status line still feeds the graph during terminal sessions). To stop
+  recording completely, set `NIU_USAGE_COLLECT=0` (`systemctl --user edit niu-dash`, `Environment=NIU_USAGE_COLLECT=0`) and
+  restart; the panel then says so. To start over, delete `usage.db*` in the state folder. The browser fetches
+  `GET /api/usage/history?days=35` (7 to 70, cached for 60 seconds, read-only) only while the Events tab is visible.
+
 **Research tab** (monitors the valkyrie-dispatch agents in `PERSONAL/valkyrie-dispatch`): the next scheduled run with a
 countdown, the usage gate (the same bars as the Claude limits, with the gate's floors marked), today's quota ledger,
 36-hour run lanes per agent, the last run per agent and recent errors. The research agents are Claude Agent SDK sessions in

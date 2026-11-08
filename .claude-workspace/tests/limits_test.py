@@ -101,6 +101,18 @@ niu_limits._api.update(at=0.0, rate_limits=None)
 check(claude_limits(now=now + 9999, fetch=lambda: None)["source"] == "statusline", "corrupt 'updated' does not crash; failed fetch keeps status line")
 os.environ["NIU_CLAUDE_USAGE_API"] = "0"; os.environ["NIU_CLAUDE_CREDENTIALS"] = "/nonexistent/creds.json"
 
+# 3b. latest_reading(): the raw values behind claude_limits (used for the usage history)
+from niu_limits import latest_reading  # noqa: E402
+saved.write_text(json.dumps({"updated": now - 10, "rate_limits": {"seven_day": {"used_percentage": 41.26, "resets_at": now - 5},
+                                                                    "five_hour": {"used_percentage": "junk"}}}))
+niu_limits._api.update(at=0.0, rate_limits=None)
+lr = latest_reading(now=now)
+check(lr == (now - 10, "statusline", {"seven_day": {"used": 41.26, "resets_at": now - 5}}), f"latest_reading raw values, junk windows dropped: {lr}")
+check(claude_limits(now=now)["windows"][0]["used"] == 0.0, "claude_limits still shows a rolled-over window as 0")
+saved.unlink()
+check(latest_reading(now=now) is None, "latest_reading: nothing reported -> None")
+check(claude_limits(now=now) == {"available": False, "updated": 0, "source": "statusline", "stale": True, "windows": []}, "claude_limits output with no source is unchanged")
+
 # 4. install: sets our status line, never replaces a user's own
 home = tmp / "home"
 (home / ".claude").mkdir(parents=True)
