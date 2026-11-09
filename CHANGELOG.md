@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.16.0...niu-heimar-v0.17.0) (2026-11-09)
+
+
+### Features
+
+* **niu-local:** support Ollama endpoints behind an authenticating gateway ([#58](https://github.com/kaiserdrake/niu-heimar/issues/58)) ([b876cf4](https://github.com/kaiserdrake/niu-heimar/commit/b876cf4d9b590b56d59387fd31d2e288f5f63e89))
+
 ## [0.16.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.15.1...niu-heimar-v0.16.0) (2026-11-09)
 
 
