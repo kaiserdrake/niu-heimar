@@ -2,9 +2,14 @@
 
 Endpoint config: .claude-workspace/ollama.json (local, gitignored) or ollama.template.json (defaults).
 URLs can be overridden with OLLAMA_REMOTE_BASE_URL / OLLAMA_LOCAL_BASE_URL.
+
+An endpoint behind an authenticating proxy (e.g. the heimdall-bridge llm-gateway) can set
+"api_key_file": a 0600 file you own (not a symlink) holding the bearer key, read fresh on every request.
+Only the user's own config (ollama.json / NIU_OLLAMA_CONFIG) may set it; it is ignored in the tracked template.
 """
 import json
 import os
+import stat
 import subprocess
 import time
 import urllib.error
@@ -20,14 +25,17 @@ HEALTH_TTL = 30.0
 
 def load_config():
     paths = [Path(os.environ["NIU_OLLAMA_CONFIG"])] if os.environ.get("NIU_OLLAMA_CONFIG") else []
-    for p in paths + [SHARED / "ollama.json", SHARED / "ollama.template.json"]:
+    template = SHARED / "ollama.template.json"
+    for p in paths + [SHARED / "ollama.json", template]:
         if p.exists():
             cfg = json.loads(p.read_text())
             break
     else:
-        cfg = {"endpoints": {}}
+        p, cfg = None, {"endpoints": {}}
     for name, ep in cfg.get("endpoints", {}).items():
         ep["name"] = name
+        if p == template:
+            ep.pop("api_key_file", None)  # the tracked template must not choose where a key is sent
         env = ep.get("url_env")
         if env and os.environ.get(env):
             ep["url"] = os.environ[env]
@@ -35,9 +43,47 @@ def load_config():
     return cfg
 
 
-def _http(url, body=None, timeout=5.0):
+class KeyProblem(OSError):
+    """cause: missing | perms | format. Carries no file content."""
+
+
+def read_api_key(ep):
+    """Bearer key for this endpoint, or None if it has no api_key_file. Raises KeyProblem."""
+    path = ep.get("api_key_file")
+    if not path:
+        return None
+    try:
+        fd = os.open(os.path.expanduser(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    except FileNotFoundError:
+        raise KeyProblem("missing") from None
+    except OSError:
+        raise KeyProblem("perms") from None  # includes a symlink (ELOOP)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+            raise KeyProblem("perms")
+        raw = os.read(fd, 1024)
+    finally:
+        os.close(fd)
+    try:
+        key = raw.decode("ascii").strip()
+    except UnicodeDecodeError:
+        raise KeyProblem("format") from None
+    if not key or len(key) > 512 or any(c.isspace() or not c.isprintable() for c in key):
+        raise KeyProblem("format")
+    return key
+
+
+def ep_headers(ep):
+    key = read_api_key(ep)
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
+def _http(url, body=None, timeout=5.0, headers=None):
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"} if data else {})
+    hdrs = {"Content-Type": "application/json"} if data else {}
+    hdrs.update(headers or {})
+    req = urllib.request.Request(url, data=data, headers=hdrs)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read() or b"{}")
 
@@ -58,9 +104,12 @@ def health(ep, force=False):
         return hit
     res = {"up": False, "version": None, "models": [], "checked": time.time(), "error": None}
     try:
-        res["version"] = _http(ep["url"] + "/api/version", timeout=2.0).get("version")
-        res["models"] = [m["name"] for m in _http(ep["url"] + "/api/tags", timeout=3.0).get("models", [])]
+        hdrs = ep_headers(ep)
+        res["version"] = _http(ep["url"] + "/api/version", timeout=2.0, headers=hdrs).get("version")
+        res["models"] = [m["name"] for m in _http(ep["url"] + "/api/tags", timeout=3.0, headers=hdrs).get("models", [])]
         res["up"] = True
+    except KeyProblem as e:
+        res["error"] = f"api key file: {e}"
     except (urllib.error.URLError, OSError, ValueError) as e:
         res["error"] = str(getattr(e, "reason", e))[:120]
     cache[ep["url"]] = res
@@ -243,7 +292,7 @@ def lite_run(ep, model, task, prompt, context, timeout):
     body = {"model": model, "stream": False, "options": options,
             "messages": [{"role": "system", "content": LITE_SYSTEM[task]},
                          {"role": "user", "content": f"{prompt}\n\n{context}"}]}
-    res = _http(ep["url"] + "/api/chat", body, timeout=timeout)
+    res = _http(ep["url"] + "/api/chat", body, timeout=timeout, headers=ep_headers(ep))
     return (res.get("message") or {}).get("content", "").strip()
 
 
