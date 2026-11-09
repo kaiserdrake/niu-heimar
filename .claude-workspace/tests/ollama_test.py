@@ -31,6 +31,7 @@ def check(cond, msg):
 class Fake:
     def __init__(self, models, key=None):
         self.models, self.chats, self.up, self.key = list(models), [], True, key
+        self.redirect_to, self.auth_seen = None, []
         s = socket.socket(); s.bind(("127.0.0.1", 0)); self.port = s.getsockname()[1]; s.close()
         fake = self
 
@@ -50,6 +51,11 @@ class Fake:
                 return True
 
             def do_GET(self):
+                fake.auth_seen.append(self.headers.get("Authorization"))
+                if fake.redirect_to:
+                    self.send_response(302); self.send_header("Location", fake.redirect_to + self.path)
+                    self.send_header("Content-Length", "0"); self.end_headers()
+                    return
                 if not self._authed():
                     return
                 if self.path == "/api/version":
@@ -295,6 +301,13 @@ try:
     check(ga.get("ok") and ga.get("endpoint") == "gw" and ga.get("mode") == "agent", f"agent mode through the gateway: {ga}")
     check(genv.get("ANTHROPIC_BASE_URL") == gw.url and genv.get("ANTHROPIC_AUTH_TOKEN") == "gw-test-key-123",
           "agent mode sends the gateway key as ANTHROPIC_AUTH_TOKEN")
+    sink = Fake(["qwen2.5-coder:3b"])
+    gw.redirect_to = sink.url
+    redir = gw_probe(keyf)
+    gw.redirect_to = None
+    check(redir.get("up") is False and "redirect refused" in (redir.get("error") or ""), f"keyed request refuses a redirect ({redir})")
+    check(not any(sink.auth_seen), f"bearer key never reaches the redirect target ({sink.auth_seen})")
+    sink.stop()
     fake_shared = tmp / "fake-shared"; fake_shared.mkdir()
     (fake_shared / "ollama.template.json").write_text(json.dumps({"endpoints": {"gw": {"url": gw.url, "api_key_file": str(keyf)}}}))
     code = ("import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); import niu_ollama as no; "
