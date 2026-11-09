@@ -217,7 +217,7 @@ CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);   -- collecting_si
 ```
 WEEKLY USAGE ▾                         [2w|5w|10w]  [ ] 5-hour   collecting since Nov 8 · updated 12:01
 100%┤- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
- 80%┤·····················(20% weekly floor)··································
+ 90%┤·····················(10% weekly floor)··································
     │        ●ended 83%   ┆        ●ended ≥67%  ┆              ╱·····pace ≈78%
     │      ╱              ┆      ╱              ┆    ╱‾‾‾╲___╱ ●now 41%
   0%┼‾‾‾‾‾‾───────────────┆──────────╳gap╳──────┆‾‾‾‾────────────────────────
@@ -225,7 +225,7 @@ WEEKLY USAGE ▾                         [2w|5w|10w]  [ ] 5-hour   collecting si
 Weekly: 41% now, resets Mon 09:00, on pace for about 78%. Last weeks ended at 83%, ≥67%.
 ```
 - **Rendering:** `renderUsage(u)` uses only `svg()` and `h()`. The SVG gets `viewBox`, `role="img"` and an `aria-label` equal to the summary line. The width follows the container, with a redraw on the existing `resize` handler (`app.js:885-886`) when `VIEW === "events"`.
-- **Axes:** the y axis is 0–100% with gridlines at 0, 50, 80 and 100 (class `axis`; 80 has the label "20% weekly floor", tying to the valkyrie gate). The x axis has day ticks (`toLocaleDateString` weekday plus day) in browser local time.
+- **Axes:** the y axis is 0–100% with gridlines at 0, 50, 90 and 100 (class `axis`; 90 has the label "10% weekly floor", tying to the valkyrie gate). The x axis has day ticks (`toLocaleDateString` weekday plus day) in browser local time.
 - **Lines:**
   - `seven_day`: a `<path class="ul ul-week">` in `--accent`, 2 px.
   - Opus and Sonnet: `ul-opus` (dashed) and `ul-sonnet` (dotted).

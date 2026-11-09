@@ -516,6 +516,36 @@ function burst(n, cls, text) {
   }
 }
 
+// Mouse-wheel zoom on top of the auto-fit scale (G.fit); G.uz is the viewer's factor, kept per browser.
+// Shift+wheel scrolls as usual; double-click or the reset button goes back to fit.
+G.uz = (() => { const v = Number(store.get("niu.graph.zoom", 1)); return Number.isFinite(v) && v > 0 ? v : 1; })();
+function graphZoomApply() {
+  if (!G.root || !G.fit) return;
+  G.uz = Math.max(0.3 / G.fit, Math.min(3 / G.fit, G.uz));
+  const s = G.fit * G.uz;
+  G.root.setAttribute("width", Math.round(G.W * s)); G.root.setAttribute("height", Math.round(G.H * s));
+  G.zoom.setAttribute("transform", `scale(${s.toFixed(4)})`);
+  const btn = $("gzoom"), off = Math.abs(G.uz - 1) > 0.01;
+  btn.hidden = !off; btn.textContent = `${Math.round(G.uz * 100)}% · reset`;
+}
+function graphZoomTo(uz, cx, cy) {
+  if (!G.root || !G.fit) return;
+  const box = $("graph"), r = G.root.getBoundingClientRect(), s0 = G.fit * G.uz;
+  const px = (cx - r.left) / s0, py = (cy - r.top) / s0;
+  G.uz = uz; graphZoomApply(); store.set("niu.graph.zoom", G.uz);
+  const r2 = G.root.getBoundingClientRect(), s = G.fit * G.uz;
+  box.scrollLeft += r2.left + px * s - cx; box.scrollTop += r2.top + py * s - cy;
+}
+$("graph").addEventListener("wheel", (e) => {
+  if (!G.root || e.shiftKey) return;
+  e.preventDefault();
+  const dy = Math.max(-120, Math.min(120, e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1)));
+  graphZoomTo(G.uz * Math.exp(-dy * 0.0015), e.clientX, e.clientY);
+}, { passive: false });
+const graphZoomReset = () => { G.uz = 1; store.set("niu.graph.zoom", 1); graphZoomApply(); };
+$("graph").addEventListener("dblclick", (e) => { if (G.root && !e.target.closest(".gnode")) graphZoomReset(); });
+$("gzoom").onclick = graphZoomReset;
+
 function renderGraph() {
   // Local agent runs with a visible caller are drawn under that caller, not as separate roots.
   const shown = new Set(visible().map((s) => s.id));
@@ -529,9 +559,8 @@ function renderGraph() {
   const gbox = $("graph");
   const { nodes, edges, W, H } = graphLayout(list, (gbox.clientWidth || 0) - 12, (gbox.clientHeight || 0) - 12);
   const box = $("graph"), cw = (box.clientWidth || W) - 12, ch = (box.clientHeight || H) - 12;
-  const scale = Math.max(0.55, Math.min(1.15, cw / W, ch / H));
-  G.root.setAttribute("width", Math.round(W * scale)); G.root.setAttribute("height", Math.round(H * scale));
-  G.zoom.setAttribute("transform", `scale(${scale.toFixed(4)})`);
+  G.fit = Math.max(0.55, Math.min(1.15, cw / W, ch / H)); G.W = W; G.H = H;
+  graphZoomApply();
   $("graph").classList.toggle("calm", reducedMotion());
 
   const live = new Set();
@@ -1016,12 +1045,12 @@ function renderUsage(u) {
   const pat = svg("pattern", { id: "usagehatch", width: "6", height: "6", patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" });
   pat.append(svg("line", { x1: "0", y1: "0", x2: "0", y2: "6", class: "hatchln" }));
   defs.append(pat); root.append(defs);
-  // axes: 0, 50, 80 (the 20% weekly floor of the research gate) and 100
-  for (const v of [0, 50, 80, 100]) {
-    root.append(svg("line", { x1: L, x2: W - R, y1: Y(v), y2: Y(v), class: `axis${v === 80 ? " guide" : ""}` }));
+  // axes: 0, 50, 90 (the 10% weekly floor of the research gate) and 100
+  for (const v of [0, 50, 90, 100]) {
+    root.append(svg("line", { x1: L, x2: W - R, y1: Y(v), y2: Y(v), class: `axis${v === 90 ? " guide" : ""}` }));
     root.append(svg("text", { x: L - 5, y: Y(v) + 3.5, class: "lbl", "text-anchor": "end" }, `${v}%`));
   }
-  root.append(svg("text", { x: W - R, y: Y(80) - 3, class: "lbl guidelbl", "text-anchor": "end" }, "20% weekly floor"));
+  root.append(svg("text", { x: W - R, y: Y(90) - 3, class: "lbl guidelbl", "text-anchor": "end" }, "10% weekly floor"));
   const step = USAGE.weeks <= 2 ? 2 : USAGE.weeks <= 5 ? 5 : 10;
   const d0 = new Date(tmin * 1000); d0.setHours(0, 0, 0, 0);
   for (let d = new Date(d0), n = 0; d.getTime() / 1000 <= tmax && n < 40; d.setDate(d.getDate() + step), n++) {
@@ -1604,7 +1633,7 @@ function rsQuota(r) {
     });
     kids.push(sv, h("div", "rsline muted", "≈ USD per day, last 7 days (API-equivalent estimate)"));
   }
-  const wk = d.gate?.preview?.floors?.weekly_min_remaining_pct ?? 20;
+  const wk = d.gate?.preview?.floors?.weekly_min_remaining_pct ?? 10;
   kids.push(h("div", "rsline muted", `The bot stops when less than ${wk}% of the weekly limit remains.`));
   box.replaceChildren(...kids);
 }
