@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.15.1...niu-heimar-v0.16.0) (2026-11-09)
+
+
+### Features
+
+* **dashboard:** yellow Events-tab dot while PR checks run; right-align header counters ([#56](https://github.com/kaiserdrake/niu-heimar/issues/56)) ([2865d9e](https://github.com/kaiserdrake/niu-heimar/commit/2865d9ecba2c22231affb29ddabb4781c8a0d986))
+
 ## [0.15.1](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.15.0...niu-heimar-v0.15.1) (2026-11-09)
 
 
