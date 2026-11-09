@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.15.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.14.0...niu-heimar-v0.15.0) (2026-11-09)
+
+
+### Features
+
+* **dashboard:** Token usage panel and a transcript token scanner (B2) ([#50](https://github.com/kaiserdrake/niu-heimar/issues/50)) ([0f749e3](https://github.com/kaiserdrake/niu-heimar/commit/0f749e3b58c31fb7994d653b86450741c1c55e52))
+
+
+### Bug Fixes
+
+* **dashboard:** 1-hour default, graph wheel zoom, 10% weekly floor; security-reviewer capped at Sonnet ([#52](https://github.com/kaiserdrake/niu-heimar/issues/52)) ([90c773d](https://github.com/kaiserdrake/niu-heimar/commit/90c773de98aff1a2e67ff619565b2ce364faf598))
+* **dashboard:** drag to pan the Agent interactions graph; themed zoom hint ([#53](https://github.com/kaiserdrake/niu-heimar/issues/53)) ([c7cc0ee](https://github.com/kaiserdrake/niu-heimar/commit/c7cc0ee55104470f9e4ba4063bf4479f850f42d5))
+* **dashboard:** say 'usage not readable' for conservative gate runs instead of 'quota is tight' ([#49](https://github.com/kaiserdrake/niu-heimar/issues/49)) ([93eca6c](https://github.com/kaiserdrake/niu-heimar/commit/93eca6cb158dc325fabc4a51e324c44fa3ec79b6))
+
 ## [0.14.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.13.0...niu-heimar-v0.14.0) (2026-11-08)
 
 
