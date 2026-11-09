@@ -5,8 +5,6 @@
 !/README.md
 !/CHANGELOG.md
 !/CLAUDE.md
-!/release-please-config.json
-!/.release-please-manifest.json
 !/.github/
 !/.claude/
 !/.claude-workspace/

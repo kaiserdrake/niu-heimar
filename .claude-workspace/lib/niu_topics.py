@@ -1,6 +1,6 @@
 """Topics panel backend: lists and edits the research topics held by valkyrie-dispatch.
 
-Design: docs/design/2026-11-07-dashboard-topics-panel.md. Rules this module keeps:
+Rules this module keeps:
 - The token is a `topics`-scope token in its own 0600 file. Before it is used, GET /api/v1/auth/whoami must say the scope is
   exactly `topics`; admin, read, monitor or anything else means nothing is sent with it.
 - Outbound requests go to the configured loopback URL only (same transport as niu_research: no proxy, no redirect, a timeout, a

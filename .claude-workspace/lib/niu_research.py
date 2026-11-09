@@ -1,6 +1,6 @@
 """Research tab data: polls valkyrie-dispatch's read-only monitor endpoint and re-shapes it for the dashboard.
 
-Design: docs/design/2026-11-07-dashboard-research-tab.md. Rules this module keeps:
+Rules this module keeps:
 - The only outbound target is `<validated loopback base URL>/api/v1/monitor/summary`. The base URL comes from local config,
   never from a request. No proxies, no redirects, a response size cap, a timeout.
 - The bearer token is read fresh from a 0600 file (never a symlink, never someone else's) for each fetch. It is kept in

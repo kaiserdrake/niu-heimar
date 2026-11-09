@@ -1,7 +1,7 @@
 """Fixed, read-only command runners for niu-local digest tasks (logs / ci / git). Stdlib only.
 
 The SERVER runs commands from the fixed argv templates below (no shell, validated arguments); the local model only
-ever sees the cleaned, redacted text. See .claude-workspace/docs/design/2026-11-06-niu-local-run-tools.md.
+ever sees the cleaned, redacted text.
 """
 import json
 import os
