@@ -1,6 +1,6 @@
 """niu-notify: outbound-only Discord webhook notifications for niu-heimar (stdlib only).
 
-Design: .claude-workspace/docs/design/2026-11-06-discord-notifications.md. Layers:
+Layers:
   observe() -> plain dicts from the same sources the dashboard uses (hostnames / URLs / errors dropped here)
   diff()    -> pure: previous state + observation -> (new state, [messages]); transitions, debounce, cooldown
   render()  -> fixed template + validated fields -> redacted, scrubbed webhook payload

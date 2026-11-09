@@ -255,8 +255,7 @@ never used. An older valkyrie-dispatch without `whoami` is tolerated.
 
 ### Research tab, Topics
 A **Status | Topics** switch in the Research panel header opens the Topics view: list, add, edit, enable/disable and
-archive/restore the research topics held by valkyrie-dispatch. Design:
-`.claude-workspace/docs/design/2026-11-07-dashboard-topics-panel.md`.
+archive/restore the research topics held by valkyrie-dispatch.
 
 - **Fuzzy search.** The search box matches across name, keywords and excluded terms and tolerates typos ("dutrte" finds
   Duterte), accents, initials ("ff reso" finds Final Fantasy Resonance) and dropped letters ("ollama mdls"). Every word
@@ -302,7 +301,6 @@ Service: `systemctl --user status|restart|stop niu-dash`. Logs: `journalctl --us
 it even when you can't reach the dashboard. It is **outbound only**: Discord webhooks, no bot, and no commands are accepted
 from Discord. Every message is a fixed template. Endpoint URLs, error text and this machine's hostname are never sent,
 secrets are redacted, mentions and link previews are off, and it alerts only on changes, with cooldowns and an hourly cap.
-Design: `.claude-workspace/docs/design/2026-11-06-discord-notifications.md`.
 
 | Channel | What lands there | Suggested notification setting |
 |---|---|---|
