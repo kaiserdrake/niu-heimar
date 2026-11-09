@@ -786,10 +786,19 @@ function renderTimeline() {
 }
 
 // ---------- PRs ----------
+// Yellow dot on the Events tab while an open PR's checks are still running (none failing yet).
+function renderEventsDot(repos) {
+  const n = repos.reduce((k, r) => k + r.prs.filter((p) => p.checks && p.checks.pending > 0 && !p.checks.failed).length, 0);
+  const dot = $("evdot");
+  dot.hidden = !n;
+  dot.setAttribute("aria-label", `${n} pull request${n === 1 ? "" : "s"} with checks running`);
+}
+
 function renderPRs() {
-  if (!PRS) { $("prs").innerHTML = `<div class="empty">Loading…</div>`; return; }
+  if (!PRS) { $("prs").innerHTML = `<div class="empty">Loading…</div>`; $("evdot").hidden = true; return; }
   const dom = $("domain").value;
   const repos = PRS.repos.filter((r) => !dom || r.label === dom || r.label.startsWith(dom + "/"));
+  renderEventsDot(repos);
   let html = PRS.error ? `<div class="msg err">${esc(PRS.error)}</div>` : "";
   if (!repos.some((r) => r.prs.length || r.error)) html += `<div class="empty">No open pull requests.</div>`;
   for (const r of repos) {
