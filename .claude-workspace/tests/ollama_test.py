@@ -29,8 +29,8 @@ def check(cond, msg):
 
 # ---------- fake Ollama ----------
 class Fake:
-    def __init__(self, models):
-        self.models, self.chats, self.up = list(models), [], True
+    def __init__(self, models, key=None):
+        self.models, self.chats, self.up, self.key = list(models), [], True, key
         s = socket.socket(); s.bind(("127.0.0.1", 0)); self.port = s.getsockname()[1]; s.close()
         fake = self
 
@@ -43,7 +43,15 @@ class Fake:
                 self.send_response(code); self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
 
+            def _authed(self):
+                if fake.key and self.headers.get("Authorization") != f"Bearer {fake.key}":
+                    self._send({"error": "unauthorized"}, 401)
+                    return False
+                return True
+
             def do_GET(self):
+                if not self._authed():
+                    return
                 if self.path == "/api/version":
                     return self._send({"version": "0.99.0"})
                 if self.path == "/api/tags":
@@ -52,6 +60,8 @@ class Fake:
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+                if not self._authed():
+                    return
                 if self.path == "/api/chat":
                     fake.chats.append(body)
                     return self._send({"message": {"role": "assistant", "content": "LITE ANSWER src/a.py:1"}})
@@ -133,6 +143,7 @@ try:
     check(res.get("model") == "gpt-oss:20b" and "AGENT ANSWER" in res.get("answer", ""), "model + answer")
     rec = last_claude(); env = rec.get("env", {}); argv = rec.get("argv", [])
     check(env.get("ANTHROPIC_BASE_URL") == remote.url, "child talks to Ollama")
+    check(env.get("ANTHROPIC_AUTH_TOKEN") == "ollama", "plain Ollama endpoint gets the dummy token")
     check(env.get("ANTHROPIC_API_KEY") == "" and env.get("CLAUDE_CODE_OAUTH_TOKEN") is None, f"parent credentials not passed: {env}")
     check(env.get("CLAUDE_CONFIG_DIR") == str(tmp / "agentcfg"), "isolated config dir")
     check(env.get("CLAUDECODE") is None, "nested-session marker stripped")
@@ -243,6 +254,55 @@ try:
     bl = rpc(9, "tools/call", {"name": "local_git", "arguments": {"kind": "blame"}})
     check(bl["result"]["isError"] is True and "blame needs a file path" in bl["result"]["content"][0]["text"], "local_git blame needs a path")
     p.stdin.close(); p.wait(5)
+
+    # ---------- api_key_file: endpoints behind an authenticating gateway ----------
+    gw = Fake(["qwen2.5-coder:3b"], key="gw-test-key-123")
+    keyf = tmp / "gw.key"
+    keyf.write_text("gw-test-key-123\n"); os.chmod(keyf, 0o600)
+    gwcfg = tmp / "gw-ollama.json"
+
+    def gw_probe(key_file, cfg_path=gwcfg):
+        gwcfg.write_text(json.dumps({"endpoints": {"gw": {"url": gw.url, "api_key_file": str(key_file), "mode": "lite",
+                                                           "models": {"ask": "qwen2.5-coder:3b"}}}}))
+        (state / "ollama-health.json").unlink(missing_ok=True)
+        code = ("import json,sys; sys.path.insert(0, sys.argv[1]); import niu_ollama as no; "
+                "ep = no.load_config()['endpoints']['gw']; h = no.health(ep, force=True); "
+                "ans = no.lite_run(ep, 'qwen2.5-coder:3b', 'ask', 'q', 'ctx', 10) if h['up'] else None; "
+                "print(json.dumps({'up': h['up'], 'error': h['error'], 'answer': ans, 'has_key': 'api_key_file' in ep}))")
+        env = dict(base_env, NIU_OLLAMA_CONFIG=str(cfg_path))
+        r = subprocess.run([sys.executable, "-c", code, str(SH / "lib")], env=env, capture_output=True, text=True, timeout=30)
+        try:
+            return json.loads(r.stdout)
+        except ValueError:
+            print("gw probe output:", r.stdout, r.stderr)
+            return {}
+
+    ok = gw_probe(keyf)
+    check(ok.get("up") is True and "LITE ANSWER" in (ok.get("answer") or ""), f"key file: health and /api/chat send the bearer key ({ok})")
+    os.chmod(keyf, 0o644)
+    loose = gw_probe(keyf)
+    check(loose.get("up") is False and loose.get("error") == "api key file: perms", f"key file readable by others is refused ({loose})")
+    os.chmod(keyf, 0o600)
+    link = tmp / "gw-link.key"; link.symlink_to(keyf)
+    sym = gw_probe(link)
+    check(sym.get("up") is False and sym.get("error") == "api key file: perms", f"symlinked key file is refused ({sym})")
+    miss_k = gw_probe(tmp / "nope.key")
+    check(miss_k.get("up") is False and miss_k.get("error") == "api key file: missing", f"missing key file reported ({miss_k})")
+    gwcfg.write_text(json.dumps({"endpoints": {"gw": {"url": gw.url, "api_key_file": str(keyf), "mode": "agent",
+                                                       "models": {"search": "qwen2.5-coder:3b"}}}}))
+    ga = agent("search", "where is LiveThing defined?", extra={"NIU_OLLAMA_CONFIG": str(gwcfg)})
+    genv = last_claude().get("env", {})
+    check(ga.get("ok") and ga.get("endpoint") == "gw" and ga.get("mode") == "agent", f"agent mode through the gateway: {ga}")
+    check(genv.get("ANTHROPIC_BASE_URL") == gw.url and genv.get("ANTHROPIC_AUTH_TOKEN") == "gw-test-key-123",
+          "agent mode sends the gateway key as ANTHROPIC_AUTH_TOKEN")
+    fake_shared = tmp / "fake-shared"; fake_shared.mkdir()
+    (fake_shared / "ollama.template.json").write_text(json.dumps({"endpoints": {"gw": {"url": gw.url, "api_key_file": str(keyf)}}}))
+    code = ("import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); import niu_ollama as no; "
+            "no.SHARED = Path(sys.argv[2]); print('api_key_file' in no.load_config()['endpoints']['gw'])")
+    env = {k: v for k, v in base_env.items() if k != "NIU_OLLAMA_CONFIG"}
+    r = subprocess.run([sys.executable, "-c", code, str(SH / "lib"), str(fake_shared)], env=env, capture_output=True, text=True, timeout=30)
+    check(r.stdout.strip() == "False", f"tracked template cannot set api_key_file ({r.stdout.strip()} {r.stderr[-200:]})")
+    gw.stop()
 finally:
     subprocess.run(["rm", "-rf", str(tmp), str(WS / "PERSONAL" / ".niu-test-ollama")])
 

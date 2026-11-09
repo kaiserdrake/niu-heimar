@@ -991,10 +991,11 @@ async function loadLLM(force) {
     const st = state(e);
     const models = [...new Set(Object.values(e.models || {}).map((m) => `${m.present ? "" : "✗ "}${m.name}`))].join(", ");
     // The row shows only the state; the detail (and what to do about it) goes in the themed tooltip.
-    const fix = e.up ? "" : e.name === "local"
+    const loopback = /^https?:\/\/(127\.0\.0\.1|localhost)[:/]/.test(e.url || "");
+    const fix = e.up ? "" : loopback
       ? "Not reachable: publish the container on 127.0.0.1:11434 or set OLLAMA_LOCAL_BASE_URL."
-      : "Not reachable: check the machine and OLLAMA_HOST=0.0.0.0. Local agents fall back to the CPU.";
-    const tip = [`${EP_NAME[e.name] || e.label}: ${word[st]}`, `${e.url} · ${e.mode} mode`,
+      : "Not reachable: check the machine (and OLLAMA_HOST=0.0.0.0, or the gateway's key file). Local agents fall back to the next endpoint.";
+    const tip = [`${e.label || EP_NAME[e.name] || e.name}: ${word[st]}`, `${e.url} · ${e.mode} mode`,
       e.up ? `Ollama ${e.version}` : `Error: ${e.error || "unreachable"}`, fix].filter(Boolean).join("\n");
     return `<div class="llmrow ${st}" data-tip="${esc(tip)}"><span class="llmpill ${st}"><i></i>${esc(e.label)}</span>` +
       `<span class="nm">${esc(word[st])}</span><span class="mdl">${esc(models)}</span></div>`;

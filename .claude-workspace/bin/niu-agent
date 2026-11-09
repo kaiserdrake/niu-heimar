@@ -2,14 +2,14 @@
 """niu-agent: run search / diff / ask tasks as agents on your Ollama machines.
 
 Usage:
-  niu-agent search "where is LiveState used?" [--cwd DIR] [--endpoint remote|local] [--json]
+  niu-agent search "where is LiveState used?" [--cwd DIR] [--endpoint NAME] [--json]
   niu-agent diff [--base REF] [--focus TEXT] [--cwd DIR] [--json]
   niu-agent ask "question" [--files a.py b.py] [--cwd DIR] [--json]
   niu-agent logs --service=S [--tail=N] [--since=30m] [--focus=T] [--cwd DIR] [--json]   compose service logs, summarized
   niu-agent ci --kind=failed_run|pr_checks|pr_diff [--run-id=N] [--pr=N] [--focus=T] [--json]   GitHub CI, summarized
   niu-agent git --kind=log|diff|blame [--range=R] [--path=P] [--lines=A,B] [--max-commits=N] [--patch] [--focus=T] [--json]
   niu-agent status            endpoints, health and models
-  niu-agent probe [--endpoint remote]   check Anthropic API, tool calls and effective context length
+  niu-agent probe [--endpoint NAME]  check Anthropic API, tool calls and effective context length
   niu-agent setup             (re)write the isolated Claude Code config used by agent mode
 
 Agent mode runs a headless Claude Code (`claude -p`) against Ollama's Anthropic-compatible API, with an isolated config
@@ -97,7 +97,9 @@ def find_claude():
 def agent_env(ep, model):
     env = {k: v for k, v in os.environ.items() if not k.startswith(STRIP_ENV)}
     env.update({
-        "ANTHROPIC_BASE_URL": ep["url"], "ANTHROPIC_AUTH_TOKEN": "ollama", "ANTHROPIC_API_KEY": "",
+        # Plain Ollama ignores the token; an authenticating gateway gets its bearer key (api_key_file).
+        # The agent has no shell, so it cannot read this from its environment.
+        "ANTHROPIC_BASE_URL": ep["url"], "ANTHROPIC_AUTH_TOKEN": no.read_api_key(ep) or "ollama", "ANTHROPIC_API_KEY": "",
         "ANTHROPIC_MODEL": model, "ANTHROPIC_SMALL_FAST_MODEL": model, "ANTHROPIC_DEFAULT_HAIKU_MODEL": model,
         "CLAUDE_CONFIG_DIR": str(config_dir()), "NIU_AGENT_LABEL": f"local:{model}",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_AUTOUPDATER": "1", "DISABLE_TELEMETRY": "1",
@@ -245,7 +247,8 @@ def probe(args):
         try:
             t0 = time.time()
             res = no._http(ep["url"] + "/v1/messages", {"model": model, "max_tokens": 64, "tools": [tool],
-                           "messages": [{"role": "user", "content": "Call the get_time tool now."}]}, timeout=120)
+                           "messages": [{"role": "user", "content": "Call the get_time tool now."}]}, timeout=120,
+                           headers=no.ep_headers(ep))
             r["anthropic_api"] = True
             r["tool_call"] = any(b.get("type") == "tool_use" for b in res.get("content", []))
             r["first_call_s"] = round(time.time() - t0, 1)
@@ -255,7 +258,8 @@ def probe(args):
         try:
             filler = ("lorem ipsum dolor sit amet " * 4200)
             res = no._http(ep["url"] + "/v1/messages", {"model": model, "max_tokens": 8,
-                           "messages": [{"role": "user", "content": filler + "\nReply with OK."}]}, timeout=300)
+                           "messages": [{"role": "user", "content": filler + "\nReply with OK."}]}, timeout=300,
+                           headers=no.ep_headers(ep))
             got = (res.get("usage") or {}).get("input_tokens", 0)
             r["context_probe_tokens_sent"], r["context_tokens_read"] = "~24000", got
             r["context_ok"] = got >= 20000
@@ -294,12 +298,12 @@ def main():
         sub.choices[name].add_argument("--focus")
     for p in sub.choices.values():
         p.add_argument("--cwd")
-        p.add_argument("--endpoint", choices=["remote", "local"])
+        p.add_argument("--endpoint", help="endpoint name from ollama.json (default: all, by priority)")
         p.add_argument("--json", action="store_true")
     for name in ("status", "setup"):
         sub.add_parser(name)
     p = sub.add_parser("probe")
-    p.add_argument("--endpoint", choices=["remote", "local"])
+    p.add_argument("--endpoint", help="endpoint name from ollama.json (default: all, by priority)")
     args = ap.parse_args()
     if args.cmd == "setup":
         print(f"isolated agent config written to {setup_config()}")
