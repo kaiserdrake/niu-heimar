@@ -6,6 +6,8 @@ URLs can be overridden with OLLAMA_REMOTE_BASE_URL / OLLAMA_LOCAL_BASE_URL.
 An endpoint behind an authenticating proxy (e.g. the heimdall-bridge llm-gateway) can set
 "api_key_file": a 0600 file you own (not a symlink) holding the bearer key, read fresh on every request.
 Only the user's own config (ollama.json / NIU_OLLAMA_CONFIG) may set it; it is ignored in the tracked template.
+The key goes to the endpoint's effective URL, so a url_env override (OLLAMA_*_BASE_URL) receives it too.
+Requests that carry the key never follow HTTP redirects, so the key cannot be forwarded to another host.
 """
 import json
 import os
@@ -79,12 +81,23 @@ def ep_headers(ep):
     return {"Authorization": f"Bearer {key}"} if key else {}
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib re-sends custom headers (Authorization) on redirects, even cross-host: refuse them instead."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "redirect refused (bearer key attached)", headers, fp)
+
+
+_KEYED_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def _http(url, body=None, timeout=5.0, headers=None):
     data = json.dumps(body).encode() if body is not None else None
     hdrs = {"Content-Type": "application/json"} if data else {}
     hdrs.update(headers or {})
     req = urllib.request.Request(url, data=data, headers=hdrs)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    opener = _KEYED_OPENER.open if "Authorization" in hdrs else urllib.request.urlopen
+    with opener(req, timeout=timeout) as r:
         return json.loads(r.read() or b"{}")
 
 
