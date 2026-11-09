@@ -517,7 +517,7 @@ function burst(n, cls, text) {
 }
 
 // Mouse-wheel zoom on top of the auto-fit scale (G.fit); G.uz is the viewer's factor, kept per browser.
-// Shift+wheel scrolls sideways, dragging empty space pans; double-click or the reset button goes back to fit.
+// Shift+wheel scrolls sideways, dragging empty space pans; double-click goes back to fit.
 G.uz = (() => { const v = Number(store.get("niu.graph.zoom", 1)); return Number.isFinite(v) && v > 0 ? v : 1; })();
 function graphZoomApply() {
   if (!G.root || !G.fit) return;
@@ -525,8 +525,6 @@ function graphZoomApply() {
   const s = G.fit * G.uz;
   G.root.setAttribute("width", Math.round(G.W * s)); G.root.setAttribute("height", Math.round(G.H * s));
   G.zoom.setAttribute("transform", `scale(${s.toFixed(4)})`);
-  const btn = $("gzoom"), off = Math.abs(G.uz - 1) > 0.01;
-  btn.hidden = !off; btn.textContent = `${Math.round(G.uz * 100)}% · reset`;
   const box = $("graph");
   box.classList.toggle("pannable", box.scrollWidth > box.clientWidth + 1 || box.scrollHeight > box.clientHeight + 1);
 }
@@ -568,7 +566,6 @@ $("graph").addEventListener("wheel", (e) => {
 }, { passive: false });
 const graphZoomReset = () => { G.uz = 1; store.set("niu.graph.zoom", 1); graphZoomApply(); };
 $("graph").addEventListener("dblclick", (e) => { if (G.root && !GPAN.moved && !e.target.closest(".gnode")) graphZoomReset(); });
-$("gzoom").onclick = graphZoomReset;
 
 function renderGraph() {
   // Local agent runs with a visible caller are drawn under that caller, not as separate roots.

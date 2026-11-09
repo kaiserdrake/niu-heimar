@@ -115,7 +115,6 @@ svg .lbl { font-size: 11px; fill: var(--muted); }
 .gnode { transition: opacity .4s; cursor: pointer; }
 .graph.pannable { cursor: grab; } .graph.panning { cursor: grabbing; user-select: none; }
 .graph.panning .gnode { cursor: grabbing; }
-.ghint { margin-right: auto; margin-left: 10px; }
 .gnode.enter { animation: pop .55s cubic-bezier(.2,1.4,.4,1) both; transform-box: fill-box; }
 .gnode.leave { opacity: 0; }
 @keyframes pop { from { opacity: 0; } }
