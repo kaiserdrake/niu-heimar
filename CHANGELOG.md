@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.17.0...niu-heimar-v0.17.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* **niu-local:** never follow HTTP redirects on requests that carry the gateway key ([#60](https://github.com/kaiserdrake/niu-heimar/issues/60)) ([949b324](https://github.com/kaiserdrake/niu-heimar/commit/949b3248a3930b2f64cfaa62fbdc2ca376ad1a06))
+
 ## [0.17.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.16.0...niu-heimar-v0.17.0) (2026-11-09)
 
 
