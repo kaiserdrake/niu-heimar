@@ -305,8 +305,8 @@ button.linkish { border: 0; padding: 0; color: var(--accent); background: none; 
 body.mc { height: 100vh; height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
 .mc .bar { position: relative; padding: 6px 12px; gap: 6px 12px; flex-wrap: nowrap; min-width: 0; }
 .mc .bar .brand, .mc .bar .controls, .mc .bar .counters { flex: none; flex-wrap: nowrap; white-space: nowrap; }
-.mc .bar .kpis { flex: 1 1 0; min-width: 0; overflow: hidden; flex-wrap: nowrap; }
-.mc .bar .controls { margin-left: auto; }
+.mc .bar .kpis { flex: 0 1 auto; min-width: 0; overflow: hidden; flex-wrap: nowrap; }
+.mc .bar .counters { margin-left: auto; } .mc .bar .controls { margin-left: 0; } /* live counters and today's KPIs sit right-aligned, next to the controls */
 .wspill { display: none; margin-right: 6px; font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; padding: 1px 7px; border-radius: 999px; background: var(--accent-bg); color: var(--accent); vertical-align: 1px; }
 body.ctrl .wspill { display: inline-block; }
 .logo { text-transform: uppercase; letter-spacing: .14em; font-size: 13px; }
