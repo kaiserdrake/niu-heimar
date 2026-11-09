@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.15.0...niu-heimar-v0.15.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* **dashboard:** drop the zoom hint text and reset button from Agent interactions ([#54](https://github.com/kaiserdrake/niu-heimar/issues/54)) ([45d70a5](https://github.com/kaiserdrake/niu-heimar/commit/45d70a546ec82a15d25b75ede6f701b70b7ad4bd))
+
 ## [0.15.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.14.0...niu-heimar-v0.15.0) (2026-11-09)
 
 
