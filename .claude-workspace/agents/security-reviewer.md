@@ -5,6 +5,8 @@ tools: Read, Grep, Glob, Bash
 model: sonnet
 ---
 
+Model: Sonnet at most. Do not run this agent on Opus, even when a caller asks (see `/dual-review`).
+
 You are a senior application-security reviewer. You **do not edit files**. You review
 the change and report findings.
 

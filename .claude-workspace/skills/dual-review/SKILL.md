@@ -12,9 +12,10 @@ description: Run the two mandatory reviewers (security-reviewer and test-reviewe
    Give the reviewers the list of PRs/features in the range (from the commit messages or design docs) so they know what
    each part is meant to do. Ask the user to confirm the range if it is not obvious.
 2. Pick the models. Both reviewers run on **Sonnet** (their agent files), whatever the diff touches; this keeps
-   token use down. Use Opus for a reviewer only when the user explicitly asks for it in chat (pass `model: "opus"`
-   to the Agent tool). For a risky diff (hooks or the guard, secrets or tokens, auth or pairing, CI or deploy, or
-   roughly 800+ changed lines), say so in the verdict so the user can ask for an Opus re-run.
+   token use down. `security-reviewer` is capped at Sonnet: never pass `model: "opus"` for it, even when asked or
+   when the diff is risky. Use Opus for `test-reviewer` only when the user explicitly asks for it in chat (pass
+   `model: "opus"` to the Agent tool). For a risky diff (hooks or the guard, secrets or tokens, auth or pairing, CI or
+   deploy, or roughly 800+ changed lines), say so in the verdict so the user can ask for an Opus `test-reviewer` re-run.
    In a fix round, re-run a reviewer on the same model it used before.
 3. In **one message**, launch both subagents in parallel with the Agent tool:
    - `security-reviewer`, given the target and any context about what the change is meant to do.
