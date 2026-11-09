@@ -24,7 +24,7 @@
   <div class="controls">
     <select id="domain" aria-label="Domain filter"><option value="">All domains</option></select>
     <select id="since" aria-label="Time window">
-      <option value="1h">1 hour</option><option value="24h" selected>24 hours</option><option value="7d">7 days</option>
+      <option value="1h" selected>1 hour</option><option value="24h">24 hours</option><option value="7d">7 days</option>
     </select>
     <button id="bellbtn" class="icon-btn bell" aria-label="Needs you" aria-controls="needspanel" title="Needs you">
       <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 16V11a6 6 0 1 1 12 0v5l1.5 2h-15L6 16z" /><path d="M10 20a2 2 0 0 0 4 0" /></svg>
@@ -78,13 +78,13 @@
   </div>
 
   <section class="panel p-graph" aria-label="Agent interactions">
-    <div class="ph"><h2>Agent interactions</h2>
+    <div class="ph"><h2>Agent interactions</h2><button id="gzoom" class="ghost tiny" hidden title="Back to fit (or double-click the graph)">100% · reset</button>
       <div class="legend">
         <span><i class="lg-spawn"></i>spawn</span><span><i class="lg-handoff"></i>hand-off</span><span><i class="lg-local"></i>local LLM</span>
         <span><i class="lg-result"></i>result</span><span><i class="lg-msg"></i>message</span><span><i class="lg-bash"></i>bash</span>
         <span><i class="lg-read"></i>read</span><span><i class="lg-edit"></i>edit</span><span><i class="lg-agent"></i>agent</span><span><i class="lg-web"></i>web</span>
       </div></div>
-    <div id="graph" class="pb graph"></div>
+    <div id="graph" class="pb graph" title="Scroll to zoom · Shift+scroll to pan · double-click to fit"></div>
   </section>
 
   <section class="panel p-timeline" aria-label="Timeline">

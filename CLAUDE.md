@@ -42,8 +42,9 @@ planning, deciding, integrating and talking to the user, and hand the bulk work 
   parallel when their files don't overlap. Do small edits (a few lines in one or two files) yourself.
 - **Searching and reading widely:** the built-in `Explore` agent or the `niu-local` tools (`local_search`, `local_ask`),
   not reading many files in the main session.
-- **Opus agents** only where judgment pays: `designer` (design docs). Both reviewers always run on Sonnet; `/dual-review`
-  uses Opus for one only when the user asks, and flags risky diffs (hooks/guard, secrets, auth, CI/deploy, very large diffs) so they can.
+- **Opus agents** only where judgment pays: `designer` (design docs). Both reviewers always run on Sonnet. `security-reviewer`
+  is capped at Sonnet and never runs on Opus; `/dual-review` uses Opus for `test-reviewer` only when the user asks, and
+  flags risky diffs (hooks/guard, secrets, auth, CI/deploy, very large diffs) so they can.
 
 ## 4. Memory and learning are per domain
 - Auto-memory for every project in a domain is shared under `<DOMAIN>/.claude/memory/`.

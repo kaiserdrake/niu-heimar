@@ -386,7 +386,8 @@ body.ctrl .wspill { display: inline-block; }
 .mc .pipe { gap: 2px; margin: 4px 0 1px; } .mc .stg { font-size: 10px; padding: 0 5px; } .mc .stg-sep { display: none; }
 .mc .flagmsg { font-size: 11px; margin-top: 3px; }
 
-.mc .graph { border-radius: 0; padding: 6px; display: flex; align-items: flex-start; justify-content: center; }
+.mc .graph { border-radius: 0; padding: 6px; display: flex; align-items: flex-start; justify-content: flex-start; }
+.mc .graph svg { margin: 0 auto; flex: none; } /* auto margins centre it but keep a zoomed-in graph scrollable to its left edge */
 .mc .timeline { padding: 6px 10px; overflow: hidden; }
 
 .p-needs .act { padding: 7px 4px; } .p-needs .act:first-child { border-top: 0; }
