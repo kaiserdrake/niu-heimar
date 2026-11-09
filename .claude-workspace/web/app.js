@@ -517,7 +517,7 @@ function burst(n, cls, text) {
 }
 
 // Mouse-wheel zoom on top of the auto-fit scale (G.fit); G.uz is the viewer's factor, kept per browser.
-// Shift+wheel scrolls as usual; double-click or the reset button goes back to fit.
+// Shift+wheel scrolls sideways, dragging empty space pans; double-click or the reset button goes back to fit.
 G.uz = (() => { const v = Number(store.get("niu.graph.zoom", 1)); return Number.isFinite(v) && v > 0 ? v : 1; })();
 function graphZoomApply() {
   if (!G.root || !G.fit) return;
@@ -527,7 +527,31 @@ function graphZoomApply() {
   G.zoom.setAttribute("transform", `scale(${s.toFixed(4)})`);
   const btn = $("gzoom"), off = Math.abs(G.uz - 1) > 0.01;
   btn.hidden = !off; btn.textContent = `${Math.round(G.uz * 100)}% · reset`;
+  const box = $("graph");
+  box.classList.toggle("pannable", box.scrollWidth > box.clientWidth + 1 || box.scrollHeight > box.clientHeight + 1);
 }
+// Drag empty space with the left button to pan (nodes keep their click).
+const GPAN = { id: null, x: 0, y: 0, sl: 0, st: 0, moved: false };
+$("graph").addEventListener("pointerdown", (e) => {
+  const box = $("graph");
+  if (!G.root || e.button !== 0 || e.pointerType === "touch" || e.target.closest?.(".gnode") || !box.classList.contains("pannable")) return;
+  Object.assign(GPAN, { id: e.pointerId, x: e.clientX, y: e.clientY, sl: box.scrollLeft, st: box.scrollTop, moved: false });
+  box.setPointerCapture?.(e.pointerId);
+  box.classList.add("panning");
+  e.preventDefault();
+});
+$("graph").addEventListener("pointermove", (e) => {
+  if (GPAN.id !== e.pointerId) return;
+  const box = $("graph"), dx = e.clientX - GPAN.x, dy = e.clientY - GPAN.y;
+  if (Math.abs(dx) + Math.abs(dy) > 3) GPAN.moved = true;
+  box.scrollLeft = GPAN.sl - dx; box.scrollTop = GPAN.st - dy;
+});
+const gpanEnd = (e) => {
+  if (GPAN.id !== e.pointerId) return;
+  GPAN.id = null; $("graph").classList.remove("panning");
+};
+$("graph").addEventListener("pointerup", gpanEnd);
+$("graph").addEventListener("pointercancel", gpanEnd);
 function graphZoomTo(uz, cx, cy) {
   if (!G.root || !G.fit) return;
   const box = $("graph"), r = G.root.getBoundingClientRect(), s0 = G.fit * G.uz;
@@ -543,7 +567,7 @@ $("graph").addEventListener("wheel", (e) => {
   graphZoomTo(G.uz * Math.exp(-dy * 0.0015), e.clientX, e.clientY);
 }, { passive: false });
 const graphZoomReset = () => { G.uz = 1; store.set("niu.graph.zoom", 1); graphZoomApply(); };
-$("graph").addEventListener("dblclick", (e) => { if (G.root && !e.target.closest(".gnode")) graphZoomReset(); });
+$("graph").addEventListener("dblclick", (e) => { if (G.root && !GPAN.moved && !e.target.closest(".gnode")) graphZoomReset(); });
 $("gzoom").onclick = graphZoomReset;
 
 function renderGraph() {
