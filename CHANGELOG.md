@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.23.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.22.0...niu-heimar-v0.23.0) (2026-11-10)
+
+
+### Features
+
+* **niu-dash:** Activities sub-tab for the Research logs; status cards fill the panel ([#75](https://github.com/kaiserdrake/niu-heimar/issues/75)) ([74bfe2e](https://github.com/kaiserdrake/niu-heimar/commit/74bfe2e794364a71a1b03e52ee83cf210712893e))
+* **niu-dash:** move the Next 24 h strip and the activity graph to Activities ([#77](https://github.com/kaiserdrake/niu-heimar/issues/77)) ([7c2df27](https://github.com/kaiserdrake/niu-heimar/commit/7c2df275272fb62a32d0d69ca09bf2fe12b1d8f4))
+
 ## [0.22.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.21.0...niu-heimar-v0.22.0) (2026-11-10)
 
 
