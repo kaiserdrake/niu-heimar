@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.20.0...niu-heimar-v0.21.0) (2026-11-10)
+
+
+### Features
+
+* **ollama:** gateway auto-routing aliases and served-model reporting ([#70](https://github.com/kaiserdrake/niu-heimar/issues/70)) ([6124a8a](https://github.com/kaiserdrake/niu-heimar/commit/6124a8a3902448b611ea22645f1d926820584993))
+
 ## [0.20.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.19.0...niu-heimar-v0.20.0) (2026-11-10)
 
 
