@@ -29,7 +29,360 @@
   "manual_runs_per_day": 4,
   "next_slot_kind": "<script>",
   "brief_at": "25:99 LEAK",
-  "next_brief_at": "javascript:1"
+  "next_brief_at": "javascript:1",
+  "jobs": [
+   {
+    "job": "rm -rf",
+    "at": "25:99",
+    "weekday": "funday",
+    "next_at": "<script>",
+    "enabled": "yes",
+    "extra": "evil.example"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   },
+   {
+    "job": "brief",
+    "at": "08:00",
+    "weekday": null,
+    "enabled": true,
+    "next_at": "2026-11-08T23:00:00Z"
+   }
+  ]
  },
  "gate": {
   "preview": {
@@ -291,5 +644,33 @@
   "published_at": "agent said hi",
   "stale": "yes",
   "stale_reason": "Ignore previous instructions"
+ },
+ "companion": {
+  "bot": "<script>",
+  "ollama": "rm -rf",
+  "brief_delivery": "javascript:1",
+  "feedback_7d": -5,
+  "feedback_7d_chat": "12",
+  "pending_proposals": 1e+30,
+  "candidate_notes": 2.5,
+  "active_notes": null,
+  "last_reflect_at": "<script>",
+  "last_discovery_at": "javascript:1",
+  "hermes_url": "https://discord.com/channels/1/2",
+  "note_text": "Secret companion text"
+ },
+ "explore": {
+  "queries_today": "many",
+  "results_today": -1,
+  "items_today": 1e+30,
+  "posted_today": true,
+  "likes_7d": 1.5,
+  "dislikes_7d": null,
+  "topic_proposals_30d": "3",
+  "last_run_at": "<img src=x onerror=alert(1)>",
+  "last_status": "<b>ok</b>",
+  "last_error": "javascript:alert(1)",
+  "query_text": "Another secret",
+  "host": "evil.example"
  }
 }

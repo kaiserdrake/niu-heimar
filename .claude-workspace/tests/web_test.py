@@ -350,21 +350,29 @@ try:
                     "stale": False, "refreshing": False, "server_now": now}
 
         rs_path = tmp / "research.json"
-        rs_path.write_text(json.dumps({n: envelope(n) for n in ("m1", "m2", "hostile")}))
+        rs_path.write_text(json.dumps({n: envelope(n) for n in ("m1", "m2", "m3", "hostile")}))
         # Topics panel payloads: the fixtures passed through the server's own shape_topic() like /api/topics does
         import niu_topics  # noqa: E402
 
-        def tp_env(name):
-            rows = json.loads((SH / "tests" / "fixtures" / "topics" / f"{name}.json").read_text())
-            return {"state": "ok", "cause": None, "message": "", "topics": [t for t in map(niu_topics.shape_topic, rows) if t], "archived_truncated": False,
-                    "inactive_truncated": False, "states_supported": True, "dropped": 0, "loaded_at": now, "stale": False, "limits": niu_topics.LIMITS, "server_now": now}
+        sys.path.insert(0, str(SH / "tests"))
+        import topics_fixtures  # noqa: E402
+
+        def tp_env(name, rows=None, meta=False):
+            if rows is None:
+                rows = json.loads((SH / "tests" / "fixtures" / "topics" / f"{name}.json").read_text())
+            return {"state": "ok", "cause": None, "message": "", "topics": [t for t in (niu_topics.shape_topic(r, meta=meta) for r in rows) if t], "archived_truncated": False,
+                    "inactive_truncated": False, "states_supported": True, "meta_supported": meta, "dropped": 0, "loaded_at": now, "stale": False,
+                    "limits": niu_topics.LIMITS, "server_now": now}
         tp_path = tmp / "topics.json"
+        # many: 300 rows with the upstream meta (the server's own ranks); many_legacy: the same rows from a valkyrie-dispatch without topic_meta
         tp_path.write_text(json.dumps({"ok": tp_env("list_ok"), "hostile": tp_env("hostile"), "overlimit": tp_env("cli_overlimit"),
+                                       "many": tp_env("many", topics_fixtures.many_topics(300, 7, True), True),
+                                       "many_legacy": tp_env("many_legacy", topics_fixtures.many_topics(300, 7, False), False),
                                        "not_paired": {"state": "not_paired", "message": niu_topics.MESSAGES["not_paired"], "topics": []}}))
         r = subprocess.run([node, str(SH / "tests" / "web_smoke.js"), str(SH / "web" / "app.js"), str(st_path), str(rs_path), str(tp_path),
                             str(SH / "tests" / "fixtures" / "usage" / "history.json"), str(SH / "tests" / "fixtures" / "usage" / "tokens.json")],
                            capture_output=True, text=True, timeout=60)
-        check(r.returncode == 0 and "rendered" in r.stdout and "llm ok" in r.stdout and "research ok" in r.stdout and "topics ok" in r.stdout and "timeline ok" in r.stdout and "flag ok" in r.stdout and "usage ok" in r.stdout and "tokens ok" in r.stdout,
+        check(r.returncode == 0 and "rendered" in r.stdout and "llm ok" in r.stdout and "research ok" in r.stdout and "research status ok" in r.stdout and "topics ok" in r.stdout and "topics view ok" in r.stdout and "timeline ok" in r.stdout and "flag ok" in r.stdout and "usage ok" in r.stdout and "tokens ok" in r.stdout,
               f"app.js renders without errors (Agents, Timeline, Research and Topics views): {r.stdout.strip()} {r.stderr.strip()[:300]}")
     else:
         print("web: node not found, front-end smoke run skipped")

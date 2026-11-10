@@ -148,7 +148,12 @@
         <span id="tpchips" class="tpchips" role="group" aria-label="Agent filter"></span>
         <input id="tpfilter" type="search" placeholder="Search topics" aria-label="Search topics" autocomplete="off">
         <span id="tpcount" class="small muted" role="status" aria-live="polite"></span>
-        <label class="check"><input type="checkbox" id="tparch"> Show archived</label>
+        <select id="tpstate" aria-label="State filter" title="State"><option value="current">Current</option><option value="active">Active</option><option value="inactive">Inactive</option><option value="archived">Archived</option><option value="all">All</option></select>
+        <select id="tprun" aria-label="Run filter" title="In the run (top 20 per agent) or below the cut-off"><option value="any">Run: any</option><option value="in">In the run</option><option value="below">Below the cut-off</option></select>
+        <select id="tporigin" aria-label="Origin filter" title="Where the topic came from"><option value="any">Origin: any</option><option value="chat">Chat</option><option value="discovery">Discovery</option><option value="explore">Explore</option><option value="none">Added directly</option></select>
+        <button id="tptrial" class="ghost tiny" aria-pressed="false">On trial</button>
+        <select id="tpsort" aria-label="Sort" title="Sort"><option id="tpsort-run" value="run">Run order</option><option value="weight">Base weight</option><option value="name">Name</option><option value="updated">Last updated</option><option id="tpsort-newest" value="newest">Newest</option><option id="tpsort-match" value="match" hidden>Best match</option></select>
+        <button id="tpdensity" class="ghost tiny" aria-pressed="false" title="Taller rows with more detail">Comfortable</button>
         <button id="tpadd" class="primary tiny" aria-label="Add topic" title="Add topic">+ Add</button>
         <button id="tprefresh" class="ghost tiny">Refresh</button>
         <span id="tpupd" class="small muted"></span>
@@ -162,7 +167,10 @@
       <div class="rsgrid">
         <div id="rsgate" class="rscard"></div>
         <div id="rsquota" class="rscard"></div>
+        <div id="rscomp" class="rscard"></div>
+        <div id="rsexplore" class="rscard"></div>
       </div>
+      <div id="rssched" class="rssched"></div>
       <div id="rslanes" class="rslanes"></div>
       <div id="rsgatelog" class="rssec"></div>
       <div id="rslast" class="rssec"></div>

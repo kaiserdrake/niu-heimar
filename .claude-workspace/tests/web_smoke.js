@@ -27,7 +27,7 @@ function el(tag = "div") {
 const document = {
   getElementById: (id) => { if (!els.has(id)) els.set(id, el()); return els.get(id); },
   createElement: (t) => el(t), createElementNS: (_, t) => el(t), querySelector: () => null, querySelectorAll: () => [],
-  addEventListener() {}, body: el("body"), documentElement: el("html"), hidden: false, title: "",
+  _ls: {}, addEventListener(t, f) { (document._ls[t] = document._ls[t] || []).push(f); }, body: el("body"), documentElement: el("html"), hidden: false, title: "",
 };
 const ctx = {
   document, window: null, console, setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {},
@@ -115,7 +115,7 @@ function timelineChecks() {
 const kidsOf = (e) => (e.children || []).filter((c) => c && typeof c === "object");
 const allOf = (e) => [e, ...kidsOf(e).flatMap(allOf)];
 const textOf = (e) => allOf(e).map((n) => n.textContent || "").join(" ");
-const RS_IDS = ["rshead", "rsgate", "rsquota", "rslanes", "rsgatelog", "rslast", "rserrors"];
+const RS_IDS = ["rshead", "rsgate", "rsquota", "rscomp", "rsexplore", "rssched", "rslanes", "rsgatelog", "rslast", "rserrors"];
 // Gate log: one row per gate check, newest first, linked to the gate dots in the lanes graph by a shared data-gi index.
 async function gateLogChecks(fx) {
   const fail = (m) => { throw new Error("research gate log: " + m); };
@@ -266,6 +266,92 @@ async function researchChecks(fx) {
   if (!els.get("tab-research").hidden || run("VIEW") !== "agents") fail("disabled research should hide the tab and leave the view");
   return "research ok";
 }
+// ---- Research Status: companion / explore cards, the next-24-hours strip, explore lane and badge (P3). Kept apart from the Topics checks. ----
+async function researchStatusChecks(fx, appSrc) {
+  const fail = (m) => { throw new Error("research status: " + m); };
+  const run = (c) => vm.runInContext(c, ctx);
+  const show = async (e) => { ctx.RS_CUR = e; await run("loadResearch()"); };
+  const need = (id, re, why) => { if (!re.test(textOf(els.get(id)))) fail(`${why || id}: missing ${re} in "${textOf(els.get(id)).slice(0, 300)}"`); };
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+  const hasCls = (n, c) => new RegExp(`\\b${c}\\b`).test(n.className || "");
+  const statusSrc = appSrc.slice(appSrc.indexOf("// ---------- Research tab"), appSrc.indexOf("// ---------- Topics panel"));
+  if (statusSrc.length < 5000) fail("could not find the Status section in app.js");
+  for (const bad of ["innerHTML", "esc(", "insertAdjacentHTML", "outerHTML", "document.write", "eval(", "new Function"]) if (statusSrc.includes(bad)) fail(`the Status code uses ${bad}`);
+  ctx.TP_TRAP = true;   // any innerHTML write while rendering the Status view throws
+  const html = fs.readFileSync(require("path").join(require("path").dirname(process.argv[2]), "index.html"), "utf8");
+  if (!/id="rsquota"[\s\S]*id="rscomp"[\s\S]*id="rsexplore"[\s\S]*<\/div>\s*<div id="rssched"[^>]*><\/div>\s*<div id="rslanes"/.test(html)) fail("index.html: #rscomp / #rsexplore in .rsgrid and #rssched before #rslanes");
+  await show(fx.m3); run('setView("research")');   // the first load un-hides the tab the earlier checks disabled
+  await show(fx.m3);
+  const marks = allOf(els.get("rssched")).filter((n) => hasCls(n, "rsmark"));
+  if (marks.length !== 5) fail(`expected 5 markers within 24 h, got ${marks.length}`);
+  if (marks.some((n) => hasCls(n, "off"))) fail("no marker in the strip should be off");
+  const letters = allOf(els.get("rssched")).filter((n) => hasCls(n, "rsmarktxt")).map((n) => n.textContent).sort().join("");
+  if (letters !== "BCDER") fail("marker letters: " + letters);
+  need("rssched", /Discovery \+ check-ins: Sun 10:00 \(in /, "discovery line");
+  need("rssched", /Delta scout: 18:00 · off/, "disabled job listed below the strip");
+  if (/newer valkyrie-dispatch/.test(textOf(els.get("rssched")))) fail("fallback note shown although jobs are present");
+  need("rscomp", /Companion \(#hermes\)/); need("rscomp", /posted by the bot/); need("rscomp", /14 \(5 from chat\)/); need("rscomp", /3 proposals · 2 notes/);
+  need("rscomp", /Last discovery/); need("rscomp", /Proposals, notes and picks are reviewed in #hermes/);
+  need("rsexplore", /6 queries → 48 results → 9 picks → 4 posted/); need("rsexplore", /3 liked, 1 disliked/); need("rsexplore", /succeeded/);
+  need("rshead", /companion up/); need("rshead", /explore 4 posted today/);
+  for (const id of RS_IDS) if (els.get(id).innerHTML) fail(`${id} was filled with innerHTML`);
+  // older server: no schedule.jobs gives the fallback strip and its note; no companion / explore gives fixed messages
+  await show(fx.m2);
+  if (!allOf(els.get("rssched")).some((n) => hasCls(n, "rsmark"))) fail("fallback strip has no markers");
+  need("rssched", /Explore, reflection and discovery times need a newer valkyrie-dispatch/, "fallback note");
+  need("rscomp", /Companion not available in this valkyrie-dispatch version/); need("rsexplore", /Explore is off/);
+  if (/companion|explore \d/.test(textOf(els.get("rshead")))) fail("header chips shown without the blocks");
+  {   // the explore run of m2 is a run-level bar in the explore lane; its run line replaces the agent table
+    const lanes = els.get("rslanes"), eb = allOf(lanes).filter((n) => hasCls(n, "rs-explorebar"));
+    if (eb.length !== 1 || !hasCls(eb[0], "rs-ok") || !/^explore · succeeded/.test(eb[0].getAttribute("data-tip"))) fail("explore lane bar: " + eb.length);
+    if (!allOf(lanes).some((n) => n.tagName === "text" && n.textContent === "explore")) fail("explore lane label");
+    const d = clone(fx.m2.data);
+    d.last_run = { ...d.last_run, ...d.recent_runs.find((x) => x.kind === "explore"), agents: [], digest: null, error_code: null };
+    await show({ ...fx.m2, data: d });
+    need("rslast", /Explore run: see the Explore card/);
+    if (allOf(els.get("rslast")).some((n) => n.tagName === "table")) fail("explore run drew an agent table");
+  }
+  {   // badge: computed on the newest research-kind run, so a later explore run cannot hide a failed overnight run
+    const d = clone(fx.m2.data), ex = d.recent_runs.find((x) => x.kind === "explore"), comp = d.recent_runs.find((x) => x.kind === "comprehensive");
+    d.recent_runs = d.recent_runs.filter((x) => x.status !== "skipped_gate");
+    d.gate.pending = null;
+    d.last_run = { ...d.last_run, ...ex, kind: "explore", status: "succeeded", mode: "normal", agents: [], digest: null, error_code: null };
+    comp.status = "failed";
+    await show({ ...fx.m2, data: d });
+    if (!/rs-bad/.test(els.get("rsdot").className)) fail("badge must stay red behind a succeeded explore run: " + els.get("rsdot").className);
+    comp.status = "succeeded"; comp.mode = "normal"; await show({ ...fx.m2, data: d });
+    if (!els.get("rsdot").hidden) fail("badge should be clear: " + els.get("rsdot").className);
+    ex.status = "failed"; d.last_run.status = "failed"; await show({ ...fx.m2, data: d });
+    if (!/rs-warn/.test(els.get("rsdot").className) || /rs-bad/.test(els.get("rsdot").className)) fail("a failed explore run is amber, never red: " + els.get("rsdot").className);
+    need("rserrors", /explore/);
+    ex.status = "succeeded"; d.last_run.status = "succeeded"; d.companion = { ...clone(fx.m3.data.companion), bot: "stale" };
+    await show({ ...fx.m2, data: d }); if (!/rs-warn/.test(els.get("rsdot").className)) fail("stale bot should be amber");
+    d.companion.bot = "up"; d.companion.ollama = "down";
+    await show({ ...fx.m2, data: d }); if (!/rs-warn/.test(els.get("rsdot").className)) fail("ollama down should be amber");
+  }
+  // hostile payloads: unknown values print "?", nothing is written as HTML
+  await show(fx.hostile);
+  for (const id of RS_IDS) {
+    const t = textOf(els.get(id));
+    if (/<img|<script|onerror|javascript:|rm -rf|funday/.test(t)) fail(`hostile text reached #${id}: ${t.slice(0, 160)}`);
+    if (els.get(id).innerHTML) fail(`${id} used innerHTML`);
+  }
+  {
+    const d = clone(fx.m3.data);
+    Object.assign(d.companion, { bot: "__proto__", ollama: "<img>", brief_delivery: "constructor", feedback_7d: null, pending_proposals: "x" });
+    Object.assign(d.explore, { last_status: "unknown", last_error: "unknown", posted_today: null });
+    d.schedule.jobs = [{ job: "unknown", at: null, weekday: "funday", enabled: "yes", next_at: d.generated_at + 60 }, { job: "rm -rf", at: null, weekday: null, enabled: false, next_at: null }];
+    await show({ ...fx.m3, data: d });
+    need("rscomp", /\?/); need("rsexplore", /\? posted/); need("rshead", /explore \? posted today/);
+    const t = textOf(els.get("rscomp")) + textOf(els.get("rssched")) + textOf(els.get("rsexplore"));
+    if (/__proto__|constructor|<img|rm -rf|funday/.test(t)) fail("hostile enum leaked: " + t.slice(0, 300));
+    if (!allOf(els.get("rssched")).some((n) => hasCls(n, "rsmarktxt") && n.textContent === "?")) fail("an unknown job should draw a ? marker");
+    for (const id of RS_IDS) if (els.get(id).innerHTML) fail(`${id} used innerHTML`);
+  }
+  ctx.TP_TRAP = false;
+  await show(fx.m2);
+  return "research status ok";
+}
 // Pure scoring tables for fuzzyScore()/tpMatch() in the Topics section of app.js.
 function fuzzyChecks(run, fail) {
   const sc = (q, t) => run(`fuzzyScore(${JSON.stringify(q)}, ${JSON.stringify(t)})`);
@@ -348,12 +434,12 @@ async function topicsChecks(fx, appSrc) {
   run("renderTopics()");
   if (rowsOf().length !== 4) fail(`expected 3 active + 1 inactive rows (archived hidden), got ${rowsOf().length}`);
   const list = textOf(get("tplist"));
-  if (!/General · 2\/200/.test(list) || !/Hobby · 1\/200 · 1 inactive/.test(list) || /General · 2\/200 · /.test(list)) fail("group counts (active only, 'n inactive' in the header): " + list.slice(0, 200));
+  if (!/General · 2 active/.test(list) || !/Hobby · 1 active · 1 inactive/.test(list) || /General · 2 active · /.test(list) || /in the run/.test(list)) fail("group counts (legacy: no run counts, 'n inactive' in the header): " + list.slice(0, 200));
   if (!/General 2\/200/.test(textOf(get("tpchips"))) || !/Fintrend 0\/200/.test(textOf(get("tpchips")))) fail("agent chips: " + textOf(get("tpchips")));
   if (!/Fintrend agent arrives in M4/.test(list)) fail("fintrend note missing");
   if (get("tpadd").disabled) fail("Add topic disabled although paired and ok");
   if (!allOf(get("tplist")).some((n) => n.tagName === "svg") || !allOf(get("tplist")).some((n) => /\btpw-fg\b/.test(n.className || ""))) fail("weight bar missing");
-  run("TP.archived = true; renderTopics()");
+  run("TP.state = 'all'; renderTopics()");
   if (rowsOf().length !== 5 || !rowsOf().some((n) => /\btp-archived\b/.test(n.className)) || !/Restore/.test(textOf(get("tplist")))) fail("archived toggle");
   // three states: Active = switch on; Inactive = switch off + badge + hold button; Archived = Restore + badge, no Edit / hold
   const rowOf = (id) => rowsOf().find((r) => r.getAttribute("data-id") === id);
@@ -366,7 +452,7 @@ async function topicsChecks(fx, appSrc) {
   if (!allOf(ico).some((n) => n.tagName === "svg" && /\btpico\b/.test(n.getAttribute("class") || "")) || ico.textContent !== "" || !/Archive topic/.test(ico.getAttribute("aria-label"))) fail("hold button is an svg.tpico icon button with only an aria-label");
   const order = rowsOf().map((r) => r.getAttribute("data-id").slice(0, 8));
   if (order.indexOf("00000005") < order.indexOf("00000003") || order.indexOf("00000004") < order.indexOf("00000002")) fail("ordering: " + order);
-  run("TP.archived = false; TP.filter = 'moog'; renderTopics()");
+  run("TP.state = 'current'; TP.filter = 'moog'; renderTopics()");
   if (rowsOf().length !== 1) fail("text filter");
   run("TP.filter = 'zzzz'; renderTopics()");
   if (!/No topic matches "zzzz"/.test(textOf(get("tplist")))) fail("empty filter state");
@@ -384,16 +470,16 @@ async function topicsChecks(fx, appSrc) {
   await run("loadTopics()");
   const names = () => rowsOf().map((r) => allOf(r).find((n) => /\btpname\b/.test(n.className || "")).children.map((c) => c.textContent).join("") || allOf(r).find((n) => /\btpname\b/.test(n.className || "")).textContent);
   run("TP.filter = 'dutrte'; renderTopics()");
-  if (names().join("|") !== "Philippine politics" || !/1 of 4 topics/.test(get("tpcount").textContent)) fail("typo search: " + names() + " / " + get("tpcount").textContent);
+  if (names().join("|") !== "Philippine politics" || !/^Showing 1 of 1 · 5 total$/.test(get("tpcount").textContent)) fail("typo search: " + names() + " / " + get("tpcount").textContent);
   if (!allOf(get("tplist")).some((n) => /\btphit\b/.test(n.className || "")) || !/Matches keyword Rodrigo Duterte/.test(textOf(get("tplist")))) fail("keyword hit not shown");
   run("TP.filter = 'ff reso'; renderTopics()");
   if (names().join("|") !== "Final Fantasy Resonance") fail("initials+prefix: " + names());
   if (!allOf(get("tplist")).some((n) => n.className === "tpmatch")) fail("name highlight missing");
   run("TP.filter = 'ollama mdls'; renderTopics()");
   if (names().join("|") !== "Local LLM news") fail("keyword subsequence: " + names());
-  run("TP.filter = 'duterte'; TP.archived = true; renderTopics()");
-  if (names().join("|") !== "Philippine politics|Old Duterte archive" || !/2 of 5 topics/.test(get("tpcount").textContent)) fail("archived scope: " + names());
-  run("TP.archived = false; TP.agent = 'hobby'; TP.filter = 'duterte'; renderTopics()");
+  run("TP.filter = 'duterte'; TP.state = 'all'; renderTopics()");
+  if (names().join("|") !== "Philippine politics|Old Duterte archive" || !/^Showing 2 of 2 · 5 total$/.test(get("tpcount").textContent)) fail("archived scope: " + names());
+  run("TP.state = 'current'; TP.agent = 'hobby'; TP.filter = 'duterte'; renderTopics()");
   if (rowsOf().length || !/No topic matches "duterte"/.test(textOf(get("tplist")))) fail("agent tab not respected");
   run("TP.agent = 'all'; TP.filter = 'xyz' + 'q'.repeat(100); renderTopics()");
   if (!/No topic matches "xyzq+…"/.test(textOf(get("tplist"))) || textOf(get("tplist")).length > 200) fail("empty state not capped");
@@ -406,8 +492,8 @@ async function topicsChecks(fx, appSrc) {
   get("tpfilter").value = "x"; run("TP.filter = 'x'");
   const ev = { key: "Escape", preventDefault() { ev.pd = true; } };
   await fire("tpfilter", "keydown", ev);
-  if (get("tpfilter").value !== "" || run("TP.filter") !== "" || !ev.pd || get("tpcount").textContent !== "") fail("Escape did not clear the search");
-  run("TP.filter = ''; TP.archived = false; TP.agent = 'all'");
+  if (get("tpfilter").value !== "" || run("TP.filter") !== "" || !ev.pd || get("tpcount").textContent !== "Showing 4 of 4 · 5 total") fail("Escape did not clear the search");
+  run("TP.filter = ''; TP.state = 'current'; TP.agent = 'all'");
   // ordering is by score, not by list order: the better match comes second in the data and must render first
   ctx.TP_CUR = { state: "ok", loaded_at: 1, topics: [
     mk("x1", "general", "Zebra news", ["duterte"]), mk("x2", "general", "Duterte", ["other"]),
@@ -428,7 +514,7 @@ async function topicsChecks(fx, appSrc) {
   if (rowsOf().length || !/No topic matches "😀😀"/.test(textOf(get("tplist")))) fail("emoji-only query behaviour changed");
   run("TP.filter = '\\u0000\\u202e<img src=x onerror=alert(1)>'; renderTopics()");
   if (allOf(get("tplist")).some((n) => ["img", "script", "iframe", "a"].includes(n.tagName))) fail("hostile query created an element");
-  run("TP.filter = ''; TP.archived = false; TP.agent = 'all'");
+  run("TP.filter = ''; TP.state = 'current'; TP.agent = 'all'");
   // hostile topic text: literal, never markup
   ctx.TP_CUR = fx.hostile;
   await run("loadTopics()");
@@ -452,7 +538,7 @@ async function topicsChecks(fx, appSrc) {
   if (rowsOf().length || !get("tpadd").disabled) fail("not_paired must show no rows and disable Add");
   ctx.TP_CUR = fx.ok;
   await run("loadTopics()");
-  const ctl = allOf(get("tplist")).filter((n) => ["input", "button"].includes(n.tagName) && !/tpex/.test(n.className || ""));
+  const ctl = allOf(get("tplist")).filter((n) => ["input", "button"].includes(n.tagName) && !/tpex|tpgroup|tpmore/.test(n.className || ""));
   if (!ctl.length || !ctl.every((n) => n.disabled)) fail("write controls must be disabled when the browser is not paired");
   // state banners keep the (stale) list and disable writes
   run("ME = { paired: true }");
@@ -547,7 +633,7 @@ async function topicsChecks(fx, appSrc) {
   const holdTimers = () => timers.filter((x) => x.ms === 1000);
   const fresh = async (id = fx.ok.topics[0].id) => {
     ctx.TP_CUR = fx.ok; await run("loadTopics()");
-    run("TP.archived = false; TP.filter = ''; TP.agent = 'all'; renderTopics()");
+    run("TP.state = 'current'; TP.filter = ''; TP.agent = 'all'; renderTopics()");
     timers.length = 0; cleared.length = 0; calls.length = 0;
     const row = rowOf(id), b = part(row, "tphold");
     row.querySelector = (q) => part(row, q.slice(1));
@@ -570,7 +656,7 @@ async function topicsChecks(fx, appSrc) {
   await settle();
   const arch = calls.filter((x) => x.url === "/api/topics/update");
   if (arch.length !== 1 || arch[0].body.id !== t0id || arch[0].body.if_match !== t0im || JSON.stringify(arch[0].body.fields) !== '{"is_archived":true}') fail("finished hold sends exactly one {is_archived:true}: " + JSON.stringify(calls));
-  if (!/Archived "AI chips"\. Turn on Show archived to restore it\./.test(get("tpmsg").textContent) || rowOf(t0id)) fail("archive confirmation / row hidden: " + get("tpmsg").textContent);
+  if (!/Archived "AI chips"\. Set State to Archived to restore it\./.test(get("tpmsg").textContent) || rowOf(t0id)) fail("archive confirmation / row hidden: " + get("tpmsg").textContent);
   // keyboard: Space and Enter hold, repeat does not start a second timer, keyup cancels, click alone never sends
   ({ row, b } = await fresh("00000002-0000-4000-8000-000000000002"));
   const key = (k, rep) => ({ key: k, repeat: !!rep, preventDefault() { this.prevented = true; } });
@@ -602,7 +688,7 @@ async function topicsChecks(fx, appSrc) {
   ctx.setTimeout = realSet; ctx.clearTimeout = realClear;
   // Restore sends is_archived:false and lands as Inactive
   ctx.TP_CUR = fx.ok; await run("loadTopics()");
-  run("TP.archived = true; renderTopics()");
+  run("TP.state = 'all'; renderTopics()");
   const xr = rowOf("00000004-0000-4000-8000-000000000004");
   const x3im = fx.ok.topics[3].updated_at;
   Object.assign(reply, { ok: true, status: 200, data: { ok: true, topic: { ...fx.ok.topics[3], is_active: false, is_archived: false, updated_at: "2026-11-07T12:00:00.000000Z" } } });
@@ -615,7 +701,7 @@ async function topicsChecks(fx, appSrc) {
   // old backend: banner, no hold button, Restore falls back to the switch
   ctx.TP_CUR = { ...fx.ok, states_supported: false, topics: fx.ok.topics.map((t) => ({ ...t, is_archived: !t.is_active })) };
   await run("loadTopics()");
-  run("TP.archived = true; renderTopics()");
+  run("TP.state = 'all'; renderTopics()");
   if (!/valkyrie-dispatch is older than this dashboard/.test(textOf(get("tphead"))) || allOf(get("tplist")).some((n) => /\btphold\b/.test(n.className || ""))) fail("legacy banner / hold button");
   calls.length = 0;
   Object.assign(reply, { ok: true, status: 200, data: { ok: true, topic: { ...fx.ok.topics[3], is_active: true, is_archived: false } } });
@@ -623,6 +709,329 @@ async function topicsChecks(fx, appSrc) {
   if (!calls.some((x) => x.url === "/api/topics/update" && JSON.stringify(x.body.fields) === '{"is_active":true}')) fail("legacy restore sends is_active:true: " + JSON.stringify(calls));
   ctx.TP_TRAP = false;
   return "topics ok";
+}
+// Topics view at scale: 300 topics with the server's meta (and the same rows without it), through the real render path.
+// Table tests of the pure tpFilter/tpSort/tpGroups come first.
+function tpTableChecks(run, fail) {
+  const mk = (id, agent, name, o = {}) => ({ id, agent_type: agent, name, keywords: o.kw || [], excluded_terms: [], weight: o.w ?? 1, is_active: o.st !== "inactive" && o.st !== "archived",
+    is_archived: o.st === "archived", updated_at: o.up || "2026-11-01T00:00:00Z",
+    meta: o.nometa ? null : { effective_weight: o.eff ?? o.w ?? 1, run_rank: o.rank ?? null, in_run: o.rank == null ? (o.st ? null : false) : o.rank <= 2, origin: o.origin ?? null, trial_until: o.trial ?? null,
+      created_at: o.cr || "2026-10-01T00:00:00Z", weight_updated_at: null, likes_30d: 0, dislikes_30d: 0, notes_active: 0 } });
+  ctx.TBL = [
+    mk("a1", "general", "Bravo", { rank: 2, w: 2, origin: "chat", up: "2026-11-03T00:00:00Z", cr: "2026-10-05T00:00:00Z" }),
+    mk("a2", "general", "alpha", { rank: 1, w: 3, origin: "explore", trial: "2026-12-01T00:00:00Z", up: "2026-11-02T00:00:00Z", cr: "2026-10-04T00:00:00Z" }),
+    mk("a3", "general", "Charlie", { rank: 3, w: 1.5, up: "2026-11-05T00:00:00Z", cr: "2026-10-03T00:00:00Z" }),
+    mk("a4", "general", "delta", { rank: 4, w: 1, origin: "discovery", trial: "2026-10-01T00:00:00Z", up: "2026-11-04T00:00:00Z", cr: "2026-10-02T00:00:00Z" }),
+    mk("i1", "general", "Zulu idle", { st: "inactive", w: 4, up: "2026-11-06T00:00:00Z", cr: "2026-10-09T00:00:00Z" }),
+    mk("i2", "general", "echo idle", { st: "inactive", w: 0.5 }),
+    mk("x1", "general", "Archived one", { st: "archived", w: 5 }),
+    mk("h1", "hobby", "Hobby topic", { rank: 1, w: 1, origin: "chat" }),
+  ];
+  const T = (o) => Object.assign({ agent: "all", filter: "", state: "current", run: "any", origin: "any", trial: false, sort: "run", sortUser: false }, o);
+  const f = (o) => { ctx.TT = T(o); return run("tpFilter(TBL, TT).map((t) => t.id).join(',')"); };
+  const s = (o) => { ctx.TT = T(Object.assign({ agent: "general" }, o)); return run("tpSort(tpFilter(TBL, TT), TT).map((t) => t.id).join(',')"); };
+  const eq = (got, want, what) => { if (got !== want) fail(`${what}: got ${got}, want ${want}`); };
+  eq(f({}), "a1,a2,a3,a4,i1,i2,h1", "state current hides archived");
+  eq(f({ state: "active" }), "a1,a2,a3,a4,h1", "state active");
+  eq(f({ state: "inactive" }), "i1,i2", "state inactive");
+  eq(f({ state: "archived" }), "x1", "state archived");
+  eq(f({ state: "all" }), "a1,a2,a3,a4,i1,i2,x1,h1", "state all");
+  eq(f({ agent: "hobby" }), "h1", "agent filter");
+  eq(f({ run: "in" }), "a1,a2,h1", "run=in is active rows with in_run");
+  eq(f({ run: "below" }), "a3,a4", "run=below is active rows past the cut-off, never inactive ones");
+  eq(f({ origin: "chat" }), "a1,h1", "origin chat");
+  eq(f({ origin: "none" }), "a3,i1,i2", "origin none = added directly");
+  eq(f({ trial: true }), "a2,a4", "trial filter");
+  eq(f({ run: "below", origin: "discovery", trial: true }), "a4", "filters combine");
+  eq(f({ filter: "idle" }), "i1,i2", "text filter");
+  eq(f({ filter: "zzzz" }), "", "text filter, no match");
+  // sorts: archived always last, inactive after active, ties by name
+  eq(s({}), "a2,a1,a3,a4,i2,i1", "sort run: rank order, then inactive by name");
+  eq(s({ sort: "weight" }), "a2,a1,a3,a4,i1,i2", "sort weight (base, desc)");
+  eq(s({ sort: "name" }), "a2,a1,a3,a4,i2,i1", "sort name (case-insensitive)");
+  eq(s({ sort: "updated" }), "a3,a4,a1,a2,i1,i2", "sort updated (newest edit first)");
+  eq(s({ sort: "newest" }), "a1,a2,a3,a4,i1,i2", "sort newest (meta.created_at desc)");
+  eq(s({ state: "all", sort: "name" }), "a2,a1,a3,a4,i2,i1,x1", "archived rows sort last");
+  ctx.TBL2 = ctx.TBL.map((t) => ({ ...t, meta: null }));
+  eq(run("tpSort(TBL2.filter((t) => t.agent_type === 'general' && !t.is_archived), " + JSON.stringify(T({})) + ").map((t) => t.id).join(',')"), "a2,a1,a3,a4,i1,i2", "run order falls back to weight without meta");
+  eq(run("tpSort(TBL2.filter((t) => t.agent_type === 'general' && !t.is_archived), " + JSON.stringify(T({ sort: "newest" })) + ").map((t) => t.id).join(',')"), "a2,a1,a3,a4,i1,i2", "newest falls back to weight without meta");
+  ctx.TT = T({ filter: "idle" }); ctx.MM = new Map();
+  eq(run("(() => { const l = tpFilter(TBL, TT, MM); return tpSort(l, TT, MM).map((t) => t.id).join(','); })()"), "i1,i2", "search sorts by match");
+  if (run("tpSortKey(TBL, TT)") !== "match") fail("search switches the sort to match");
+  ctx.TT = T({ filter: "idle", sortUser: true, sort: "name" });
+  if (run("tpSortKey(TBL, TT)") !== "name") fail("a sort picked after typing wins over best match");
+  // groups: TP_AGENTS order, empty agents omitted, counts are over the agent's whole list
+  ctx.TT = T({ run: "below" });
+  const g = JSON.parse(run("JSON.stringify(tpGroups(TBL, TT).map((g) => ({ agent: g.agent, ids: g.rows.map((t) => t.id), counts: g.counts })))"));
+  if (g.length !== 1 || g[0].agent !== "general" || g[0].ids.join() !== "a3,a4") fail("tpGroups omits agents with no rows: " + JSON.stringify(g));
+  if (JSON.stringify(g[0].counts) !== JSON.stringify({ active: 4, inrun: 2, below: 2, inactive: 2, trial: 2 })) fail("tpGroups counts: " + JSON.stringify(g[0].counts));
+  const g2 = JSON.parse(run("JSON.stringify(tpGroups(TBL, " + JSON.stringify(T({ state: "all" })) + ").map((g) => g.agent))"));
+  if (g2.join() !== "general,hobby") fail("tpGroups order " + g2);
+  // malformed rows never throw
+  ctx.TT = T({ origin: "chat", trial: true, filter: "x" });
+  run("tpGroups([{ id: 'm', agent_type: 'general', name: 'x', weight: 1, is_active: true, is_archived: false, meta: { origin: 5 } }, { id: 'n', agent_type: 'hobby', name: 'x', weight: 1, is_active: false, is_archived: false }], TT)");
+}
+
+async function topicsViewChecks(fx, appSrc) {
+  const fail = (m) => { throw new Error("topics view: " + m); };
+  const run = (c) => vm.runInContext(c, ctx);
+  const get = (id) => els.get(id);
+  const clone = (o) => JSON.parse(JSON.stringify(o));
+  const fire = (id, type, ev) => Promise.all((get(id)._ls[type] || []).map((f) => f(ev)));
+  const cls = (n) => n.className || "";
+  const has = (n, c) => new RegExp("\\b" + c + "\\b").test(cls(n));
+  const part = (n, c) => allOf(n).find((x) => has(x, c));
+  const calls = [];
+  const reply = { ok: true, status: 200, data: {} };
+  ctx.fetch = (url, opts) => {
+    calls.push({ url: String(url), body: opts && opts.body ? JSON.parse(opts.body) : null });
+    const r = opts && opts.method === "POST" ? reply : { ok: true, status: 200, data: ctx.TP_CUR };
+    return Promise.resolve({ ok: r.ok, status: r.status, json: () => Promise.resolve(clone(r.data)) });
+  };
+  ctx.TP_TRAP = true;   // the innerHTML trap stays on for everything below
+  tpTableChecks(run, fail);
+  const reset = () => run("Object.assign(TP, { agent: 'all', filter: '', state: 'current', run: 'any', origin: 'any', trial: false, sort: 'run', sortUser: false, density: 'compact' }); TP.shown.clear(); TP.collapsed.clear(); TP.focusId = null");
+  const showAll = () => run("for (const a of TP_AGENTS) TP.shown.set(a, 9999); renderTopics()");
+  // walk the list: groups -> { head, rows, cutAt (rows before the separator), cutText, more (button texts) }
+  const walk = () => {
+    const out = [];
+    let g = null;
+    for (const n of kidsOf(get("tplist"))) {
+      if (has(n, "tpgroup")) { g = { agent: n.getAttribute("data-agent"), head: textOf(n), open: n.getAttribute("aria-expanded"), rows: [], cutAt: -1, cutText: "", more: [] }; out.push(g); }
+      else if (!g) continue;
+      else if (has(n, "tprow")) g.rows.push(n);
+      else if (has(n, "tpcut")) { g.cutAt = g.rows.length; g.cutText = n.textContent; if (n.getAttribute("role") !== "separator") fail("cut-off separator lacks its role"); }
+      else if (has(n, "tpmorebar")) g.more = kidsOf(n).map((b) => b.textContent);
+    }
+    return out;
+  };
+  const rank = (row) => { const b = part(row, "tprank"); return b ? b.textContent : ""; };
+  const idOf = (row) => row.getAttribute("data-id");
+  const T = fx.many.topics, byId = new Map(T.map((t) => [t.id, t]));
+  const agentRows = (a, pred) => T.filter((t) => t.agent_type === a && pred(t));
+  const cur = (t) => !t.is_archived;
+  const nRows = () => walk().reduce((n, g) => n + g.rows.length, 0);
+  run("ME = { paired: true }");
+
+  // --- 300 topics with meta
+  reset();
+  ctx.TP_CUR = clone(fx.many);
+  await run("loadTopics()");
+  if (get("tprun").hidden || get("tporigin").hidden || get("tptrial").hidden) fail("run/origin/trial controls must show when the server sends meta");
+  if (/Update valkyrie-dispatch/.test(textOf(get("tphead")))) fail("legacy note shown although meta is supported");
+  let groups = walk();
+  if (groups.map((g) => g.agent).join() !== "general,hobby,fintrend") fail("groups: " + groups.map((g) => g.agent));
+  let total = 0, vis = 0;
+  for (const g of groups) {
+    const all = agentRows(g.agent, cur), act = agentRows(g.agent, (t) => t.is_active);
+    total += all.length; vis += Math.min(50, all.length);
+    if (g.rows.length !== Math.min(50, all.length)) fail(`${g.agent}: ${g.rows.length} rows, want ${Math.min(50, all.length)}`);
+    if (all.length > 50 && !(g.more.length === 2 && g.more[0] === `Show ${Math.min(50, all.length - 50)} more (${all.length - 50} left)` && g.more[1] === "Show all")) fail(`${g.agent} paging buttons: ${g.more}`);
+    if (all.length <= 50 && g.more.length) fail(`${g.agent} must not page ${all.length} rows`);
+    if (act.length <= 20) fail(`fixture should have more than 20 active ${g.agent} topics`);
+    // separator exactly after rank 20; ranks 1..20 above it, "below cut-off" below it
+    if (g.cutAt !== 20) fail(`${g.agent}: separator after ${g.cutAt} rows, want 20`);
+    g.rows.slice(0, 20).forEach((r, i) => { if (rank(r) !== `#${i + 1}`) fail(`${g.agent} row ${i}: rank badge ${rank(r)}`); });
+    if (!g.rows.slice(20).filter((r) => byId.get(idOf(r)).is_active).every((r) => rank(r) === "below cut-off")) fail(`${g.agent}: active rows after the line must say below cut-off`);
+    if (!new RegExp(`the 20 above are researched each night; the ${act.length - 20} below are active but not in the run`).test(g.cutText)) fail("separator text: " + g.cutText);
+    if (!new RegExp(`${act.length} active · 20 in the run · ${act.length - 20} below`).test(g.head)) fail("group head: " + g.head);
+    // active rows first, in the server's rank order
+    const ranks = g.rows.map((r) => byId.get(idOf(r))).filter((t) => t.is_active).map((t) => t.meta.run_rank);
+    if (ranks.some((x, i) => i && x < ranks[i - 1])) fail(`${g.agent}: not in run order`);
+  }
+  if (get("tpcount").textContent !== `Showing ${vis} of ${total} · 300 total`) fail("count: " + get("tpcount").textContent);
+  const all0 = () => allOf(get("tplist"));
+  if (!all0().some((n) => has(n, "tporigin")) || !all0().some((n) => has(n, "tptrial") && /^(trial, \d+ d left|check-in due)$/.test(n.textContent))) fail("origin / trial badges missing");
+  if (!all0().some((n) => has(n, "tpfb") && /^\+\d+ \/ −\d+$/.test(n.textContent)) || !all0().some((n) => has(n, "tpnotes"))) fail("likes / notes cells missing");
+  if (!/top 20/.test(textOf(get("tpchips")))) fail("agent chips lack the top-k text: " + textOf(get("tpchips")));
+  // paging: Show 50 more, then Show all
+  const gen = () => walk().find((g) => g.agent === "general");
+  const nGen = agentRows("general", cur).length;
+  const moreBar = () => kidsOf(get("tplist")).filter((n) => has(n, "tpmorebar"));
+  if (nGen > 100) fail("fixture changed: general should fit in two pages");
+  await moreBar()[0].children[0].onclick();
+  if (gen().rows.length !== nGen) fail("Show 50 more: " + gen().rows.length);
+  if (gen().more.length) fail("buttons should disappear once the group is complete");
+  reset();
+  run("renderTopics()");
+  await moreBar()[0].children[1].onclick();
+  if (gen().rows.length !== nGen) fail("Show all renders the whole group: " + gen().rows.length);
+  // run filter
+  run("TP.run = 'below'"); showAll();
+  groups = walk();
+  for (const g of groups) {
+    const want = agentRows(g.agent, (t) => t.is_active && t.meta.run_rank > 20);
+    if (g.rows.length !== want.length || !g.rows.every((r) => rank(r) === "below cut-off" && byId.get(idOf(r)).meta.run_rank > 20)) fail(`run=below ${g.agent}: ${g.rows.length}/${want.length}`);
+    if (g.cutAt !== -1) fail("no separator when only the rows below the cut-off show");
+    if (!/outside the run/.test(g.head)) fail("run=below header: " + g.head);
+  }
+  run("TP.run = 'in'"); showAll();
+  for (const g of walk()) if (g.rows.length !== 20 || !g.rows.every((r) => /^#\d+$/.test(rank(r)))) fail(`run=in ${g.agent}: ${g.rows.length}`);
+  run("TP.run = 'any'");
+  // origin and trial
+  for (const o of ["chat", "discovery", "explore"]) {
+    run(`TP.origin = '${o}'`); showAll();
+    if (nRows() !== T.filter((t) => cur(t) && t.meta.origin === o).length || !walk().every((g) => g.rows.every((r) => byId.get(idOf(r)).meta.origin === o && part(r, "tporigin").textContent === o))) fail("origin " + o);
+  }
+  run("TP.origin = 'none'"); showAll();
+  if (nRows() !== T.filter((t) => cur(t) && !t.meta.origin).length || all0().some((n) => has(n, "tporigin"))) fail("origin none (added directly)");
+  run("TP.origin = 'any'; TP.trial = true"); showAll();
+  const nTrial = T.filter((t) => cur(t) && t.meta.trial_until).length;
+  if (!nTrial || nRows() !== nTrial || !walk().every((g) => g.rows.every((r) => part(r, "tptrial")))) fail("trial filter");
+  if (get("tptrial").textContent !== `On trial (${nTrial})` || get("tptrial").getAttribute("aria-pressed") !== "true") fail("trial button: " + get("tptrial").textContent);
+  run("TP.trial = false");
+  // state filter
+  for (const [st, pred] of [["active", (t) => t.is_active], ["inactive", (t) => !t.is_active && !t.is_archived], ["archived", (t) => t.is_archived], ["all", () => true]]) {
+    run(`TP.state = '${st}'`); showAll();
+    if (nRows() !== T.filter(pred).length) fail("state " + st + " row count " + nRows());
+  }
+  run("TP.state = 'current'");
+  // sorts through the renderer: the first group's visible order
+  const first = () => walk()[0].rows.map((r) => byId.get(idOf(r))).filter((t) => t.is_active);
+  const sorted = (xs, cmp) => xs.every((x, i) => !i || cmp(xs[i - 1], x) <= 0);
+  run("TP.sort = 'weight'"); showAll();
+  if (!sorted(first(), (a, b) => b.weight - a.weight)) fail("sort weight order");
+  run("TP.sort = 'name'"); showAll();
+  if (!sorted(first(), (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }))) fail("sort name order");
+  run("TP.sort = 'updated'"); showAll();
+  if (!sorted(first(), (a, b) => (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0))) fail("sort updated order");
+  run("TP.sort = 'newest'"); showAll();
+  if (!sorted(first(), (a, b) => (a.meta.created_at < b.meta.created_at ? 1 : a.meta.created_at > b.meta.created_at ? -1 : 0))) fail("sort newest order");
+  if (walk().some((g) => g.cutAt !== -1)) fail("the cut-off line only belongs to run order");
+  run("TP.sort = 'run'");
+  // search over 300 topics: typo cases, best-match sort, then a picked sort wins
+  reset(); run("TP.state = 'all'");
+  const found = (q) => { run(`TP.filter = ${JSON.stringify(q)}; TP.shown.clear(); renderTopics()`); showAll(); return new Set(walk().flatMap((g) => g.rows.map(idOf))); };
+  const t0 = Date.now();
+  let got = found("alpah");   // transposition of "alpha"
+  const want1 = T.filter((t) => /\balpha\b/i.test(t.name));
+  if (!want1.length || !want1.every((t) => got.has(t.id))) fail("typo 'alpah' misses " + want1.filter((t) => !got.has(t.id)).length + " of " + want1.length);
+  got = found("strase");   // 1 edit from "strasse" / "straße"
+  const want2 = T.filter((t) => /^stra(ss|ß)e/i.test(t.name));
+  if (!want2.length || !want2.every((t) => got.has(t.id))) fail("typo 'strase' misses " + want2.filter((t) => !got.has(t.id)).map((t) => t.name));
+  got = found("gama");
+  const want3 = T.filter((t) => /\bgamma\b/i.test(t.name));
+  if (!want3.length || !want3.every((t) => got.has(t.id))) fail("typo 'gama'");
+  if (run("tpSortKey(TP.data.topics, tpEff(true))") !== "match" || get("tpsort").value !== "match" || get("tpsort-match").hidden) fail("a search shows Best match in the sort select");
+  if (Date.now() - t0 > 4000) fail("search over 300 topics too slow: " + (Date.now() - t0) + "ms");
+  get("tpsort").value = "name"; await fire("tpsort", "change", {});
+  if (run("TP.sortUser") !== true || run("tpSortKey(TP.data.topics, tpEff(true))") !== "name") fail("picking a sort after typing wins");
+  reset(); run("renderTopics()");
+
+  // --- keyboard
+  const rows = () => walk().flatMap((g) => g.rows);
+  let focused = null;
+  const track = () => { for (const r of rows()) r.focus = () => { focused = r; }; get("tpfilter").focus = () => { focused = get("tpfilter"); }; };
+  track();
+  if (rows()[0].getAttribute("tabindex") !== "0" || rows()[1].getAttribute("tabindex") !== "-1") fail("roving tabindex: first row 0, the others -1");
+  const key = (k, target) => ({ key: k, target, preventDefault() { this.pd = true; } });
+  get("tpdlg").open = false; ctx.document.activeElement = null;
+  let ev = key("/");
+  ctx.document._ls.keydown.forEach((f) => f(ev));
+  if (focused !== get("tpfilter") || !ev.pd) fail("/ focuses the search");
+  focused = null; ctx.document.activeElement = { tagName: "INPUT" };
+  ctx.document._ls.keydown.forEach((f) => f(key("/")));
+  if (focused) fail("/ must not steal the focus from a field");
+  ctx.document.activeElement = null; get("tpdlg").open = true;
+  ctx.document._ls.keydown.forEach((f) => f(key("/")));
+  if (focused) fail("/ must not fire while the dialog is open");
+  get("tpdlg").open = false;
+  ev = key("ArrowDown", get("tpfilter"));
+  await fire("tpfilter", "keydown", ev);
+  if (focused !== rows()[0] || !ev.pd) fail("ArrowDown from the search enters the first row");
+  const rk = (i, k, target) => { const e = key(k, target === undefined ? rows()[i] : target); rows()[i]._ls.keydown.forEach((f) => f(e)); return e; };
+  rk(0, "ArrowDown");
+  if (focused !== rows()[1] || rows()[1].getAttribute("tabindex") !== "0" || rows()[0].getAttribute("tabindex") !== "-1") fail("ArrowDown moves to the next row and the roving tabindex follows");
+  rk(1, "ArrowUp");
+  if (focused !== rows()[0]) fail("ArrowUp");
+  focused = null; rk(0, "ArrowUp");
+  if (focused !== rows()[0]) fail("ArrowUp at the top stays");
+  rk(0, "End");
+  if (focused !== rows()[rows().length - 1]) fail("End");
+  rk(rows().length - 1, "Home");
+  if (focused !== rows()[0]) fail("Home");
+  rk(0, "Escape");
+  if (focused !== get("tpfilter")) fail("Esc in the list goes back to the search");
+  // arrows skip separators and group headers (they are not rows); Enter opens the dialog
+  get("tpdlg").open = false;
+  const e1 = rk(2, "Enter", part(rows()[2], "tpedit"));
+  if (get("tpdlg").open || e1.pd) fail("Enter on a child control must not open the dialog");
+  rk(2, "Enter");
+  if (!get("tpdlg").open || run("TP.editing && TP.editing.id") !== idOf(rows()[2])) fail("Enter opens the edit dialog for the row");
+  get("tpdlg").close();
+  run("ME = { paired: false }"); run("renderTopics()"); track();
+  rk(2, "Enter");
+  if (get("tpdlg").open) fail("Enter must not open the dialog when writes are disabled");
+  run("ME = { paired: true }"); run("renderTopics()"); track();
+
+  // --- toolbar handlers persist the view (not the search) and reset paging
+  run("TP.shown.set('general', 100)");
+  globalThis.LS_SET = [];
+  get("tpstate").value = "archived"; await fire("tpstate", "change", {});
+  if (run("TP.state") !== "archived" || run("TP.shown.size") !== 0) fail("state select");
+  get("tprun").value = "below"; await fire("tprun", "change", {});
+  get("tporigin").value = "chat"; await fire("tporigin", "change", {});
+  await fire("tptrial", "click", {});
+  get("tpsort").value = "weight"; await fire("tpsort", "change", {});
+  await fire("tpdensity", "click", {});
+  const stored = () => globalThis.LS_SET.filter(([k]) => k === "niu.tp.view").pop()[1];
+  if (JSON.stringify(JSON.parse(stored())) !== JSON.stringify({ state: "archived", run: "below", origin: "chat", trial: true, sort: "weight", density: "comfortable", collapsed: [] })) fail("persisted view: " + stored());
+  run("TP.filter = 'secret search'; tpPersist()");
+  if (stored().includes("secret")) fail("search text leaked into the stored view");
+  reset(); run("renderTopics()");
+  // group collapse
+  await kidsOf(get("tplist")).find((n) => has(n, "tpgroup")).onclick();
+  const g0 = walk()[0];
+  if (g0.rows.length || g0.open !== "false" || !/General · \d+ active/.test(g0.head)) fail("collapse hides the rows but keeps the count text: " + g0.head);
+  if (JSON.parse(stored()).collapsed.join() !== "general") fail("collapsed groups persist");
+  await kidsOf(get("tplist")).find((n) => has(n, "tpgroup")).onclick();
+  if (!walk()[0].rows.length || walk()[0].open !== "true") fail("expand");
+
+  // --- writes that move ranks re-read the list; plain edits do not
+  const moveTopic = clone(T.find((t) => t.is_active));
+  calls.length = 0;
+  Object.assign(reply, { ok: true, status: 200, data: { ok: true, topic: { ...moveTopic, is_active: false, updated_at: "2026-11-09T00:00:00.000000Z" } } });
+  await run(`tpToggle(TP.data.topics.find((t) => t.id === '${moveTopic.id}'), false)`);
+  if (calls.map((c) => c.url).join() !== "/api/topics/update,/api/topics") fail("a switch re-reads the list: " + calls.map((c) => c.url));
+  ctx.TP_CUR = clone(fx.many); await run("loadTopics()");
+  const open = () => run(`tpDialog(TP.data.topics.find((t) => t.id === '${moveTopic.id}'))`);
+  const save = () => fire("tpform", "submit", { submitter: { value: "save" }, preventDefault() {} });
+  calls.length = 0; open();
+  get("tpname").value = "Renamed only";
+  Object.assign(reply, { ok: true, status: 200, data: { ok: true, topic: { ...moveTopic, name: "Renamed only" } } });
+  await save();
+  if (calls.map((c) => c.url).join() !== "/api/topics/update") fail("a name-only edit does not re-read: " + calls.map((c) => c.url));
+  ctx.TP_CUR = clone(fx.many); await run("loadTopics()");
+  calls.length = 0; open();
+  get("tpweight").value = "3.5";
+  Object.assign(reply, { ok: true, status: 200, data: { ok: true, topic: { ...moveTopic, weight: 3.5 } } });
+  await save();
+  if (calls.map((c) => c.url).join() !== "/api/topics/update,/api/topics") fail("a weight edit re-reads the list: " + calls.map((c) => c.url));
+  calls.length = 0;
+  run("tpDialog(null)");
+  get("tpagent").value = "hobby"; get("tpname").value = "Brand new"; get("tpkw").value = "x"; get("tpweight").value = "1";
+  Object.assign(reply, { ok: true, status: 200, data: { ok: true, topic: { ...moveTopic, id: "0000ffff-0000-4000-8000-00000000ffff", name: "Brand new" } } });
+  await save();
+  if (calls.map((c) => c.url).join() !== "/api/topics/create,/api/topics") fail("a create re-reads the list: " + calls.map((c) => c.url));
+  if (!/changed elsewhere \(CLI, Discord or feedback\)/.test(run("TP_MSG.changed")) || /duenext/i.test(appSrc)) fail("TP_MSG.changed text");
+
+  // --- the same 300 rows from a valkyrie-dispatch without topic_meta
+  reset();
+  ctx.TP_CUR = clone(fx.many_legacy);
+  await run("loadTopics()");
+  if (!get("tprun").hidden || !get("tporigin").hidden || !get("tptrial").hidden) fail("legacy: run, origin and trial controls must be hidden");
+  if (!/Update valkyrie-dispatch to see run order, the top-20 cut-off and where topics came from\./.test(textOf(get("tphead")))) fail("legacy note: " + textOf(get("tphead")));
+  if (!get("tpsort-run").hidden || !get("tpsort-newest").hidden || get("tpsort").value !== "weight") fail("legacy: run order falls back to base weight in the select");
+  run("TP.run = 'below'; TP.origin = 'chat'; TP.trial = true; renderTopics()");   // stale persisted choices must not hide rows
+  groups = walk();
+  if (!groups.length || groups.some((g) => g.cutAt !== -1 || /in the run|outside the run/.test(g.head) || g.rows.some((r) => rank(r) || part(r, "tporigin") || part(r, "tptrial")))) fail("legacy: no cut-off, rank, origin or trial");
+  const byIdL = new Map(fx.many_legacy.topics.map((t) => [t.id, t]));
+  const lw = groups[0].rows.map((r) => byIdL.get(idOf(r))).filter((t) => t.is_active).map((t) => t.weight);
+  if (lw.some((w, i) => i && w > lw[i - 1])) fail("legacy: weight order " + lw.join());
+  if (rows().length > 150 || groups[0].more.length !== 2) fail("legacy: paging still applies");
+  reset(); run("renderTopics()");
+  ctx.TP_TRAP = false;
+  return "topics view ok";
 }
 // Weekly usage panel: draws the fixture history (gaps, finished weeks) with no innerHTML, themed tooltips and a text equivalent.
 async function usageChecks(fx) {
@@ -983,8 +1392,10 @@ async function tokenChecks(fx) {
     console.log(timelineChecks());
     console.log(flagChecks());
     if (process.argv[4]) console.log(await researchChecks(JSON.parse(fs.readFileSync(process.argv[4], "utf8"))));
+    if (process.argv[4]) console.log(await researchStatusChecks(JSON.parse(fs.readFileSync(process.argv[4], "utf8")), fs.readFileSync(process.argv[2], "utf8")));
     if (process.argv[6]) console.log(await usageChecks(JSON.parse(fs.readFileSync(process.argv[6], "utf8"))));
     if (process.argv[7]) console.log(await tokenChecks(JSON.parse(fs.readFileSync(process.argv[7], "utf8"))));
     if (process.argv[5]) console.log(await topicsChecks(JSON.parse(fs.readFileSync(process.argv[5], "utf8")), fs.readFileSync(process.argv[2], "utf8")));
+    if (process.argv[5]) console.log(await topicsViewChecks(JSON.parse(fs.readFileSync(process.argv[5], "utf8")), fs.readFileSync(process.argv[2], "utf8")));
   } catch (e) { console.log("ERROR:", e.message, (e.stack || "").split("\n").slice(1,5).join(" ; ")); process.exit(1); }
 })();

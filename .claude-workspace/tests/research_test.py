@@ -95,6 +95,7 @@ class FakeHandler(BaseHTTPRequestHandler):
 up, capture = Fake(), Fake()
 M1 = (FX / "m1.json").read_bytes()
 M2 = (FX / "m2.json").read_bytes()
+M3 = (FX / "m3.json").read_bytes()
 HOSTILE = (FX / "hostile.json").read_bytes()
 NOW = [1_000_000.0]
 nr._clock = lambda: NOW[0]
@@ -360,8 +361,8 @@ def roundtrip(raw, out, path="$"):
     return [] if out == raw else [f"{path}: {raw!r} -> {out!r}"]
 
 
-m1, m2 = json.loads(M1), json.loads(M2)
-for name, raw in (("m1", m1), ("m2", m2)):
+m1, m2, m3 = json.loads(M1), json.loads(M2), json.loads(M3)
+for name, raw in (("m1", m1), ("m2", m2), ("m3", m3)):
     errs = roundtrip(raw, nr.shape(raw, 5.0))
     check(not errs, f"{name} round-trips every documented field: {errs[:5]}")
 sh2 = nr.shape(m2)
@@ -402,6 +403,39 @@ hr = out["recent_runs"][0]
 mk = "explore:manual:00000000-0000-4000-8000-0000000000e2"
 check(nr.shape({"recent_runs": [{"slot_key": mk, "kind": "explore"}]})["recent_runs"][0]["slot_key"] == mk, "manual explore slot key survives shape()")
 check(hr["kind"] == "explore" and hr["slot_key"] is None, f"hostile explore slot key -> None: {hr}")
+# schedule.jobs: None for an older server, a clean list for m3, closed enums and at most 8 entries for hostile input
+check(nr.shape(m1)["schedule"]["jobs"] is None and nr.shape(m2)["schedule"]["jobs"] is None, "schedule.jobs is None when upstream has none")
+jobs3 = nr.shape(m3)["schedule"]["jobs"]
+check(len(jobs3) == 8 and {j["job"] for j in jobs3} == nr.JOBS and sum(1 for j in jobs3 if j["enabled"] is False) == 1, f"m3 jobs survive shape(): {jobs3}")
+check(jobs3[-1] == {"job": "checkins", "at": "10:00", "weekday": "sun", "enabled": True, "next_at": EPOCH("2026-11-15T01:00:00Z")},
+      f"shaped job dict: {jobs3[-1]}")
+hj = out["schedule"]["jobs"]
+check(len(hj) == 8 and len(json.loads(HOSTILE)["schedule"]["jobs"]) == 50, f"50 hostile jobs are capped at 8: {len(hj)}")
+check(hj[0] == {"job": "unknown", "at": None, "weekday": "unknown", "enabled": None, "next_at": None}, f"hostile job -> unknown/None: {hj[0]}")
+check(set(hj[0]) == {"job", "at", "weekday", "enabled", "next_at"}, "a job carries only the five allowlisted keys")
+for bad in ("rm -rf", 5, {"a": 1}, True):
+    check(nr.shape({"schedule": {"jobs": bad}})["schedule"]["jobs"] is None, f"jobs that is not a list -> None: {bad!r}")
+check(nr.shape({"schedule": {"jobs": []}})["schedule"]["jobs"] == [], "an empty jobs list stays empty")
+check(nr.shape({"schedule": {"jobs": ["x", 3, None, {"job": "brief"}]}})["schedule"]["jobs"][0]["job"] == "brief", "non-dict job entries are dropped")
+# companion / explore blocks
+CK = {"bot", "ollama", "brief_delivery", "feedback_7d", "feedback_7d_chat", "pending_proposals", "candidate_notes", "active_notes",
+      "last_reflect_at", "last_discovery_at"}
+EK = {"queries_today", "results_today", "items_today", "posted_today", "likes_7d", "dislikes_7d", "topic_proposals_30d", "last_run_at",
+      "last_status", "last_error"}
+s3 = nr.shape(m3)
+check(set(s3["companion"]) == CK and set(s3["explore"]) == EK, "companion / explore carry exactly the allowlisted keys")
+check(s3["companion"]["bot"] == "up" and s3["companion"]["pending_proposals"] == 3 and s3["companion"]["last_discovery_at"] == EPOCH("2026-11-08T01:00:12Z")
+      and s3["explore"]["last_status"] == "succeeded" and s3["explore"]["posted_today"] == 4 and s3["explore"]["last_error"] is None, "m3 companion / explore values")
+check(nr.shape(m2)["companion"] is None and nr.shape(m2)["explore"] is None and nr.shape(m1)["companion"] is None, "companion / explore are None when absent")
+for bad in ("x", 3, [], None):
+    check(nr.shape({"companion": bad, "explore": bad})["companion"] is None and nr.shape({"explore": bad})["explore"] is None, f"non-dict block -> None: {bad!r}")
+check(nr.shape({"companion": {}})["companion"]["bot"] == "unknown" and nr.shape({"companion": {}})["companion"]["last_discovery_at"] is None, "empty companion -> unknown / None")
+check(nr.shape({"explore": {}})["explore"]["last_status"] is None, "empty explore: last_status None")
+hc, he = out["companion"], out["explore"]
+check(hc == {"bot": "unknown", "ollama": "unknown", "brief_delivery": "unknown", "feedback_7d": 0, "feedback_7d_chat": None, "pending_proposals": 10 ** 12,
+             "candidate_notes": None, "active_notes": None, "last_reflect_at": None, "last_discovery_at": None}, f"hostile companion: {hc}")
+check(he == {"queries_today": None, "results_today": 0, "items_today": 10 ** 12, "posted_today": None, "likes_7d": None, "dislikes_7d": None,
+             "topic_proposals_30d": None, "last_run_at": None, "last_status": "unknown", "last_error": "unknown"}, f"hostile explore: {he}")
 r = poll(body=HOSTILE)
 check(r["state"] == "ok" and "sk-ant" not in json.dumps(r) and "onerror" not in json.dumps(r), "hostile payload through the poller")
 
@@ -410,7 +444,10 @@ if SCHEMA.exists():
     schema = json.loads(SCHEMA.read_text())
     try:
         import jsonschema
-        for name, raw in (("m1", m1), ("m2", m2)):
+        for name, raw in (("m1", m1), ("m2", m2), ("m3", m3)):
+            if name == "m3" and "ScheduleJob" not in schema["$defs"]:
+                notes.append("local monitor.v1.json has no ScheduleJob yet: m3 was not validated against it")
+                continue
             try:
                 jsonschema.validate(raw, schema)
                 check(True, "")
@@ -419,21 +456,26 @@ if SCHEMA.exists():
     except ImportError:
         notes.append("jsonschema not installed: fixtures were not validated against monitor.v1.json")
     defs = schema["$defs"]
-    # monitor.v1's additive companion / explore blocks are not shown yet (left to the Research tab redesign,
-    # docs/design/2026-11-10-research-tab-companion.md): shape() drops them, so their keys are not expected.
-    deferred = {"CompanionModel", "ExploreModel"}
-    names = (set(schema["properties"]) - {"companion", "explore"}) | \
-        {k for n, d in defs.items() if n not in deferred for k in d.get("properties", {})}
-
-    def keys(x):
-        return {k for d in (x if isinstance(x, list) else [x]) for k in (d if isinstance(d, dict) else {})} | \
-            {k for v in (x.values() if isinstance(x, dict) else x if isinstance(x, list) else []) for k in keys(v)}
-    got = keys(nr.shape(m2)) | keys(nr.shape(m1))
-    check(got == names, f"shape() keys match the schema's property names: extra={got - names} missing={names - got}")
+    names = set(schema["properties"]) | {k for d in defs.values() for k in d.get("properties", {})}
 
     def enum(d, p):
         e = defs[d]["properties"][p]
         return set(e.get("enum") or next(x["enum"] for x in e["anyOf"] if "enum" in x))
+
+    def keys(x):
+        return {k for d in (x if isinstance(x, list) else [x]) for k in (d if isinstance(d, dict) else {})} | \
+            {k for v in (x.values() if isinstance(x, dict) else x if isinstance(x, list) else []) for k in keys(v)}
+    got = keys(nr.shape(m2)) | keys(nr.shape(m1)) | keys(nr.shape(m3))
+    check(nr.BOTS == enum("CompanionModel", "bot") and nr.OLLAMA == enum("CompanionModel", "ollama")
+          and nr.BRIEF_DELIVERY == enum("CompanionModel", "brief_delivery"), "companion enums match the schema")
+    check(nr.EXPLORE_STATUS == enum("ExploreModel", "last_status") and nr.ERRORS == enum("ExploreModel", "last_error"), "explore enums match the schema")
+    if "ScheduleJob" in defs:
+        check(got == names, f"shape() keys match the schema's property names: extra={got - names} missing={names - got}")
+        check(nr.JOBS == enum("ScheduleJob", "job") and nr.WEEKDAYS == enum("ScheduleJob", "weekday"), "job / weekday enums match the schema")
+    else:   # an older local schema: the keys niu-heimar accepts ahead of valkyrie-dispatch
+        ahead = {"jobs", "job", "at", "weekday", "enabled", "next_at", "last_discovery_at"}
+        check(got - names <= ahead and not names - got, f"shape() keys match the older schema (+ahead): extra={got - names - ahead} missing={names - got}")
+
     check(nr.RUN_STATUS == enum("CompactRun", "status"), "run status enum matches the schema")
     check(nr.AGENT_STATUS == enum("CompactAgent", "status"), "agent status enum matches the schema")
     check(nr.DECISIONS == enum("GatePreviewModel", "decision") and nr.REASONS == enum("GatePreviewModel", "reason"), "decision / reason enums match")

@@ -32,6 +32,7 @@ for k in ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy",
     os.environ.pop(k, None)
 sys.path.insert(0, str(SH / "lib"))
 import niu_topics as nt  # noqa: E402
+import topics_fixtures as tfx  # noqa: E402
 
 passed = failed = 0
 
@@ -113,7 +114,8 @@ class Handler(BaseHTTPRequestHandler):
             rows = [t for t in s.topics if want(t) and ("agent_type" not in q or t["agent_type"] == q["agent_type"])]
             if not states:
                 rows = [{k: v for k, v in t.items() if k != "is_archived"} for t in rows]
-            return self.reply(200, rows[:int(q.get("limit", "100"))])
+            off, lim = int(q.get("offset", "0")), int(q.get("limit", "100"))
+            return self.reply(200, rows[off:off + lim])
         if method == "POST":
             t = {"id": "0000ffff-0000-4000-8000-00000000ffff", "is_active": True, "is_archived": False, "updated_at": "2026-11-07T09:00:00.000001Z", **entry["body"]}
             s.topics.append(t)
@@ -261,7 +263,7 @@ check(len(CREATE) + len(PATCH) >= 60, "validation table is large enough")
 # ---------- 2. shape_topic ----------
 hostile = json.loads((FX / "hostile.json").read_text())
 shaped = [nt.shape_topic(r) for r in hostile]
-KEYS = {"id", "agent_type", "name", "keywords", "excluded_terms", "weight", "is_active", "is_archived", "updated_at", "over_api_limits"}
+KEYS = {"id", "agent_type", "name", "keywords", "excluded_terms", "weight", "is_active", "is_archived", "updated_at", "over_api_limits", "meta"}
 good = [s for s in shaped if s]
 check(all(set(s) == KEYS for s in good), "shape_topic output keys are exactly the allowlist")
 blob = json.dumps(good)
@@ -285,6 +287,42 @@ check(over and over["over_api_limits"] and len(over["name"]) == 180 and len(over
 okrow = nt.shape_topic(json.loads((FX / "list_ok.json").read_text())[0])
 check(okrow and not okrow["over_api_limits"] and okrow["updated_at"] == "2026-11-07T08:00:00.123456Z", "normal topic is not flagged")
 check(nt.shape_topic({**json.loads((FX / "list_ok.json").read_text())[0], "id": "AAAAAAAA-0000-4000-8000-AAAAAAAAAAAA"}) is None, "uppercase id dropped")
+
+# meta: None without the feature, shaped with it, hostile values clamped or None and the row kept
+META_KEYS = {"effective_weight", "run_rank", "in_run", "origin", "trial_until", "created_at", "weight_updated_at", "likes_30d",
+             "dislikes_30d", "notes_active"}
+lm = json.loads((FX / "list_meta.json").read_text())
+check(all(nt.shape_topic(r)["meta"] is None for r in lm), "shape_topic without the meta flag: meta is None")
+sm = [nt.shape_topic(r, meta=True) for r in lm]
+check(all(set(s["meta"]) == META_KEYS and set(s) == KEYS for s in sm), "shape_topic(meta=True): meta has exactly the allowlisted keys")
+check(sm[0]["meta"] == {"effective_weight": 1.8, "run_rank": 1, "in_run": True, "origin": "chat", "trial_until": None,
+                        "created_at": "2026-10-01T08:00:00.000000Z", "weight_updated_at": "2026-11-01T08:00:00.000000Z",
+                        "likes_30d": 3, "dislikes_30d": 1, "notes_active": 2}, f"meta values pass through: {sm[0]['meta']}")
+check(sm[2]["meta"]["trial_until"] == "2026-11-20T08:00:00Z" and sm[3]["meta"]["run_rank"] is None and sm[3]["meta"]["in_run"] is None
+      and sm[4]["meta"]["likes_30d"] is None, "trial kept, inactive row has no rank, missing counts are None")
+bare = nt.shape_topic({k: v for k, v in lm[0].items() if k in ("id", "agent_type", "name", "is_active", "weight", "keywords")}, meta=True)
+check(bare and set(bare["meta"]) == META_KEYS and all(v is None for k, v in bare["meta"].items() if k != "in_run") and bare["meta"]["in_run"] is False,
+      f"a row without meta fields is kept: all None, in_run False for an active row without rank: {bare and bare['meta']}")
+hm = {s["id"][:8]: s for s in (nt.shape_topic(r, meta=True) for r in hostile) if s}
+ha, hi = hm["0000000e"]["meta"], hm["0000000f"]["meta"]
+check(ha == {"effective_weight": None, "run_rank": None, "in_run": False, "origin": None, "trial_until": None, "created_at": None,
+             "weight_updated_at": None, "likes_30d": 10**6, "dislikes_30d": None, "notes_active": None}, f"hostile meta on an active row: {ha}")
+check(hi == {"effective_weight": None, "run_rank": None, "in_run": None, "origin": "chat", "trial_until": None, "created_at": None,
+             "weight_updated_at": None, "likes_30d": None, "dislikes_30d": None, "notes_active": None}, f"hostile meta on an inactive row: {hi}")
+blob = json.dumps([s["meta"] for s in hm.values()])
+check("<img>" not in blob and "javascript" not in blob and "<script>" not in blob and "Ignore previous" not in blob, "hostile meta text does not survive")
+for rank, want in ((0, None), (-3, None), (10001, None), (10000, 10000), (1, 1), (2.0, None), ("3", None), (True, None), (None, None)):
+    got = nt.shape_topic({**lm[0], "run_rank": rank}, meta=True)["meta"]["run_rank"]
+    check(got == want, f"run_rank {rank!r} -> {got!r} (want {want!r})")
+for ew, want in ((7.123, 5.0), (-1, 0.0), (1.2345, 1.23), (float("nan"), None), (float("inf"), None), ("1.0", None), (True, None)):
+    got = nt.shape_topic({**lm[0], "effective_weight": ew}, meta=True)["meta"]["effective_weight"]
+    check(got == want, f"effective_weight {ew!r} -> {got!r} (want {want!r})")
+for o in ("chat", "discovery", "explore"):
+    check(nt.shape_topic({**lm[0], "origin": o}, meta=True)["meta"]["origin"] == o, f"origin {o} kept")
+check(all(nt.shape_topic({**lm[0], "origin": o}, meta=True)["meta"]["origin"] is None for o in ("Chat", "", "x" * 9, 5, ["chat"], None)), "other origins -> None")
+check(nt.shape_topic({**lm[0], "in_run": "yes"}, meta=True)["meta"]["in_run"] is None and nt.shape_topic({**lm[3], "in_run": True}, meta=True)["meta"]["in_run"] is None,
+      "in_run: a non-bool is None; always None on a non-active row")
+check(nt.shape_topic({**lm[0], "run_rank": 5, "is_active": False, "is_archived": True}, meta=True)["meta"]["run_rank"] is None, "run_rank is None unless active")
 
 # ---------- 3. error mapping ----------
 MAP = [
@@ -374,13 +412,14 @@ check(res["state"] == "ok" and len(res["topics"]) == 5 and res["dropped"] == 0 a
       and res["states_supported"] is True and res["inactive_truncated"] is False,
       f"list: 3 active + 1 archived + 1 inactive: {res['state']} {len(res['topics'])}")
 check(sum(1 for t in res["topics"] if t["is_archived"]) == 1 and sum(1 for t in res["topics"] if not t["is_active"] and not t["is_archived"]) == 1 and res["limits"]["name"] == 120 and res["limits"]["active_per_agent"] == 200, "archived row and limits present")
-calls = [(x["query"].get("agent_type"), x["query"].get("state"), x["query"].get("is_active"), x["query"].get("limit")) for x in up.hits()]
-check(calls == [("general", "active", None, "200"), ("hobby", "active", None, "200"), ("fintrend", "active", None, "200"),
-                (None, "inactive", None, "200"), (None, "archived", None, "200")], f"states mode: five list calls: {calls}")
+calls = [(x["query"].get("agent_type"), x["query"].get("state"), x["query"].get("is_active"), x["query"].get("limit"), x["query"].get("offset")) for x in up.hits()]
+check(calls == [("general", "active", None, "100", "0"), ("hobby", "active", None, "100", "0"), ("fintrend", "active", None, "100", "0"),
+                (None, "inactive", None, "100", "0"), (None, "archived", None, "100", "0")], f"states mode: five list calls, first page each: {calls}")
+check(res["meta_supported"] is False and all(t["meta"] is None for t in res["topics"]), "no topic_meta feature: meta_supported False, every meta None")
 reset()
 up.features = ["topic_states", "evil<script>"]
 nt.SCOPES.clear()
-check(nt.check_scope(nt.cfg_for() if hasattr(nt, "cfg_for") else cfg_for(), TOKEN) == {"states": True}, "check_scope reports topic_states")
+check(nt.check_scope(nt.cfg_for() if hasattr(nt, "cfg_for") else cfg_for(), TOKEN) == {"states": True, "meta": False}, "check_scope reports topic_states")
 reset()
 up.features = None
 nt.SCOPES.clear()
@@ -415,11 +454,24 @@ check(len(up.log) > n, "refresh allowed again after 5 s")
 reset()
 up.topics = [{**json.loads((FX / "list_ok.json").read_text())[3], "id": f"{i:08x}-0000-4000-8000-{i:012x}"} for i in range(1, 201)]
 res = nt.list_topics()
-check(res["archived_truncated"] is True and len(res["topics"]) == 200, "200 archived topics -> archived_truncated")
+check(res["archived_truncated"] is False and len(res["topics"]) == 200, "200 archived topics load in full (two pages), not truncated")
+reset()
+up.topics = [{**json.loads((FX / "list_ok.json").read_text())[3], "id": f"{i:08x}-0000-4000-8000-{i:012x}"} for i in range(1, 1001)]
+res = nt.list_topics()
+pages = [x["query"].get("offset") for x in up.hits() if x["query"].get("state") == "archived"]
+check(res["archived_truncated"] is True and len(res["topics"]) == 1000 and res["inactive_truncated"] is False
+      and pages == [str(100 * p) for p in range(10)], f"1000 archived topics -> archived_truncated after 10 pages: {len(res['topics'])} {pages}")
+reset()
+up.topics = [{**json.loads((FX / "list_ok.json").read_text())[3], "id": f"{i:08x}-0000-4000-8000-{i:012x}"} for i in range(1, 999)]
+check(nt.list_topics()["archived_truncated"] is False, "998 archived topics -> not truncated")
 reset()
 up.topics = [{**json.loads((FX / "list_ok.json").read_text())[4], "id": f"{i:08x}-0000-4000-8000-{i:012x}"} for i in range(1, 201)]
 res = nt.list_topics()
-check(res["inactive_truncated"] is True and res["archived_truncated"] is False, "200 inactive topics -> inactive_truncated")
+check(res["inactive_truncated"] is False and res["archived_truncated"] is False and len(res["topics"]) == 200, "200 inactive topics load in full")
+reset()
+up.topics = [{**json.loads((FX / "list_ok.json").read_text())[4], "id": f"{i:08x}-0000-4000-8000-{i:012x}"} for i in range(1, 1201)]
+res = nt.list_topics()
+check(res["inactive_truncated"] is True and res["archived_truncated"] is False and len(res["topics"]) == 1000, "more than 1000 inactive topics -> inactive_truncated")
 reset()
 up.script = {"GET": {"obj": hostile}}
 res = nt.list_topics()
@@ -429,6 +481,65 @@ reset()
 up.script = {"GET": {"obj": {"not": "a list"}}}
 res = nt.list_topics()
 check(res["state"] == "error" and res["cause"] == "badjson", f"object instead of a list -> error: {res['state']} {res['cause']}")
+# paging, dedup and meta through list_topics
+reset()
+up.topics = tfx.many_topics(300, meta=False)
+res = nt.list_topics()
+n_act = sum(1 for t in up.topics if t["is_active"])
+check(res["state"] == "ok" and len(res["topics"]) == 300 and res["dropped"] == 0 and res["inactive_truncated"] is False
+      and res["archived_truncated"] is False and res["meta_supported"] is False, f"300 topics load in full: {len(res['topics'])} dropped {res['dropped']}")
+check(len({t["id"] for t in res["topics"]}) == 300 and sum(1 for t in res["topics"] if t["is_active"]) == n_act, "300 distinct ids, active count kept")
+gen = [(x["query"].get("agent_type"), x["query"].get("state"), x["query"].get("offset")) for x in up.hits()]
+check(len(gen) == 5 and all(x["query"]["limit"] == "100" for x in up.hits()), f"every query fits in one page of 100: {gen}")
+reset()
+up.features = ["topic_states", "topic_meta"]
+up.topics = tfx.many_topics(300)
+res = nt.list_topics()
+mt = res["topics"]
+check(res["state"] == "ok" and res["meta_supported"] is True and len(mt) == 300 and all(t["meta"] and set(t["meta"]) == META_KEYS for t in mt),
+      f"300 topics with meta: {res['state']} {len(mt)} meta_supported={res['meta_supported']}")
+for ag in tfx.AGENTS:
+    act = sorted((t for t in mt if t["agent_type"] == ag and t["is_active"]), key=lambda t: t["meta"]["run_rank"])
+    check([t["meta"]["run_rank"] for t in act] == list(range(1, len(act) + 1)), f"{ag}: ranks 1..{len(act)} survive shaping")
+    check(all(t["meta"]["in_run"] is (t["meta"]["run_rank"] <= 20) for t in act), f"{ag}: in_run is rank <= 20")
+check(any(t["meta"]["run_rank"] > 20 for t in mt), "some active topics are below the cut-off")
+check(all(t["meta"]["run_rank"] is None and t["meta"]["in_run"] is None for t in mt if not t["is_active"]), "inactive and archived rows have no rank")
+check({t["meta"]["origin"] for t in mt} == {None, "chat", "discovery", "explore"}, "every origin reaches the list")
+check(nt.CACHE["good"]["meta_supported"] is True, "meta_supported is cached in good")
+NOW[0] += 20
+nt.SCOPES.clear()
+s_ = socket.socket()
+s_.bind(("127.0.0.1", 0))
+dead_port = s_.getsockname()[1]
+s_.close()
+config(url=f"http://127.0.0.1:{dead_port}")
+res2 = nt.list_topics()
+config()
+check(res2["state"] == "unreachable" and res2["stale"] is True and res2["meta_supported"] is True and res2["topics"][0]["meta"] is not None,
+      "stale answer keeps meta_supported and meta")
+reset()
+rows150 = tfx.many_topics(150, meta=False)
+for r in rows150:
+    r.update(agent_type="general", is_active=True, is_archived=False)
+rows150[100] = dict(rows150[0])     # the row at the start of page two is the first row again (a write shifted the order)
+up.topics = rows150
+res = nt.list_topics()
+gen = [(x["query"].get("agent_type"), x["query"].get("offset")) for x in up.hits() if x["query"].get("state") == "active" and x["query"].get("agent_type") == "general"]
+check(len(res["topics"]) == 149 and len({t["id"] for t in res["topics"]}) == 149, f"duplicates across pages are dropped: {len(res['topics'])}")
+check(gen == [("general", "0"), ("general", "100")], f"a full first page asks for the second, a short one stops: {gen}")
+reset()
+a = {**tfx.many_topics(2, meta=False)[0], "name": "FIRST", "agent_type": "general", "is_active": True, "is_archived": False}
+dups = [{**a, "id": f"{i + 5:08x}-0000-4000-8000-{i + 5:012x}"} for i in range(100)] + [{**a, "name": "SECOND", "id": dups_id} for dups_id in (f"{5:08x}-0000-4000-8000-{5:012x}",)]
+up.topics = dups
+res = nt.list_topics()
+check(len(res["topics"]) == 100 and next(t for t in res["topics"] if t["id"].startswith("00000005"))["name"] == "FIRST", "dedup: the first seen row wins")
+reset()
+up.features = ["topic_states", "topic_meta"]
+up.script = {"GET": {"obj": hostile}}
+res = nt.list_topics()
+hm2 = [t for t in res["topics"] if t["id"].startswith(("0000000e", "0000000f"))]
+check(res["state"] == "ok" and len(hm2) == 2 and all(set(t["meta"]) == META_KEYS for t in res["topics"]) and "<img>" not in json.dumps(res).replace("<img src", ""),
+      "hostile meta through list_topics: rows kept, meta clamped / None")
 # states
 reset()
 TOKEN_FILE.unlink()
@@ -595,6 +706,17 @@ okrows = [r[1] for r in rows if r[0] == "TopicChange"]
 pat = re.compile(r"^(create|update|activate|deactivate|archive|restore) [0-9a-f]{8} \[[a-z_,]*\] by laptop$")
 check(okrows and all(pat.match(s) for s in okrows) or any(pat.match(s) for s in okrows) and all(s.endswith(("by laptop", "by phone")) for s in okrows),
       f"audit summaries match: {okrows[:3]}")
+reset()
+up.features = ["topic_states", "topic_meta"]
+up.topics = json.loads((FX / "list_meta.json").read_text())
+st, p = nt.write("update", DEV, {"id": ID1, "fields": {"weight": 2.0}})
+check(st == 200 and set(p["topic"]["meta"]) == META_KEYS and p["topic"]["meta"]["run_rank"] == 1 and p["topic"]["meta"]["origin"] == "chat",
+      f"a PATCH reply carries meta when the backend has topic_meta: {st} {p}")
+st, p = nt.write("create", DEV, BASE)
+check(st == 200 and set(p["topic"]["meta"]) == META_KEYS and p["topic"]["meta"]["run_rank"] is None, "a create reply carries meta (all unknown fields None)")
+reset()
+st, p = nt.write("update", DEV, {"id": ID1, "fields": {"weight": 2.0}})
+check(st == 200 and p["topic"]["meta"] is None, "a PATCH reply has meta None without the feature")
 reset()
 nt.write("create", DEV, {**BASE, "name": "SECRET-NAME", "keywords": ["SECRET-KW"]})
 nt.write("update", DEV, {"id": ID1, "fields": {"keywords": ["SECRET-KW2"], "weight": 1.5}})

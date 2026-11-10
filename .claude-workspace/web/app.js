@@ -1635,6 +1635,18 @@ const RS_STATE_MSG = {
 const RS_LEVEL = { succeeded: "ok", running: "ok", partial: "warn", waiting_gate: "warn", pending: "warn", skipped: "warn",
   failed: "bad", timed_out: "bad", aborted_quota: "bad", skipped_gate: "bad" };
 const RS_DECISION_LEVEL = { run: "ok", run_conservative: "warn", retry: "bad", skip: "bad" };
+const RS_BOT = { up: ["ok", "up"], stale: ["warn", "stale"], unknown: ["muted", "unknown"] };
+const RS_OLLAMA = { up: ["ok", "up"], down: ["warn", "down"], disabled: ["muted", "off"], unknown: ["muted", "unknown"] };
+const RS_DELIVERY = { bot: "posted by the bot", webhook: "posted by webhook" };
+const RS_EXPLORE = { succeeded: ["ok", "succeeded"], quiet: ["ok", "quiet (nothing new)"], skipped_gate: ["warn", "skipped (gate)"],
+  failed: ["bad", "failed"], aborted_quota: ["bad", "stopped: quota"] };
+const RS_JOB_LETTER = { comprehensive: "C", delta: "D", brief: "B", explore: "E", reflect: "R", discovery: "W", checkins: "W" };
+const RS_JOB_LABEL = { comprehensive: "Overnight run", delta: "Delta scout", brief: "Daily brief", explore: "Explore", reflect: "Reflection",
+  discovery: "Discovery", checkins: "Check-ins" };
+const RS_WEEKDAY = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
+const RS_REFLECT_OVERDUE_SECS = 26 * 3600;
+const rsMap = (map, k, dflt) => (typeof k === "string" && Object.hasOwn(map, k) ? map[k] : dflt);   // hostile keys (__proto__ ...) never hit the prototype
+const rsCount = (n) => (Number.isFinite(n) ? String(n) : "?");
 const RS_DIGEST = { not_built: "not built", pending: "pending", held_quiet_hours: "held for quiet hours", sent: "sent", partial: "partly sent",
   failed: "failed", dead: "gave up", nothing_new: "nothing new", suppressed: "suppressed" };
 
@@ -1674,7 +1686,7 @@ function renderResearch() {
   if (r.state === "disabled") { if (VIEW === "research") setView("agents"); return; }
   if (VIEW !== "research") return;
   $("rsbody").classList.toggle("stale", !!r.stale);
-  rsHead(r); rsGate(r); rsQuota(r); rsLanes(r); rsGateLog(r); rsLast(r); rsErrors(r);
+  rsHead(r); rsGate(r); rsQuota(r); rsComp(r); rsExplore(r); rsSched(r); rsLanes(r); rsGateLog(r); rsLast(r); rsErrors(r);
 }
 
 // Tab badge: red = unreachable/unauthorized, a failed or quota-stopped last run, or a gate skip in the last day;
@@ -1684,7 +1696,10 @@ function rsBadge(r) {
   let lvl = "", pulse = false, why = "";
   if (r.state === "unreachable" || r.state === "unauthorized" || r.state === "too_powerful") { lvl = "bad"; why = RS_STATE_MSG[r.state]; }
   else if (d) {
-    const last = d.last_run, now = rsNow();
+    // the newest research-kind run (not explore), so a later explore run can never hide a failed overnight run
+    const last = rsLastResearch(d), now = rsNow();
+    const exRun = rsRuns(d).filter((x) => x.kind === "explore").sort((a, b) => (b.finished_at || b.started_at || 0) - (a.finished_at || a.started_at || 0))[0];
+    const exBad = exRun && (exRun.status === "failed" || exRun.status === "aborted_quota");
     const skipped = (d.recent_runs || []).some((x) => x.status === "skipped_gate" && now - (x.finished_at || x.started_at || 0) < 86400);
     if (d.current_run?.status === "running") { lvl = "ok"; pulse = true; why = "A research run is in progress"; }
     else if (last && (last.status === "failed" || last.status === "aborted_quota")) { lvl = "bad"; why = `Last run ${RS_STATUS[last.status]}`; }
@@ -1692,11 +1707,18 @@ function rsBadge(r) {
     else if (last?.status === "partial" || d.gate?.pending || (d.recent_runs || []).some((x) => x.status === "waiting_gate") || last?.mode === "conservative") {
       lvl = "warn"; why = "Partial, waiting for the gate or conservative mode";
     }
+    else if (exBad) { lvl = "warn"; why = "The last explore run failed"; }   // explore never makes the badge red
+    else if (d.companion?.bot === "stale") { lvl = "warn"; why = "The #hermes bot has no recent heartbeat"; }
+    else if (d.companion?.ollama === "down") { lvl = "warn"; why = "Ollama is down"; }
   }
   const dot = $("rsdot");
   dot.hidden = !lvl;
   dot.className = `tabdot ${lvl ? `rs-${lvl}` : ""} ${pulse ? "pulse" : ""}`;
   $("tab-research").setAttribute("title", why);
+}
+
+function rsLastResearch(d) {
+  return rsRuns(d).filter((x) => x.kind !== "explore").sort((a, b) => (b.finished_at || b.started_at || 0) - (a.finished_at || a.started_at || 0))[0] || null;
 }
 
 function rsHealth(r) {
@@ -1733,6 +1755,8 @@ function rsHead(r) {
       kids.push(h("span", stale ? "warnnote" : "", stale ? `brief stale: ${RS_STALE[b.stale_reason]}` : `${RS_BRIEF_STATE[b.state]}${at ? ` ${at}` : ""}${items}`,
         { "data-tip": `Daily brief${b.revision ? `\nrevision ${b.revision}` : ""}${b.stale === true && !stale ? "\nstale" : ""}` }));
     } else if (sch.brief_at) kids.push(h("span", "muted", `brief at ${sch.brief_at}`));
+    if (d.companion) kids.push(h("span", "muted", `companion ${rsMap(RS_BOT, d.companion.bot, ["muted", "?"])[1]}`));   // details are in the Companion card
+    if (d.explore) kids.push(h("span", "muted", `explore ${rsCount(d.explore.posted_today)} posted today`));
     if (sch.enabled === false) kids.push(rsBadgeEl("Scheduler off", "warn"));
     if (sch.manual_runs_today != null && sch.manual_runs_per_day != null) kids.push(h("span", "muted", `Manual runs today ${sch.manual_runs_today}/${sch.manual_runs_per_day}`));
     if (r.state !== "ok") kids.push(h("span", "warnnote", `${rsStateText(r)}${r.ok_at ? ` Showing data as of ${hm(r.ok_at)}.` : ""}`));
@@ -1855,6 +1879,109 @@ function rsQuota(r) {
   box.replaceChildren(...kids);
 }
 
+// ----- companion card (#hermes bot and learning loop), explore card, and the next-24-hours strip -----
+function rsPill(map, k) {
+  const [lvl, label] = rsMap(map, k, ["warn", "?"]);
+  return rsBadgeEl(label, lvl);
+}
+function rsRow(kv, name, ...cells) { kv.append(h("dt", "", name)); const dd = h("dd"); dd.append(...cells.map((c) => (typeof c === "string" ? h("span", "", c) : c))); kv.append(dd); }
+function rsComp(r) {
+  const box = $("rscomp"), d = r.data;
+  if (!d) { box.replaceChildren(); return; }
+  const c = d.companion, kids = [h("h3", "", "Companion (#hermes)")];
+  if (!c) { box.replaceChildren(...kids, h("div", "rsline muted", "Companion not available in this valkyrie-dispatch version.")); return; }
+  const kv = h("dl", "rskv"), waiting = (c.pending_proposals || 0) + (c.candidate_notes || 0) > 0;
+  rsRow(kv, "Bot", rsPill(RS_BOT, c.bot), h("span", "muted", " Ollama "), rsPill(RS_OLLAMA, c.ollama));
+  rsRow(kv, "Brief delivery", rsMap(RS_DELIVERY, c.brief_delivery, "?"));
+  rsRow(kv, "Feedback, last 7 days", `${rsCount(c.feedback_7d)} (${rsCount(c.feedback_7d_chat)} from chat)`);
+  rsRow(kv, "Waiting in #hermes", waiting ? rsBadgeEl(`${rsCount(c.pending_proposals)} proposals · ${rsCount(c.candidate_notes)} notes`, "warn")
+    : `${rsCount(c.pending_proposals)} proposals · ${rsCount(c.candidate_notes)} notes`);
+  rsRow(kv, "Active notes", rsCount(c.active_notes));
+  const reflectOn = (d.schedule?.jobs || []).some((j) => j.job === "reflect" && j.enabled === true);
+  const overdue = reflectOn && c.last_reflect_at && rsNow() - c.last_reflect_at > RS_REFLECT_OVERDUE_SECS;
+  rsRow(kv, "Last reflection", c.last_reflect_at ? rsWhen(c.last_reflect_at) : "never", ...(overdue ? [rsBadgeEl("overdue", "warn")] : []));
+  if (c.last_discovery_at) rsRow(kv, "Last discovery", rsWhen(c.last_discovery_at));   // null = an older server, or none yet
+  kids.push(kv, h("div", "rsline muted", "Proposals, notes and picks are reviewed in #hermes on Discord."));
+  box.replaceChildren(...kids);
+}
+function rsExplore(r) {
+  const box = $("rsexplore"), d = r.data;
+  if (!d) { box.replaceChildren(); return; }
+  const e = d.explore, kids = [h("h3", "", "Explore")];
+  if (!e) { box.replaceChildren(...kids, h("div", "rsline muted", "Explore is off (EXPLORE_ENABLED) or not available in this version.")); return; }
+  const line = h("div", "rsline");
+  line.append(h("span", "", `Last run ${e.last_run_at ? rsWhen(e.last_run_at) : "never"} `));
+  if (e.last_status != null) line.append(rsPill(RS_EXPLORE, e.last_status));
+  if (e.last_error) line.append(h("span", "msg err", ` ${rsMap(RS_ERROR, e.last_error, "error")}`));
+  kids.push(line,
+    h("div", "rsline", `Today: ${rsCount(e.queries_today)} queries → ${rsCount(e.results_today)} results → ${rsCount(e.items_today)} picks → ${rsCount(e.posted_today)} posted`),
+    h("div", "rsline", `7 days: ${rsCount(e.likes_7d)} liked, ${rsCount(e.dislikes_7d)} disliked`),
+    h("div", "rsline muted", `Topic ideas from picks, 30 days: ${rsCount(e.topic_proposals_30d)}`));
+  box.replaceChildren(...kids);
+}
+function rsSlotsFwd(sch, t0, t1) {  // upcoming research slot instants from the cron hours and the next slot: [{t, first}]
+  const out = [];
+  if (!sch?.next_slot_at) return out;
+  const m = /^[0-9]+ ([0-9,]+) \* \* \*$/.exec(sch.cron || "");
+  const hours = m ? [...new Set(m[1].split(",").map(Number))].filter((n) => n >= 0 && n < 24).sort((a, b) => a - b) : [];
+  const k = /T([0-9]{2}):/.exec(sch.next_slot_key || ""), idx = k ? hours.indexOf(Number(k[1])) : -1;
+  const gaps = idx >= 0 ? hours.map((_, i) => ((hours[(i + 1) % hours.length] - hours[i] + 24) % 24) || 24) : [12];
+  let t = sch.next_slot_at, i = idx >= 0 ? idx : 0;
+  for (let n = 0; n < 40 && t <= t1; n++) {
+    if (t >= t0 - 60) out.push({ t, first: n === 0 });
+    t += gaps[i] * 3600;
+    i = (i + 1) % gaps.length;
+  }
+  return out;
+}
+function rsSched(r) {
+  if (TIP.dataset.owner === "rssched") TIP.hidden = true;
+  const box = $("rssched"), d = r.data;
+  box.replaceChildren();
+  if (!d) return;
+  const sch = d.schedule || {}, jobs = Array.isArray(sch.jobs) ? sch.jobs : null;
+  const t0 = rsNow(), t1 = t0 + 24 * 3600, W = Math.max(640, (box.clientWidth || 900) - 20), H = 44, PAD = 14;
+  const x = (t) => PAD + ((Math.min(Math.max(t, t0), t1) - t0) / (t1 - t0)) * (W - 2 * PAD);
+  const root = svg("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Scheduled jobs, next 24 hours" });
+  root.append(svg("rect", { x: PAD, y: 4, width: W - 2 * PAD, height: 22, class: "lane", rx: 3 }));
+  for (let tk = Math.ceil(t0 / 10800) * 10800; tk < t1; tk += 10800) {   // a tick every 3 hours, on the clock
+    root.append(svg("line", { x1: x(tk), x2: x(tk), y1: 4, y2: 30, class: "axis" }), svg("text", { x: x(tk), y: H - 4, class: "lbl", "text-anchor": "middle" }, hm(tk)));
+  }
+  root.append(svg("line", { x1: x(t0), x2: x(t0), y1: 2, y2: 30, class: "nowline" }));
+  const mark = (t, letter, tip, off) => {
+    const c = svg("circle", { cx: x(t), cy: 15, r: 9, class: `rsmark${off ? " off" : ""}`, tabindex: "0", role: "img", "aria-label": tip.replace(/\n/g, ", ") });
+    c.setAttribute("data-tip", tip);
+    root.append(c, svg("text", { x: x(t), y: 18.5, class: `rsmarktxt${off ? " off" : ""}`, "text-anchor": "middle", "pointer-events": "none" }, letter));
+  };
+  const tz = sch.timezone ? ` (${sch.timezone})` : "", notes = [];
+  if (jobs) {
+    const later = new Map();   // jobs outside the window, grouped by their next time
+    for (const j of jobs) {
+      const label = rsMap(RS_JOB_LABEL, j.job, "?"), off = j.enabled !== true;
+      if (j.next_at != null && j.next_at <= t1) {
+        mark(j.next_at, rsMap(RS_JOB_LETTER, j.job, "?"), [label + (off ? " · off" : ""), `${j.at || hm(j.next_at)}${tz} · ${rsUntil(j.next_at)}`].join("\n"), off);
+      } else {
+        const key = `${j.next_at ?? "none"}|${j.at ?? ""}|${j.weekday ?? ""}|${off}`;
+        if (!later.has(key)) later.set(key, { j, names: [] });
+        later.get(key).names.push(label);
+      }
+    }
+    for (const { j, names } of later.values()) {
+      const when = `${j.weekday ? `${rsMap(RS_WEEKDAY, j.weekday, "?")} ` : ""}${j.at || (j.next_at ? hm(j.next_at) : "?")}`;
+      notes.push(`${names.map((n, i) => (i ? n.toLowerCase() : n)).join(" + ")}: ${when}${j.next_at ? ` (${rsUntil(j.next_at)})` : ""}${j.enabled === true ? "" : " · off"}`);
+    }
+  } else {
+    for (const { t, first } of rsSlotsFwd(sch, t0, t1)) {
+      const kind = first ? rsMap(RS_KIND, sch.next_slot_kind, "research") : "research";
+      mark(t, first ? rsMap(RS_KIND_LETTER, sch.next_slot_kind, "S") : "S", `${kind[0].toUpperCase()}${kind.slice(1)} run\n${hm(t)}${tz} · ${rsUntil(t)}`, false);
+    }
+    if (sch.next_brief_at && sch.next_brief_at <= t1) mark(sch.next_brief_at, "B", `Daily brief\n${sch.brief_at || hm(sch.next_brief_at)}${tz} · ${rsUntil(sch.next_brief_at)}`, false);
+    notes.push("Explore, reflection and discovery times need a newer valkyrie-dispatch.");
+  }
+  box.append(h("h3", "", "Next 24 h"), root);
+  for (const n of notes) box.append(h("div", "rsline muted", n));
+}
+
 // ----- 36 h lanes -----
 function rsRuns(d) {
   const m = new Map();
@@ -1884,7 +2011,8 @@ function rsLanes(r) {
   if (!d) return;
   const feat = d.service?.features || { runs: false, agents: [] };
   const t1 = rsNow(), t0 = t1 - 36 * 3600;
-  const lanes = [{ key: "gate", label: "gate" }, ...["general", "hobby", "fintrend"].map((a) => ({ key: a, label: a, off: !(feat.agents || []).includes(a) }))];
+  const lanes = [{ key: "gate", label: "gate" }, ...["general", "hobby", "fintrend"].map((a) => ({ key: a, label: a, off: !(feat.agents || []).includes(a) })),
+    { key: "explore", label: "explore" }];
   const LH = 22, LW = 110, W = Math.max(640, (box.clientWidth || 900) - 20), H = lanes.length * LH + 26;
   const x = (t) => LW + ((Math.min(Math.max(t, t0), t1) - t0) / (t1 - t0)) * (W - LW - 10);
   const root = svg("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Research run lanes, last 36 hours" });
@@ -1902,6 +2030,20 @@ function rsLanes(r) {
   });
   const laneOf = (k) => lanes.findIndex((l) => l.key === k);
   for (const run of rsRuns(d)) {
+    if (run.kind === "explore") {   // explore runs have no agent rows: one run-level bar in the explore lane
+      if (!run.started_at) continue;
+      const end = run.finished_at || (run.status === "running" ? t1 : run.started_at);
+      if (end < t0) continue;
+      const lvl = RS_LEVEL[run.status] || "warn", li = laneOf("explore");
+      const bar = svg("rect", { x: x(run.started_at), y: li * LH + 3, width: Math.max(3, x(end) - x(run.started_at)), height: LH - 6, rx: 2,
+        class: `bar-sub rs-${lvl} rs-explorebar ${run.status === "running" ? "running" : ""}` });
+      bar.setAttribute("data-tip", [`explore · ${RS_STATUS[run.status] || run.status}`, `${hhmmss(run.started_at)} → ${run.finished_at ? hhmmss(run.finished_at) : run.status === "running" ? "running" : "?"}`,
+        run.slot_key ? `slot ${run.slot_key}` : ""].filter(Boolean).join("\n"));
+      root.append(bar);
+      const tx = Math.max(x(end), x(run.started_at) + 3) + 3;
+      if (tx + 8 < W) root.append(svg("text", { x: tx, y: li * LH + 3 + (LH - 6) / 2 + 3.5, class: "rs-kindtag", "pointer-events": "none" }, RS_KIND_LETTER.explore));
+      continue;
+    }
     for (const a of run.agents || []) {
       const li = laneOf(a.agent_type);
       if (li < 0 || !a.started_at) continue;
@@ -1930,7 +2072,7 @@ function rsLanes(r) {
   }
   box.append(root);
   if (!feat.runs) box.append(h("div", "rsline muted", "Run history arrives with valkyrie-dispatch M2."));
-  else if (!rsRuns(d).some((run) => (run.agents || []).some((a) => a.started_at && (a.finished_at || a.started_at) >= t0))) box.append(h("div", "rsline muted", "No agent runs in the last 36 hours."));
+  else if (!rsRuns(d).some((run) => (run.agents || []).some((a) => a.started_at && (a.finished_at || a.started_at) >= t0)) && !rsRuns(d).some((run) => run.kind === "explore" && run.started_at && (run.finished_at || run.started_at) >= t0)) box.append(h("div", "rsline muted", "No agent runs in the last 36 hours."));
 }
 
 // ----- last run + errors -----
@@ -1980,6 +2122,7 @@ function rsRun(run, title, live) {
     head.append(h("span", "rsstuck", "possibly stuck · run `docker compose restart app` in valkyrie-dispatch; it marks the run interrupted on startup"));
   }
   box.append(head);
+  if (run.kind === "explore") { box.append(h("div", "rsline muted", "Explore run: see the Explore card for today's counts.")); return box; }
   const table = h("table", "rstable"), tr = h("tr"), thead = h("thead");
   for (const c of ["Agent", "Status", "Models", "Started", "Took", "Turns", "Searches", "Tokens in/out", "≈ USD", "Kept", "Filtered", "Error"]) tr.append(h("th", "", c));
   thead.append(tr);
@@ -2020,6 +2163,9 @@ function rsErrors(r) {
   const items = [];
   for (const run of rsRuns(d)) {
     if (run.status === "skipped_gate") items.push({ ts: run.finished_at || run.started_at, who: "gate", slot: run.slot_key, label: `skipped${run.gate_reason ? `: ${RS_REASON[run.gate_reason] || ""}` : ""}` });
+    if (run.kind === "explore" && (run.status === "failed" || run.status === "aborted_quota")) {
+      items.push({ ts: run.finished_at || run.started_at, who: "explore", slot: run.slot_key, label: rsMap(RS_ERROR, run.error_code, null) || rsMap(RS_STATUS, run.status, "failed") });
+    }
     for (const a of run.agents || []) if (a.error_code) items.push({ ts: a.finished_at || a.started_at, who: a.agent_type, slot: run.slot_key, label: RS_ERROR[a.error_code] || "error" });
   }
   items.sort((a, b) => (b.ts || 0) - (a.ts || 0));
@@ -2036,8 +2182,23 @@ const TP_AGENTS = ["general", "hobby", "fintrend"];
 const TP_AGENT_LABEL = { general: "General", hobby: "Hobby", fintrend: "Fintrend" };
 const TP_CAP = 200, TP_MAXKW = 20, TP_MAXEX = 50, TP_NAME = 120, TP_TERM = 80;
 let RSVIEW = store.get("niu.rsview", "status") === "topics" ? "topics" : "status";
-const TP = { data: null, agent: "all", filter: "", archived: false, editing: null, orig: null, flash: null, busy: new Set(), rowMsg: new Map(),
+const TP_PAGE = 50;
+const TP_STATES = ["current", "active", "inactive", "archived", "all"], TP_RUNS = ["any", "in", "below"], TP_ORIGINS = ["any", "chat", "discovery", "explore", "none"];
+const TP_SORTS = ["run", "weight", "name", "updated", "newest"], TP_DENSITY = ["compact", "comfortable"];
+const TP = { data: null, agent: "all", filter: "", state: "current", run: "any", origin: "any", trial: false, sort: "run", sortUser: false, density: "compact",
+  shown: new Map(), collapsed: new Set(), editing: null, orig: null, flash: null, busy: new Set(), rowMsg: new Map(),
   rowNote: new Map(), expanded: new Set(), hold: null, loading: false, saving: false };
+(function tpLoadView() {   // filters, sort, density and collapsed groups persist; the search text does not
+  const v = store.get("niu.tp.view", null);
+  if (!v || typeof v !== "object") return;
+  const pick = (x, list, d) => list.includes(x) ? x : d;
+  TP.state = pick(v.state, TP_STATES, "current"); TP.run = pick(v.run, TP_RUNS, "any"); TP.origin = pick(v.origin, TP_ORIGINS, "any");
+  TP.sort = pick(v.sort, TP_SORTS, "run"); TP.density = pick(v.density, TP_DENSITY, "compact"); TP.trial = v.trial === true;
+  if (Array.isArray(v.collapsed)) for (const a of v.collapsed) if (TP_AGENTS.includes(a)) TP.collapsed.add(a);
+})();
+function tpPersist() {
+  store.set("niu.tp.view", { state: TP.state, run: TP.run, origin: TP.origin, trial: TP.trial, sort: TP.sort, density: TP.density, collapsed: [...TP.collapsed] });
+}
 const TP_STATE_MSG = {
   loading: "Loading topics…",
   not_paired: "Pair this browser to view and edit topics (menu, then Pair). Topics are personal, so they are not shown to unpaired viewers.",
@@ -2053,7 +2214,7 @@ const TP_STATE_MSG = {
 const TP_HOLD_MS = 1000;
 const TP_BAD_STATE = new Set(["wrong_scope", "too_powerful", "unauthorized"]);
 const TP_MSG = {
-  changed: "This topic changed elsewhere (CLI, duenext or feedback). Reload it?",
+  changed: "This topic changed elsewhere (CLI, Discord or feedback). Reload it?",
   duplicate: "A topic with this name already exists.",
   rate_limited: "Too many changes in a short time. Try again in a minute.",
   toolarge: "Too much text: shorten keywords or excluded terms.",
@@ -2179,15 +2340,28 @@ function fuzzyScore(query, text) {
   const r = fzRun(tokens, [{ key: "name", i: 0, fd: fzPrep(text) }]);
   return r ? r.score : 0;
 }
+// Folded text of a topic's name, keywords and excluded terms, cached per topic object (a new object after every load or write,
+// so the cache is rebuilt with TP.data; the source references are compared in case a row is changed in place).
+const TP_PREP = new WeakMap();
+function tpPrep(t) {
+  const kw = Array.isArray(t.keywords) ? t.keywords : [], ex = Array.isArray(t.excluded_terms) ? t.excluded_terms : [];
+  let c = TP_PREP.get(t);
+  if (!c || c.name !== t.name || c.kw !== t.keywords || c.ex !== t.excluded_terms) {
+    c = { name: t.name, kw: t.keywords, ex: t.excluded_terms, nameFd: fzPrep(t.name),
+      kwFd: kw.slice(0, FZ_MAXTERMS).map((k) => fzPrep(k)), exFd: ex.slice(0, FZ_MAXTERMS).map((k) => fzPrep(k)) };
+    TP_PREP.set(t, c);
+  }
+  return c;
+}
 // Topic against a query: null = no match, else { score, name: Set of name code-point indexes to highlight (or null), kw: Set, ex: Set }.
 function tpMatch(t, query) {
   const none = { score: 1, name: null, kw: new Set(), ex: new Set() };
   if (!String(query).trim()) return none;
   const tokens = fzQuery(query);
   if (!tokens.length) return null;
-  const nameFd = fzPrep(t.name), parts = [{ key: "name", i: 0, fd: nameFd }];
-  (Array.isArray(t.keywords) ? t.keywords : []).slice(0, FZ_MAXTERMS).forEach((k, i) => parts.push({ key: "keywords", i, fd: fzPrep(k) }));
-  (Array.isArray(t.excluded_terms) ? t.excluded_terms : []).slice(0, FZ_MAXTERMS).forEach((k, i) => parts.push({ key: "excluded", i, fd: fzPrep(k) }));
+  const c = tpPrep(t), nameFd = c.nameFd, parts = [{ key: "name", i: 0, fd: nameFd }];
+  c.kwFd.forEach((fd, i) => parts.push({ key: "keywords", i, fd }));
+  c.exFd.forEach((fd, i) => parts.push({ key: "excluded", i, fd }));
   const r = fzRun(tokens, parts);
   if (!r) return null;
   const out = { score: r.score, name: null, kw: new Set(), ex: new Set() };
@@ -2197,6 +2371,68 @@ function tpMatch(t, query) {
     else (x.key === "keywords" ? out.kw : out.ex).add(x.i);
   }
   return out;
+}
+
+// ----- filter, sort and group (pure: web_smoke.js table-tests them) -----
+// T = { agent, filter, state, run, origin, trial, sort, sortUser }; rows are shaped topics, `meta` may be null.
+const tpState = (t) => t.is_archived ? "archived" : t.is_active ? "active" : "inactive";
+const tpHasMeta = (list) => list.some((t) => t.meta && typeof t.meta === "object");
+function tpFilter(list, T, matches) {
+  const q = String(T.filter || "").trim(), out = [];
+  for (const t of list) {
+    const st = tpState(t), m = t.meta || null;
+    if (T.agent !== "all" && t.agent_type !== T.agent) continue;
+    if (T.state === "current" ? st === "archived" : T.state !== "all" && st !== T.state) continue;
+    if (T.run === "in" && !(st === "active" && m && m.in_run === true)) continue;
+    if (T.run === "below" && !(st === "active" && m && m.in_run === false)) continue;
+    if (T.origin === "none" ? (m && m.origin) : T.origin !== "any" && !(m && m.origin === T.origin)) continue;
+    if (T.trial && !(m && m.trial_until)) continue;
+    if (q) {
+      const x = tpMatch(t, q);
+      if (!x) continue;
+      if (matches) matches.set(t.id, x);
+    }
+    out.push(t);
+  }
+  return out;
+}
+// The sort actually used: a search means best match unless a sort was picked afterwards; run order needs the server's ranks.
+function tpSortKey(list, T) {
+  if (String(T.filter || "").trim() && !T.sortUser) return "match";
+  if (T.sort === "run" && !tpHasMeta(list)) return "weight";
+  if (T.sort === "newest" && !tpHasMeta(list)) return "weight";
+  return T.sort;
+}
+function tpSort(list, T, matches) {
+  const key = tpSortKey(list, T), cls = (t) => t.is_archived ? 2 : t.is_active ? 0 : 1;
+  const name = (a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: "base" }) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const rank = (t) => t.meta && Number.isFinite(t.meta.run_rank) ? t.meta.run_rank : Infinity;
+  const score = (t) => (matches && matches.get(t.id) ? matches.get(t.id).score : 0);
+  const str = (v) => typeof v === "string" ? v : "";
+  const cmp = {
+    match: (a, b) => score(b) - score(a),
+    run: (a, b) => (cls(a) === 0 ? (rank(a) === rank(b) ? 0 : rank(a) < rank(b) ? -1 : 1) : 0) || name(a, b),
+    weight: (a, b) => b.weight - a.weight || name(a, b),
+    name,
+    updated: (a, b) => (str(b.updated_at) > str(a.updated_at) ? 1 : str(b.updated_at) < str(a.updated_at) ? -1 : 0) || name(a, b),
+    newest: (a, b) => { const x = str(a.meta && a.meta.created_at), y = str(b.meta && b.meta.created_at); return (y > x ? 1 : y < x ? -1 : 0) || name(a, b); },
+  }[key];
+  return list.map((t, i) => ({ t, i })).sort((a, b) => cls(a.t) - cls(b.t) || cmp(a.t, b.t) || a.i - b.i).map((x) => x.t);
+}
+function tpCounts(rows) {
+  const c = { active: 0, inrun: 0, below: 0, inactive: 0, trial: 0 };
+  for (const t of rows) {
+    const st = tpState(t);
+    if (st === "active") { c.active++; if (t.meta && t.meta.in_run === true) c.inrun++; else if (t.meta && t.meta.in_run === false) c.below++; }
+    else if (st === "inactive") c.inactive++;
+    if (st !== "archived" && t.meta && t.meta.trial_until) c.trial++;
+  }
+  return c;
+}
+// One group per agent in TP_AGENTS order; agents with no row left after filtering are omitted. `counts` are over the agent's whole list.
+function tpGroups(list, T, matches) {
+  const rows = tpSort(tpFilter(list, T, matches), T, matches);
+  return TP_AGENTS.map((a) => ({ agent: a, rows: rows.filter((t) => t.agent_type === a), counts: tpCounts(list.filter((t) => t.agent_type === a)) })).filter((g) => g.rows.length);
 }
 
 // Client-side mirror of the server's allowlist (the server and valkyrie-dispatch stay authoritative).
@@ -2263,11 +2499,57 @@ async function loadTopics(force) {
 
 // ----- rendering -----
 function tpWritable() { return !!TP.data && TP.data.state === "ok" && !TP.data.stale && ME.paired; }
+const tpNow = () => (TP.data && Number.isFinite(TP.data.server_now) ? TP.data.server_now : Date.now() / 1000);
+const tpTs = (iso) => { const v = typeof iso === "string" ? Date.parse(iso) : NaN; return Number.isFinite(v) ? v / 1000 : null; };
+function tpAgo(iso) {
+  const ts = tpTs(iso);
+  if (ts === null) return "";
+  const d = Math.max(0, tpNow() - ts);
+  return d < 60 ? "now" : d < 3600 ? `${Math.floor(d / 60)}m ago` : d < 86400 ? `${Math.floor(d / 3600)}h ago` : `${Math.floor(d / 86400)}d ago`;
+}
+const TP_RUN_TIP = "Overnight and manual runs research the top 20 active topics per agent by decayed weight; the midday delta scouts the top 6 of those.";
+const TP_NO_META = "Update valkyrie-dispatch to see run order, the top-20 cut-off and where topics came from.";
+let TP_ROWS = [];   // the row elements of the last render, in order (keyboard navigation)
+function tpEff(meta) {   // the view settings that apply: the run, origin and trial controls need the server's meta
+  return { agent: TP.agent, filter: TP.filter, state: TP.state, run: meta ? TP.run : "any", origin: meta ? TP.origin : "any", trial: meta && TP.trial,
+    sort: TP.sort, sortUser: TP.sortUser };
+}
+function tpReset() { TP.shown.clear(); }
+function tpToolbar(r, meta, all, sortKey) {
+  const ok = r.state === "ok";
+  $("tpstate").value = TP.state;
+  for (const id of ["tprun", "tporigin", "tptrial"]) $(id).hidden = !meta;
+  $("tprun").value = TP.run; $("tporigin").value = TP.origin;
+  const trials = all.filter((t) => !t.is_archived && t.meta && t.meta.trial_until).length;
+  $("tptrial").textContent = `On trial (${trials})`;
+  $("tptrial").setAttribute("aria-pressed", String(TP.trial));
+  $("tptrial").classList.toggle("on", TP.trial);
+  $("tpsort-run").hidden = !meta; $("tpsort-newest").hidden = !meta;
+  $("tpsort-match").hidden = sortKey !== "match";
+  $("tpsort").value = sortKey;
+  $("tpdensity").setAttribute("aria-pressed", String(TP.density === "comfortable"));
+  $("tpdensity").classList.toggle("on", TP.density === "comfortable");
+  $("tpadd").disabled = !tpWritable();
+  $("tpadd").setAttribute("title", ME.paired ? (ok ? "" : "Unavailable right now") : "Pair this browser to edit");
+}
+function tpGroupHead(g, meta, T) {
+  const c = g.counts, open = !TP.collapsed.has(g.agent);
+  let txt = `${TP_AGENT_LABEL[g.agent]} · ${c.active} active`;
+  if (meta) txt += ` · ${c.inrun} in the run · ${c.below} below`;
+  if (c.inactive) txt += ` · ${c.inactive} inactive`;
+  if (c.trial) txt += ` · ${c.trial} on trial`;
+  if (T.run === "below") txt += ` · showing the ${g.rows.length} active topics outside the run`;
+  const b = h("button", "tpgroup", "", { "aria-expanded": String(open), "data-agent": g.agent });
+  b.append(h("span", "tpchev", open ? "▾" : "▸", { "aria-hidden": "true" }), h("span", "", txt));
+  b.onclick = () => { if (open) TP.collapsed.add(g.agent); else TP.collapsed.delete(g.agent); tpPersist(); renderTopics(); };
+  return b;
+}
 function renderTopics() {
   tpHoldCancel();   // a rebuilt list must never leave a stale hold timer behind
   if (VIEW !== "research" || RSVIEW !== "topics") return;
   const r = TP.data || { state: "loading", topics: [] };
   const ok = r.state === "ok", all = r.topics || [];
+  const meta = (ok || !!r.stale) && r.meta_supported === true;
   $("tpbody").classList.toggle("stale", !!r.stale);
   // state banner
   const head = [];
@@ -2277,50 +2559,65 @@ function renderTopics() {
     if (r.stale && r.loaded_at) head.push(h("div", "small muted", `Showing the list as of ${hm(r.loaded_at)}. Changes are disabled.`));
   }
   if (ok && r.states_supported === false) head.push(h("div", "tpstate warn", "valkyrie-dispatch is older than this dashboard: switching a topic off archives it, and Inactive is unavailable."));
-  if (ok && r.inactive_truncated) head.push(h("div", "small muted", "Showing 200 inactive topics; use rd topics list --state inactive for the rest."));
-  if (ok && r.archived_truncated) head.push(h("div", "small muted", "Showing 200 archived topics; use rd topics list --all for the rest."));
+  if (ok && r.meta_supported !== true) head.push(h("div", "small muted tpnometa", TP_NO_META));
+  if (ok && r.inactive_truncated) head.push(h("div", "small muted", "Showing 1000 inactive topics; use rd topics list --state inactive for the rest."));
+  if (ok && r.archived_truncated) head.push(h("div", "small muted", "Showing 1000 archived topics; use rd topics list --all for the rest."));
   if (ok && r.dropped) head.push(h("div", "small muted", `${r.dropped} topic(s) could not be shown (unexpected data).`));
   $("tphead").replaceChildren(...head);
   // toolbar
+  const T = tpEff(meta), q = TP.filter.trim();
+  tpToolbar(r, meta, all, tpSortKey(all, T));
   const chips = [["all", "All", all.filter((t) => t.is_active).length, null]];
   for (const a of TP_AGENTS) chips.push([a, TP_AGENT_LABEL[a], all.filter((t) => t.is_active && t.agent_type === a).length, TP_CAP]);
   $("tpchips").replaceChildren(...chips.map(([k, label, n, cap]) => {
-    const b = h("button", `tpagent${TP.agent === k ? " on" : ""}`, cap ? `${label} ${n}/${cap}` : `${label} ${n}`, { "aria-pressed": String(TP.agent === k) });
-    b.onclick = () => { TP.agent = k; renderTopics(); };
+    const top = meta && k !== "all" ? ` · top ${all.filter((t) => t.agent_type === k && t.meta && t.meta.in_run === true).length}` : "";
+    const b = h("button", `tpagent${TP.agent === k ? " on" : ""}`, (cap ? `${label} ${n}/${cap}` : `${label} ${n}`) + top, { "aria-pressed": String(TP.agent === k) });
+    b.onclick = () => { TP.agent = k; tpReset(); renderTopics(); };
     return b;
   }));
-  const add = $("tpadd");
-  add.disabled = !tpWritable();
-  add.setAttribute("title", ME.paired ? (ok ? "" : "Unavailable right now") : "Pair this browser to edit");
   $("tpupd").textContent = r.loaded_at ? `loaded ${hm(r.loaded_at)}` : "";
   // list
-  const list = [], q = TP.filter.trim();
+  const list = [];
   let cnt = "";
+  TP_ROWS = [];
   if (ok || r.stale) {
-    const pool = all.filter((t) => (TP.archived || !t.is_archived) && (TP.agent === "all" || t.agent_type === TP.agent));
-    let shown = pool;
     const matches = new Map();
-    if (q) {
-      shown = pool.map((t, i) => ({ t, i, m: tpMatch(t, q) })).filter((x) => x.m)
-        .sort((a, b) => b.m.score - a.m.score || a.i - b.i).map((x) => (matches.set(x.t.id, x.m), x.t));
-      cnt = `${shown.length} of ${pool.length} topics`;
+    const groups = tpGroups(all, T, matches), key = tpSortKey(all, T);
+    let vis = 0, total = 0;
+    for (const g of groups) {
+      total += g.rows.length;
+      list.push(tpGroupHead(g, meta, T));
+      if (TP.collapsed.has(g.agent)) continue;
+      const n = Math.min(g.rows.length, TP.shown.get(g.agent) || TP_PAGE), shown = g.rows.slice(0, n);
+      vis += n;
+      const last = key === "run" && meta ? g.rows.reduce((a, t, i) => (t.meta && t.meta.in_run === true ? i : a), -1) : -1;
+      const cut = last >= 0 && g.rows[last + 1] && tpState(g.rows[last + 1]) === "active" ? last : -1;
+      shown.forEach((t, i) => {
+        const row = tpRow(t, matches.get(t.id), meta);
+        TP_ROWS.push(row); list.push(row);
+        if (i === cut) list.push(h("div", "tpcut", `Research cut-off: the ${g.counts.inrun} above are researched each night; the ${g.counts.below} below are active but not in the run`, { role: "separator" }));
+      });
+      if (n < g.rows.length) {
+        const left = g.rows.length - n, bar = h("div", "tpmorebar");
+        const more = h("button", "ghost tiny tpmore", `Show ${Math.min(TP_PAGE, left)} more (${left} left)`);
+        more.onclick = () => { TP.shown.set(g.agent, n + TP_PAGE); renderTopics(); };
+        const allb = h("button", "ghost tiny tpmore tpall", "Show all");
+        allb.onclick = () => { TP.shown.set(g.agent, g.rows.length); renderTopics(); };
+        bar.append(more, allb);
+        list.push(bar);
+      }
     }
-    for (const a of TP_AGENTS) {
-      const rows = shown.filter((t) => t.agent_type === a);
-      if (!rows.length) continue;
-      const active = all.filter((t) => t.is_active && t.agent_type === a).length;
-      const idle = all.filter((t) => !t.is_active && !t.is_archived && t.agent_type === a).length;
-      list.push(h("h3", "tpgroup", `${TP_AGENT_LABEL[a]} · ${active}/${TP_CAP}${idle ? ` · ${idle} inactive` : ""}`));
-      const rank = (x) => x.is_archived ? 2 : x.is_active ? 0 : 1;
-      for (const t of [0, 1, 2].flatMap((k) => rows.filter((x) => rank(x) === k))) list.push(tpRow(t, matches.get(t.id)));
-    }
-    if (!shown.length) {
+    if (all.length) cnt = `Showing ${vis} of ${total} · ${all.length} total`;
+    if (!groups.length) {
       list.push(h("div", "empty", !all.length ? "No topics yet. Add one, or use rd topics add in valkyrie-dispatch."
         : TP.agent === "fintrend" && !TP.filter && !all.some((t) => t.agent_type === "fintrend") ? "Fintrend agent arrives in M4; topics you add now are kept."
           : q ? `No topic matches "${[...q].slice(0, 40).join("")}${[...q].length > 40 ? "…" : ""}"` : "No topics match."));
     } else if (TP.agent === "all" && !all.some((t) => t.agent_type === "fintrend")) {
       list.push(h("div", "small muted", "Fintrend agent arrives in M4; topics you add now are kept."));
     }
+    // roving tabindex: one row is in the tab order, the others are reached with the arrow keys
+    const tab = TP_ROWS.find((x) => x.getAttribute("data-id") === TP.focusId) || TP_ROWS[0];
+    for (const x of TP_ROWS) x.setAttribute("tabindex", x === tab ? "0" : "-1");
   }
   $("tplist").replaceChildren(...list);
   $("tpcount").textContent = cnt;
@@ -2337,11 +2634,22 @@ function tpIcon(paths) {
   return el;
 }
 
-function tpRow(t, m) {
+function tpTrialBadge(t) {
+  const until = t.meta && tpTs(t.meta.trial_until);
+  if (!until) return null;
+  const left = until - tpNow();
+  return left > 0 ? h("span", "badge b-ok tptrial", `trial, ${Math.max(1, Math.ceil(left / 86400))} d left`, { "data-tip": "On trial until the check-in; it is kept if you like it." })
+    : h("span", "badge b-warn tptrial", "check-in due", { "data-tip": "The trial period is over; a check-in asks whether to keep this topic." });
+}
+const TP_ORIGIN_TIP = { chat: "Added from a #hermes chat proposal", discovery: "Found by weekly discovery", explore: "Suggested by the daily explore run" };
+function tpRow(t, m, meta) {
   const kws = Array.isArray(t.keywords) ? t.keywords : [], exs = Array.isArray(t.excluded_terms) ? t.excluded_terms : [];
   const can = tpWritable() && !TP.busy.has(t.id);
-  const st = t.is_archived ? "archived" : t.is_active ? "active" : "inactive";
-  const row = h("div", `tprow${st === "archived" ? " tp-archived" : st === "inactive" ? " tp-inactive" : ""}${TP.busy.has(t.id) ? " busy" : ""}${TP.flash === t.id ? " tpflash" : ""}`, "", { "data-id": t.id });
+  const st = tpState(t), mt = meta && t.meta ? t.meta : null, compact = TP.density === "compact";
+  const row = h("div", `tprow${compact ? " compact" : ""}${meta ? "" : " nometa"}${st === "archived" ? " tp-archived" : st === "inactive" ? " tp-inactive" : ""}${TP.busy.has(t.id) ? " busy" : ""}${TP.flash === t.id ? " tpflash" : ""}`, "",
+    { "data-id": t.id, tabindex: "-1" });
+  row.addEventListener("keydown", (e) => tpRowKey(e, row, t));
+  row.addEventListener("focus", () => { TP.focusId = t.id; });
   if (st !== "archived") {
     const sw = h("input", "tpswitch", "", { type: "checkbox", role: "switch", "aria-label": `Active: ${t.name}` });
     sw.checked = st === "active"; sw.disabled = !can;
@@ -2354,10 +2662,17 @@ function tpRow(t, m) {
     b.onclick = () => tpRestore(t);
     row.append(b);
   }
+  const rankBadge = () => {
+    if (!mt || st !== "active" || typeof mt.in_run !== "boolean") return null;
+    return mt.in_run ? h("span", "badge b-ok tprank", mt.run_rank ? `#${mt.run_rank}` : "in the run", { "data-tip": TP_RUN_TIP })
+      : h("span", "badge b-warn tprank", "below cut-off", { "data-tip": TP_RUN_TIP });
+  };
+  const rank = rankBadge();
+  if (compact && meta) row.append(rank || h("span", "tprank"));
   const main = h("div", "tpmain");
   const title = h("div", "tptitle");
   const hl = m && m.name && m.name.size;
-  const nm = h("span", "tpname", hl ? null : t.name, t.updated_at ? { "data-tip": `Last edited ${t.updated_at}` } : {});
+  const nm = h("span", "tpname", hl ? null : t.name, { "data-tip": t.updated_at ? `${t.name}\nLast edited ${t.updated_at}` : t.name });
   if (hl) {   // matched characters get their own span; every piece is still plain textContent
     let run = "", on = false;
     const flush = () => { if (run) nm.append(h("span", on ? "tpmatch" : "", run)); run = ""; };
@@ -2365,19 +2680,30 @@ function tpRow(t, m) {
     flush();
   }
   title.append(nm);
+  if (!compact && rank) title.append(rank);
+  if (mt && mt.origin) title.append(h("span", "badge b-muted tporigin", mt.origin, { "data-tip": TP_ORIGIN_TIP[mt.origin] || "" }));
+  const trial = tpTrialBadge(t);
+  if (trial && st !== "archived") title.append(trial);
   if (t.over_api_limits) title.append(h("span", "badge b-warn", "CLI-only limits", { "data-tip": "Created with the CLI; exceeds what the API accepts. Shorten it to edit." }));
   if (st !== "active") title.append(h("span", "badge b-off", st));
-  main.append(title);
+  const likes = mt && mt.likes_30d > 0 ? mt.likes_30d : 0, dislikes = mt && mt.dislikes_30d > 0 ? mt.dislikes_30d : 0;
+  const notes = mt && mt.notes_active > 0 ? mt.notes_active : 0;
+  const fb = () => (likes || dislikes) ? h("span", "tpfb small muted", `+${likes} / −${dislikes}`, { "data-tip": "30 days of feedback" }) : null;
+  const nt = () => notes ? h("span", "tpnotes small muted", `${notes} note${notes === 1 ? "" : "s"}`, { "data-tip": `${notes} preference notes in use` }) : null;
   const kw = h("div", "tpchips2");
-  kws.slice(0, 6).forEach((k, i) => kw.append(h("span", m && m.kw.has(i) ? "tpchip tphit" : "tpchip", k)));
-  if (kws.length > 6) kw.append(h("span", "tpchip more", `+${kws.length - 6}`));
+  kws.slice(0, compact ? 3 : 6).forEach((k, i) => kw.append(h("span", m && m.kw.has(i) ? "tpchip tphit" : "tpchip", k)));
+  if (kws.length > (compact ? 3 : 6)) kw.append(h("span", "tpchip more", `+${kws.length - (compact ? 3 : 6)}`));
   if (exs.length) {
     const open = TP.expanded.has(t.id);
     const ex = h("button", "ghost tiny tpex", open ? "hide excluded" : `excludes ${exs.length}`, { "aria-expanded": String(open) });
     ex.onclick = () => { if (open) TP.expanded.delete(t.id); else TP.expanded.add(t.id); renderTopics(); };
     kw.append(ex);
   }
-  main.append(kw);
+  if (compact) { const line = h("div", "tpline"); line.append(title, kw); main.append(line); }
+  else {
+    for (const x of [fb(), nt()]) if (x) title.append(x);
+    main.append(title, kw);
+  }
   if (m && (m.kw.size || m.ex.size)) {
     const say = (label, arr, set) => set.size ? `${label} ${[...set].slice(0, 3).map((i) => String(arr[i]).slice(0, 40)).join(", ")}` : "";
     main.append(h("div", "small muted tphint", "Matches " + [say("keyword", kws, m.kw), say("excluded", exs, m.ex)].filter(Boolean).join(" · ")));
@@ -2392,13 +2718,21 @@ function tpRow(t, m) {
   const note = TP.rowNote.get(t.id);
   if (note) main.append(h("div", "small muted", note));
   row.append(main);
-  const w = h("div", "tpw");
-  w.append(h("span", "tpwnum", t.weight.toFixed(1)));
+  const eff = mt && Number.isFinite(mt.effective_weight) ? mt.effective_weight : t.weight;
+  const w = h("div", "tpw", "", mt && Number.isFinite(mt.effective_weight) ? { "data-tip": `effective ${eff.toFixed(1)}, base ${t.weight.toFixed(1)}, decays toward 1.0` } : {});
+  w.append(h("span", "tpwnum", !compact && eff !== t.weight ? `${eff.toFixed(1)} (base ${t.weight.toFixed(1)})` : eff.toFixed(1)));
   const bar = svg("svg", { class: "tpweight", width: "60", height: "6", viewBox: "0 0 60 6", "aria-hidden": "true" });
   bar.append(svg("rect", { class: "tpw-bg", x: "0", y: "0", width: "60", height: "6", rx: "3" }),
-    svg("rect", { class: "tpw-fg", x: "0", y: "0", width: String(Math.round(60 * Math.max(0, Math.min(5, t.weight)) / 5)), height: "6", rx: "3" }));
+    svg("rect", { class: "tpw-fg", x: "0", y: "0", width: String(Math.round(60 * Math.max(0, Math.min(5, eff)) / 5)), height: "6", rx: "3" }));
   w.append(bar);
   row.append(w);
+  if (compact && meta) {
+    const c1 = h("span", "tpcell"), c2 = h("span", "tpcell"), c3 = h("span", "tpcell small muted", tpAgo(t.updated_at), t.updated_at ? { "data-tip": `Last edited ${t.updated_at}` } : {});
+    const f = fb(), n = nt();
+    if (f) c1.append(f);
+    if (n) c2.append(n);
+    row.append(c1, c2, c3);
+  }
   if (st !== "archived") {
     const acts = h("div", "tpacts");
     const edit = h("button", "ghost tiny tpicon tpedit", "", { "aria-label": `Edit topic: ${t.name}`, "data-tip": "Edit" });
@@ -2410,6 +2744,23 @@ function tpRow(t, m) {
     row.append(acts);
   }
   return row;
+}
+
+// ----- keyboard: / focuses the search; Down from the search enters the rows; arrows, Home and End move between rows; Esc goes back -----
+function tpFocusRow(i) {
+  const row = TP_ROWS[Math.max(0, Math.min(TP_ROWS.length - 1, i))];
+  if (!row) return;
+  for (const x of TP_ROWS) x.setAttribute("tabindex", x === row ? "0" : "-1");
+  TP.focusId = row.getAttribute("data-id");
+  row.focus();
+}
+function tpRowKey(e, row, t) {
+  if (e.target && e.target !== row) return;   // keys on the switch, Edit, Restore and hold buttons keep their own meaning
+  const i = TP_ROWS.indexOf(row);
+  const go = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: TP_ROWS.length - 1 }[e.key];
+  if (go !== undefined) { e.preventDefault(); tpFocusRow(go); }
+  else if (e.key === "Escape") { e.preventDefault(); $("tpfilter").focus(); }
+  else if (e.key === "Enter" && tpWritable() && !TP.busy.has(t.id) && !t.is_archived) { e.preventDefault(); tpDialog(t); }
 }
 
 // ----- hold to archive: press and hold TP_HOLD_MS (pointer, Space or Enter); release, leave, blur or a re-render cancels -----
@@ -2457,9 +2808,11 @@ async function tpChange(t, fields, done) {
   TP.busy.add(t.id); TP.rowMsg.delete(t.id); TP.rowNote.delete(t.id); $("tpmsg").textContent = ""; renderTopics();
   const r = await tpPost({ id: t.id, if_match: t.updated_at, fields }, "update").catch(() => null);
   TP.busy.delete(t.id);
+  const moved = r && r.ok && ("weight" in fields || "is_active" in fields || "is_archived" in fields);
   if (r && r.ok) { tpApply(r.data.topic); if (done) done(r.data.topic); }
   else TP.rowMsg.set(t.id, tpErrText(r, t));
   renderTopics();
+  if (moved) await loadTopics();   // ranks, the cut-off and the counts moved: one fresh read (the server already dropped its cache)
 }
 const tpToggle = (t, active) => tpChange(t, { is_active: active });
 // Restore goes to Inactive (never the cap, never straight back into a run); an old backend only has the switch, so it turns on.
@@ -2468,7 +2821,7 @@ function tpRestore(t) {
   return tpChange(t, { is_archived: false }, (topic) => TP.rowNote.set(topic.id, "Restored as inactive. Switch it on to research it again."));
 }
 function tpArchive(t) {
-  return tpChange(t, { is_archived: true }, () => { $("tpmsg").textContent = `Archived "${t.name}". Turn on Show archived to restore it.`; });
+  return tpChange(t, { is_archived: true }, () => { $("tpmsg").textContent = `Archived "${t.name}". Set State to Archived to restore it.`; });
 }
 const tpPost = async (body, kind) => {
   const r = await POST(`/api/topics/${kind}`, body);
@@ -2552,7 +2905,11 @@ $("tpform").addEventListener("submit", async (ev) => {
   tpBusy(true); $("tpformmsg").textContent = "Saving…"; $("tpformmsg").className = "msg";
   const r = await tpPost(body, kind).catch(() => null);
   tpBusy(false);
-  if (r && r.ok) { tpApply(r.data.topic); $("tpdlg").close(); renderTopics(); return; }
+  if (r && r.ok) {
+    tpApply(r.data.topic); $("tpdlg").close(); renderTopics();
+    if (kind === "create" || (body.fields && "weight" in body.fields)) await loadTopics();   // a new or re-weighted topic moves the ranks
+    return;
+  }
   tpFormFail(r);
 });
 $("tpcancel").addEventListener("click", () => $("tpdlg").close());
@@ -2583,14 +2940,37 @@ $("tprefresh").onclick = () => loadTopics(true);
 let tpTimer = 0;
 $("tpfilter").addEventListener("input", () => {
   clearTimeout(tpTimer);
-  tpTimer = setTimeout(() => { TP.filter = $("tpfilter").value; renderTopics(); }, 120);
+  tpTimer = setTimeout(() => {
+    const was = !!TP.filter.trim();
+    TP.filter = $("tpfilter").value;
+    if (!was) TP.sortUser = false;   // a new search starts on best match until a sort is picked
+    tpReset(); renderTopics();
+  }, 120);
 });
 $("tpfilter").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown" && TP_ROWS.length) { e.preventDefault(); tpFocusRow(TP_ROWS.findIndex((x) => x.getAttribute("data-id") === TP.focusId)); return; }
   if (e.key !== "Escape" || !$("tpfilter").value) return;
   e.preventDefault(); clearTimeout(tpTimer);
-  $("tpfilter").value = ""; TP.filter = ""; renderTopics();
+  $("tpfilter").value = ""; TP.filter = ""; TP.sortUser = false; tpReset(); renderTopics();
 });
-$("tparch").addEventListener("change", () => { TP.archived = $("tparch").checked; renderTopics(); });
+// Toolbar: every change resets paging and is persisted (not the search text).
+for (const [id, field, list] of [["tpstate", "state", TP_STATES], ["tprun", "run", TP_RUNS], ["tporigin", "origin", TP_ORIGINS]]) {
+  $(id).addEventListener("change", () => { if (list.includes($(id).value)) TP[field] = $(id).value; tpReset(); tpPersist(); renderTopics(); });
+}
+$("tpsort").addEventListener("change", () => {
+  const v = $("tpsort").value;
+  if (v === "match") TP.sortUser = false; else if (TP_SORTS.includes(v)) { TP.sort = v; TP.sortUser = true; }
+  tpReset(); tpPersist(); renderTopics();
+});
+$("tptrial").addEventListener("click", () => { TP.trial = !TP.trial; tpReset(); tpPersist(); renderTopics(); });
+$("tpdensity").addEventListener("click", () => { TP.density = TP.density === "compact" ? "comfortable" : "compact"; tpPersist(); renderTopics(); });
+// "/" jumps to the search from anywhere in the Topics view, unless a field or the dialog has the focus.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey || VIEW !== "research" || RSVIEW !== "topics" || $("tpdlg").open) return;
+  const a = document.activeElement, tag = a && String(a.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || tag === "select" || (a && a.isContentEditable)) return;
+  e.preventDefault(); $("tpfilter").focus();
+});
 document.addEventListener("visibilitychange", () => { if (document.hidden) tpHoldCancel(); });
 // Fetched on open, after every write, on Refresh and when the page comes back after 60 s: never polled in the background.
 document.addEventListener("visibilitychange", () => {

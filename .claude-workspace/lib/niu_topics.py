@@ -45,6 +45,9 @@ SCOPE_TTL = 300                  # whoami result is cached per token for this lo
 LIST_TTL = 10
 REFRESH_GAP = 5
 PER_AGENT_LIMIT = 200            # valkyrie-dispatch allows at most this many active topics per agent type
+PAGE = 100                       # rows per list request
+MAX_PAGES = 10                   # pages per query: at most PAGE * MAX_PAGES rows
+ORIGINS = frozenset(("chat", "discovery", "explore"))
 
 # Limits the API enforces (authoritative there; mirrored here and in the front end) and what the read path will display.
 LIMITS = {"name": 120, "term": 80, "keywords": 20, "excluded_terms": 50, "weight_min": 0.1, "weight_max": 5.0,
@@ -54,7 +57,7 @@ PATCH_KEYS = ("name", "keywords", "excluded_terms", "weight", "is_active", "is_a
 FIELD_ALLOW = frozenset(CREATE_KEYS + PATCH_KEYS)
 FIELD_CODES = frozenset("required too_long too_short too_many too_few forbidden_char bad_enum out_of_range not_bool not_list "
                         "empty unknown toolarge bad_combo".split())
-FEATURES = frozenset({"topic_states"})
+FEATURES = frozenset({"topic_states", "topic_meta"})
 LIST_STATES = ("active", "inactive", "archived", "current", "all")
 
 STATES = ("ok", "not_paired", "not_configured", "disabled", "wrong_scope", "too_powerful", "unreachable", "unauthorized",
@@ -218,7 +221,7 @@ def _status_fail(status):
 
 def check_scope(cfg, token):
     """Raises _Fail unless whoami says the token's scope is exactly `topics` (cached per token for SCOPE_TTL).
-    Returns {"states": bool}: whether the backend reports the `topic_states` feature (known strings only)."""
+    Returns {"states": bool, "meta": bool}: whether the backend reports the `topic_states` / `topic_meta` features (known strings only)."""
     key = hashlib.sha256(token.encode()).hexdigest()
     now = _clock()
     with LOCK:
@@ -239,7 +242,7 @@ def check_scope(cfg, token):
                 SCOPES.clear()
             SCOPES[key] = {"scope": scope, "features": feats, "at": now}
     if scope == "topics":
-        return {"states": "topic_states" in feats}
+        return {"states": "topic_states" in feats, "meta": "topic_meta" in feats}
     shown = scope if scope in ("monitor", "read", "admin") else "other"
     raise _Fail("too_powerful" if scope in ("admin", "read") else "wrong_scope", shown)
 
@@ -406,8 +409,42 @@ def _shown_terms(v, api_cap, api_max):
     return out, over or len(v) > LIMITS["show_list"]
 
 
-def shape_topic(raw):
-    """A topic row rebuilt from an allowlist, or None when its id / agent type / flags are off-spec."""
+def _ts(v):
+    return v if isinstance(v, str) and len(v) <= 40 and TS_RE.fullmatch(v) else None
+
+
+def _int(v, lo, hi, clamp=False):
+    """A real int in lo..hi (clamped to hi when `clamp`), else None. Bools, floats and strings are not ints."""
+    if isinstance(v, bool) or not isinstance(v, int) or v < lo:
+        return None
+    return min(v, hi) if clamp else (v if v <= hi else None)
+
+
+def _shape_meta(raw, active):
+    """The per-topic `meta` block rebuilt from an allowlist: counts and weights clamped, timestamps and enums checked.
+    Anything off-spec becomes None; the row is never dropped for it."""
+    ew = raw.get("effective_weight")
+    rank = _int(raw.get("run_rank"), 1, 10000) if active else None
+    in_run = raw.get("in_run")
+    if not active:
+        in_run = None
+    elif rank is None:
+        in_run = False
+    elif not isinstance(in_run, bool):
+        in_run = None
+    origin = raw.get("origin")
+    return {"effective_weight": round(max(0.0, min(5.0, float(ew))), 2) if _finite(ew) else None,
+            "run_rank": rank, "in_run": in_run,
+            "origin": origin if isinstance(origin, str) and origin in ORIGINS else None,
+            "trial_until": _ts(raw.get("trial_until")), "created_at": _ts(raw.get("created_at")),
+            "weight_updated_at": _ts(raw.get("weight_updated_at")),
+            "likes_30d": _int(raw.get("likes_30d"), 0, 10**6, True), "dislikes_30d": _int(raw.get("dislikes_30d"), 0, 10**6, True),
+            "notes_active": _int(raw.get("notes_active"), 0, 1000, True)}
+
+
+def shape_topic(raw, meta=False):
+    """A topic row rebuilt from an allowlist, or None when its id / agent type / flags are off-spec.
+    `meta` says the backend reports `topic_meta`; the row's `meta` key is None otherwise."""
     if not isinstance(raw, dict):
         return None
     tid, agent = raw.get("id"), raw.get("agent_type")
@@ -427,13 +464,14 @@ def shape_topic(raw):
     return {"id": tid, "agent_type": agent, "name": name, "keywords": kw, "excluded_terms": ex,
             "weight": round(max(0.0, min(5.0, float(w))), 2), "is_active": active, "is_archived": archived,
             "updated_at": upd if isinstance(upd, str) and len(upd) <= 40 and TS_RE.fullmatch(upd) else None,
-            "over_api_limits": bool(over or o1 or o2 or not LIMITS["weight_min"] <= w <= LIMITS["weight_max"])}
+            "over_api_limits": bool(over or o1 or o2 or not LIMITS["weight_min"] <= w <= LIMITS["weight_max"]),
+            "meta": _shape_meta(raw, active) if meta else None}
 
 
-def _shape_all(rows):
+def _shape_all(rows, meta=False):
     if not isinstance(rows, list):
         raise _Fail("error", "badjson")
-    out = [t for t in (shape_topic(r) for r in rows) if t]
+    out = [t for t in (shape_topic(r, meta) for r in rows) if t]
     return out, len(rows) - len(out)
 
 
@@ -544,7 +582,8 @@ def _envelope(state, cause=None, scope=None, cfg=None):
     return {"state": state, "cause": cause, "message": msg, "topics": good["topics"] if good else [],
             "archived_truncated": good["archived_truncated"] if good else False,
             "inactive_truncated": good["inactive_truncated"] if good else False,
-            "states_supported": good["states_supported"] if good else True, "dropped": good["dropped"] if good else 0,
+            "states_supported": good["states_supported"] if good else True,
+            "meta_supported": good["meta_supported"] if good else False, "dropped": good["dropped"] if good else 0,
             "loaded_at": good["loaded_at"] if good else None, "stale": bool(good), "limits": LIMITS, "server_now": _clock()}
 
 
@@ -557,25 +596,34 @@ def list_topics(force=False):
         cfg = None
         try:
             cfg, token = _setup()
-            states = check_scope(cfg, token)["states"]
-            rows, dropped = [], 0
+            scope = check_scope(cfg, token)
+            states, meta = scope["states"], scope["meta"]
+            rows, seen, dropped = [], set(), 0
             if states:
-                queries = [{"agent_type": ag, "state": "active", "limit": PER_AGENT_LIMIT} for ag in AGENT_TYPES]
-                queries += [{"state": "inactive", "limit": PER_AGENT_LIMIT}, {"state": "archived", "limit": PER_AGENT_LIMIT}]
+                queries = [{"agent_type": ag, "state": "active"} for ag in AGENT_TYPES]
+                queries += [{"state": "inactive"}, {"state": "archived"}]
             else:
-                queries = [{"agent_type": ag, "is_active": "true", "limit": PER_AGENT_LIMIT} for ag in AGENT_TYPES]
-                queries += [{"is_active": "false", "limit": PER_AGENT_LIMIT}]
+                queries = [{"agent_type": ag, "is_active": "true"} for ag in AGENT_TYPES]
+                queries += [{"is_active": "false"}]
             full = []
             for q in queries:
-                status, doc = _call(cfg, token, "GET", BASE, query=q, max_body=MAX_LIST_BODY)
-                if status != 200:
-                    raise _status_fail(status)
-                part, d = _shape_all(doc)
-                rows += part
-                dropped += d
-                full.append(isinstance(doc, list) and len(doc) >= PER_AGENT_LIMIT)
+                capped = True      # stays True only when every page was full: there may be more than PAGE * MAX_PAGES rows
+                for p in range(MAX_PAGES):
+                    status, doc = _call(cfg, token, "GET", BASE, query={**q, "limit": PAGE, "offset": p * PAGE}, max_body=MAX_LIST_BODY)
+                    if status != 200:
+                        raise _status_fail(status)
+                    part, d = _shape_all(doc, meta)
+                    for t in part:      # first seen wins: a write between pages can shift rows, so a row may show up twice
+                        if t["id"] not in seen:
+                            seen.add(t["id"])
+                            rows.append(t)
+                    dropped += d
+                    if len(doc) < PAGE:
+                        capped = False
+                        break
+                full.append(capped)
             good = {"topics": rows, "archived_truncated": full[-1], "inactive_truncated": states and full[-2],
-                    "states_supported": states, "dropped": dropped, "loaded_at": now}
+                    "states_supported": states, "meta_supported": meta, "dropped": dropped, "loaded_at": now}
             res = {"state": "ok", "cause": None, "message": "", **good, "stale": False, "limits": LIMITS, "server_now": now}
             CACHE.update(result=res, at=now, good=good)
             return res
@@ -652,7 +700,8 @@ def write(kind, device, b):
     action = _write_action(kind, body)
     try:
         cfg, token = _setup()
-        if check_scope(cfg, token)["states"] is False and "is_archived" in body:
+        scope = check_scope(cfg, token)
+        if scope["states"] is False and "is_archived" in body:
             audit(action, tid, body, device, False, "incompatible")
             return refuse("incompatible", 409)
         status, doc = _call(cfg, token, method, path, body=body, if_match=if_match)
@@ -667,7 +716,7 @@ def write(kind, device, b):
     except Exception:  # noqa: BLE001
         audit(action, tid, body, device, False, "error")
         return refuse("error", cause="internal")
-    topic = shape_topic(doc) if status in (200, 201) else None
+    topic = shape_topic(doc, scope["meta"]) if status in (200, 201) else None
     if status in (200, 201):
         invalidate()   # the upstream write happened even if its reply is unreadable, so drop the cached list
     if topic is None:
