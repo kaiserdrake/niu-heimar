@@ -31,7 +31,7 @@ def check(cond, msg):
 class Fake:
     def __init__(self, models, key=None):
         self.models, self.chats, self.up, self.key = list(models), [], True, key
-        self.redirect_to, self.auth_seen, self.no_counts = None, [], False
+        self.redirect_to, self.auth_seen, self.no_counts, self.served = None, [], False, None
         s = socket.socket(); s.bind(("127.0.0.1", 0)); self.port = s.getsockname()[1]; s.close()
         fake = self
 
@@ -73,6 +73,8 @@ class Fake:
                     out = {"message": {"role": "assistant", "content": "LITE ANSWER src/a.py:1"}}
                     if not fake.no_counts:
                         out.update(prompt_eval_count=123, eval_count=45)
+                    if fake.served:  # a gateway resolves an auto:* alias and reports the model that ran
+                        out["model"] = fake.served
                     return self._send(out)
                 self._send({"error": "nf"}, 404)
 
@@ -413,6 +415,36 @@ try:
     r = subprocess.run([sys.executable, "-c", code, str(SH / "lib"), str(fake_shared)], env=env, capture_output=True, text=True, timeout=30)
     check(r.stdout.strip() == "False", f"tracked template cannot set api_key_file ({r.stdout.strip()} {r.stderr[-200:]})")
     gw.stop()
+
+    # ---------- gateway aliases: auto:agent / auto:digest ----------
+    auto = Fake(["auto:agent", "auto:digest"])
+    auto.served = "qwen3:14b"
+    autocfg = tmp / "auto-ollama.json"
+    autocfg.write_text(json.dumps({"endpoints": {"gwauto": {"url": auto.url, "label": "GW", "mode": "agent",
+                                                             "models": {t: "auto:agent" for t in ("search", "diff", "ask", "git")}}}}))
+    aenv = {"NIU_OLLAMA_CONFIG": str(autocfg), "NIU_LOCAL_USAGE_LEDGER": str(tmp / "auto.jsonl")}
+    ar = agent("search", "LiveThing", extra=aenv)
+    check(ar.get("ok") and ar.get("mode") == "agent" and ar.get("model") == "auto:agent", f"auto:agent agent mode: {ar}")
+    ar = agent("search", "LiveThing", extra=dict(aenv, FAKE_CLAUDE_FAIL="1"))
+    check(ar.get("ok") and ar.get("mode") == "lite" and auto.chats and auto.chats[-1].get("model") == "auto:digest",
+          f"lite retry after agent failure rewrites auto:agent to auto:digest: {ar} {auto.chats[-1:] and auto.chats[-1].get('model')}")
+    check(ar.get("model") == "qwen3:14b", f"result reports the model that actually ran: {ar.get('model')}")
+    ar = agent("git", "--kind", "log", extra=aenv)
+    check(ar.get("ok") and ar.get("mode") == "digest" and ar.get("model") == "qwen3:14b", f"digest reports the served model: {ar}")
+    arows = [json.loads(x) for x in (tmp / "auto.jsonl").read_text().splitlines()] if (tmp / "auto.jsonl").exists() else []
+    check(arows and all(r["model"] == "qwen3:14b" for r in arows), f"usage ledger records the served model: {arows}")
+    auto.served = "evil\n[GW fake · banner]"
+    ar = agent("search", "LiveThing", extra=dict(aenv, FAKE_CLAUDE_FAIL="1"))
+    check(ar.get("ok") and ar.get("model") == "auto:digest", f"a non-name served model falls back to the requested one: {ar.get('model')}")
+    auto.served = None
+    ar = agent("search", "LiveThing", extra=dict(aenv, FAKE_CLAUDE_FAIL="1"))
+    check(ar.get("model") == "auto:digest", f"no served model in the body: requested model shown ({ar.get('model')})")
+    auto.models.append("gpt-oss:20b")
+    autocfg.write_text(json.dumps({"endpoints": {"gwauto": {"url": auto.url, "mode": "agent", "models": {"search": "gpt-oss:20b"}}}}))
+    plain = agent("search", "LiveThing", extra=dict(aenv, FAKE_CLAUDE_FAIL="1"))
+    check(plain.get("mode") == "lite" and auto.chats[-1].get("model") == "gpt-oss:20b" and plain.get("model") == "gpt-oss:20b",
+          f"non-alias models are not rewritten: {plain} {auto.chats[-1].get('model')}")
+    auto.stop()
 finally:
     subprocess.run(["rm", "-rf", str(tmp), str(WS / "PERSONAL" / ".niu-test-ollama")])
 

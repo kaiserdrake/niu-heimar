@@ -176,12 +176,14 @@ def run_digest(task, args):
         try:
             budget = int(ep.get("digest_context_chars", cfg.get("lite_context_chars", 14000)))
             body = nr.fit(g["text"], budget, g["keep"])
-            answer = no.lite_run(ep, model, task, no.digest_prompt(g["commands"], args.focus, body), "", timeout, domain=domain)
+            info = {}
+            answer = no.lite_run(ep, model, task, no.digest_prompt(g["commands"], args.focus, body), "", timeout,
+                                 domain=domain, info=info)
             answer, n_out = nr.redact(answer)
             if len(answer) > cap:
                 answer = answer[:cap] + "\n[truncated]"
             return {"ok": True, "task": task, "endpoint": ep["name"], "label": ep.get("label"), "url": ep["url"],
-                    "model": model, "mode": "digest", "turns": 1, "seconds": round(time.time() - t0, 1), "base": None,
+                    "model": info.get("model", model), "mode": "digest", "turns": 1, "seconds": round(time.time() - t0, 1), "base": None,
                     "notes": notes, "commands": g["commands"], "redactions": g["redactions"] + n_out, "answer": answer}
         except Exception as e:  # next endpoint; raw output is never returned as a fallback
             notes.append(f"{ep['name']} digest failed: {str(e)[:200]}")
@@ -209,6 +211,7 @@ def run_task(task, args):
             continue
         modes = ["agent", "lite"] if ep.get("mode", "agent") == "agent" else ["lite"]
         for mode in modes:
+            served = model
             try:
                 if mode == "agent":
                     answer, warn, turns = run_agent(ep, model, task, args, cwd, base, timeout)
@@ -219,11 +222,15 @@ def run_task(task, args):
                                           files=getattr(args, "files", None), limit=cfg.get("lite_context_chars", 14000))
                     prompt = {"search": f"Question: {args.text}", "diff": f"Diff against {base}." + (f" Focus: {args.focus}" if args.focus else ""),
                               "ask": f"Question: {getattr(args, 'text', '')}"}[task]
-                    answer, turns = no.lite_run(ep, model, task, prompt, ctx, timeout, domain=domain), 1
+                    # A gateway alias picks a tool-capable model for agent mode; the lite retry needs the digest class.
+                    lmodel = "auto:digest" if "agent" in modes and model.startswith("auto:") else model
+                    info = {}
+                    answer, turns = no.lite_run(ep, lmodel, task, prompt, ctx, timeout, domain=domain, info=info), 1
+                    served = info.get("model", lmodel)
                 if len(answer) > cap:
                     answer = answer[:cap] + "\n[truncated]"
                 return {"ok": True, "task": task, "endpoint": ep["name"], "label": ep.get("label"), "url": ep["url"],
-                        "model": model, "mode": mode, "turns": turns, "seconds": round(time.time() - t0, 1),
+                        "model": served, "mode": mode, "turns": turns, "seconds": round(time.time() - t0, 1),
                         "base": base, "notes": notes, "answer": answer}
             except Exception as e:  # try the next mode / endpoint
                 notes.append(f"{ep['name']} {mode} mode failed: {str(e)[:200]}")
