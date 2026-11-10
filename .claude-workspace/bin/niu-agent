@@ -176,7 +176,7 @@ def run_digest(task, args):
         try:
             budget = int(ep.get("digest_context_chars", cfg.get("lite_context_chars", 14000)))
             body = nr.fit(g["text"], budget, g["keep"])
-            answer = no.lite_run(ep, model, task, no.digest_prompt(g["commands"], args.focus, body), "", timeout)
+            answer = no.lite_run(ep, model, task, no.digest_prompt(g["commands"], args.focus, body), "", timeout, domain=domain)
             answer, n_out = nr.redact(answer)
             if len(answer) > cap:
                 answer = answer[:cap] + "\n[truncated]"
@@ -219,7 +219,7 @@ def run_task(task, args):
                                           files=getattr(args, "files", None), limit=cfg.get("lite_context_chars", 14000))
                     prompt = {"search": f"Question: {args.text}", "diff": f"Diff against {base}." + (f" Focus: {args.focus}" if args.focus else ""),
                               "ask": f"Question: {getattr(args, 'text', '')}"}[task]
-                    answer, turns = no.lite_run(ep, model, task, prompt, ctx, timeout), 1
+                    answer, turns = no.lite_run(ep, model, task, prompt, ctx, timeout, domain=domain), 1
                 if len(answer) > cap:
                     answer = answer[:cap] + "\n[truncated]"
                 return {"ok": True, "task": task, "endpoint": ep["name"], "label": ep.get("label"), "url": ep["url"],

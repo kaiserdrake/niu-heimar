@@ -142,7 +142,7 @@ def totals_by_agent(p):
     return {x["agent_type"]: x["total"] for x in p["by_agent"]}
 
 
-# ---------- 1. schema migration 1 -> 2 ----------
+# ---------- 1. schema migration 1 -> 3 ----------
 reset_db()
 state.mkdir(parents=True, exist_ok=True)
 c = sqlite3.connect(state / "usage.db")
@@ -153,13 +153,13 @@ c.close()
 os.chmod(state / "usage.db", 0o600)
 check(U.tokens(now=T0)["state"] == "empty", "a version 1 file reads as empty, not an error")
 con = U.connect()
-check(con.execute("PRAGMA user_version").fetchone()[0] == 2, "user_version migrated 1 -> 2")
+check(con.execute("PRAGMA user_version").fetchone()[0] == 3, "user_version migrated 1 -> 3")
 check(con.execute("SELECT used FROM limit_samples WHERE key='seven_day'").fetchone()[0] == 41.5, "existing samples untouched")
 names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 check({"tok_files", "tok_msgs", "tok_models", "meta", "limit_samples"} <= names, "token tables created")
 con.close()
 U.connect().close()
-check(sqlite3.connect(state / "usage.db").execute("PRAGMA user_version").fetchone()[0] == 2, "migration is idempotent")
+check(sqlite3.connect(state / "usage.db").execute("PRAGMA user_version").fetchone()[0] == 3, "migration is idempotent")
 reset_db()
 
 # ---------- 2. scanner on the fixture tree ----------
@@ -274,7 +274,7 @@ midnight_jst = (-9 * 3600) % D
 check(all(d["t"] % D == midnight_jst for d in p7["daily"]) and all(d["t"] % 3600 == 0 for d in pt["daily"]), "buckets aligned to local midnight (Asia/Tokyo)")
 check(p7["daily"][-1]["t"] == T0 - 9 * 3600 and p7["daily"][-1]["total"] == tot(pt) and p7["daily"][-1]["label"] == f"{datetime.fromtimestamp(T0).strftime('%a')} {datetime.fromtimestamp(T0).day}", f"last day = today: {p7['daily'][-1]}")
 check(sum(d["total"] for d in p7["daily"]) == tot(p7) and sum(d["total"] for d in p30["daily"]) == tot(p30) and sum(d["total"] for d in pt["daily"]) == tot(pt), "daily buckets add up")
-check(all(set(d["by_family"]) == {"opus", "sonnet", "haiku", "other"} for d in p7["daily"]), "daily split by model family")
+check(all(set(d["by_family"]) == {"opus", "sonnet", "haiku", "local", "other"} for d in p7["daily"]), "daily split by model family")
 check(pt["daily"][9]["total"] == tot(pt) and pt["daily"][9]["label"] == "09:00", "hourly bucket for today")
 check(p7["matrix"]["agents"][0] == "session" and len(p7["matrix"]["total"]) == len(p7["matrix"]["agents"]) and sum(map(sum, p7["matrix"]["total"])) == tot(p7), "matrix adds up to the total")
 check(p7["by_agent"][0]["agent_type"] == "session" and p7["by_agent"][0]["sessions"] >= 3, "agent ranking and sessions")
@@ -287,7 +287,7 @@ check(U.tokens("../../x", "<script>", now=NOW)["range"] == "7d" and U.tokens("..
 check(U.tokens(None, None, now=NOW)["range"] == "7d", "default range 7d")
 cov = p7["coverage"]
 check(cov["scanning"] is False and cov["files_total"] == 8 and cov["oldest"] == T0 - 20 * D and cov["last_scan"] and cov["corrupt_lines"] >= 2, f"coverage: {cov}")
-check(set(p7) == {"state", "range", "since", "now", "tz", "domain", "kpis", "totals", "by_agent", "by_model", "matrix", "daily", "coverage"}, f"payload keys: {sorted(p7)}")
+check(set(p7) == {"state", "range", "since", "now", "tz", "domain", "source", "kpis", "totals", "by_source", "by_agent", "by_model", "matrix", "daily", "coverage"}, f"payload keys: {sorted(p7)}")
 check(p7["since"] == T0 - 9 * 3600 - 6 * D and p7["tz"] == "Asia/Tokyo", "since is local midnight 6 days back")
 
 # folding: 15 agent types, 10 models
@@ -544,6 +544,273 @@ lock.rollback()
 lock.close()
 check(U.recorder_status()["errors"] == e0 + 1 and U.recorder_status()["last_error"] == "database" and time.time() - t0 < 5, "SQLite busy: the tick is skipped and counted, no raise")
 
+# ---------- 8b. local models: agent-mode root, lite ledger, source filter ----------
+import hashlib  # noqa: E402
+import shutil  # noqa: E402
+import niu_local_usage as LU  # noqa: E402
+
+OC = tmp / "oc"
+LEDGER = state / "local-usage.jsonl"
+HEXA, HEXB, HEXC = ("msg_" + c * 24 for c in "abc")
+
+
+def put_local(rel, lines, base=OC):
+    p = base / "projects" / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("\n".join(lines) + "\n")
+    os.utime(p, (T0, T0))
+    return p
+
+
+def build_local():
+    shutil.rmtree(OC, ignore_errors=True)
+    put_local(f"{SLUG}/{UU[1]}.jsonl", [
+        json.dumps({"type": "user", "cwd": CWD_IN, "message": {"role": "user", "content": CANARY_TXT}}),
+        line(HEXA, (500, 0, 0, 0), T0, model="qwen3:14b", text=CANARY_TXT),     # streamed partial, then the final value
+        line(HEXA, (500, 80, 0, 0), T0, model="qwen3:14b", text=CANARY_TXT),
+        line(HEXB, (200, 30, 0, 0), T0, model="hf.co/x/y:Q4"),
+    ])
+    put_local(f"-home-u-secret-project/{UU[2]}.jsonl", [line(HEXC, (10, 5, 0, 0), T0, model="qwen3:14b", cwd=CWD_OUT)])
+
+
+def ll(i, task="ask", dom="PERSONAL", model="qwen3:14b", tin=100, tout=20, ts=None, **kw):
+    o = {"v": 1, "id": f"{i:032x}", "ts": T0 if ts is None else ts, "ep": "gpu", "model": model, "task": task, "domain": dom, "in": tin, "out": tout}
+    o.update(kw)
+    return o
+
+
+def write_ledger(objs, raw=(), path=LEDGER, mode="w"):
+    with open(path, mode) as fh:
+        for o in objs:
+            fh.write(json.dumps(o) + "\n")
+        for r_ in raw:
+            fh.write(r_ + "\n")
+    os.chmod(path, 0o600)
+
+
+LOCAL_ENV = ("NIU_AGENT_CONFIG_DIR", "NIU_LOCAL_USAGE_LEDGER")
+
+
+def local_env_off():
+    for k_ in LOCAL_ENV:
+        os.environ.pop(k_, None)
+
+
+def local_env_on():
+    os.environ["NIU_AGENT_CONFIG_DIR"] = str(OC)
+    os.environ["NIU_LOCAL_USAGE_LEDGER"] = str(LEDGER)
+
+
+def tot_(p):
+    return p["totals"]["total"]
+
+
+# -- v2 file read before the writer migrates it
+reset_db()
+v2 = U.SCHEMA.replace(",\n  source TEXT NOT NULL DEFAULT 'claude' CHECK (source IN ('claude','local_agent','local_lite'))", "")
+check(v2 != U.SCHEMA, "v2 schema text derived")
+c = sqlite3.connect(state / "usage.db")
+c.executescript(v2 + "PRAGMA user_version=2;")
+c.execute("INSERT INTO tok_files(id, path, kind, session_id, agent_type, domain, last_seen) VALUES (1, 'h:old', 'main', ?, 'session', 'PERSONAL', ?)", (UU[1], T0))
+c.execute("INSERT INTO tok_models(id, name, family) VALUES (1, 'opus-5-5', 'opus')")
+c.execute("INSERT INTO tok_msgs VALUES (1, ?, 1, 1, 10, 20, 0, 0)", (T0,))
+c.commit()
+c.close()
+os.chmod(state / "usage.db", 0o600)
+pv = U.tokens("7d", "", now=NOW)
+check(pv["state"] == "ok" and tot_(pv) == 30 and pv["source"] == "all", f"v2 file reads before migration: {pv['state']} {tot_(pv)}")
+check(tot_(U.tokens("7d", "", now=NOW, source="claude")) == 30 and tot_(U.tokens("7d", "", now=NOW, source="local")) == 0, "v2 file: every row is a Claude row")
+check(pv["kpis"]["7d"]["local"] == 0 and pv["by_source"]["claude"]["total"] == 30, "v2 file: by_source and kpis.local")
+con = U.connect()
+check(con.execute("PRAGMA user_version").fetchone()[0] == 3, "v2 migrated to 3")
+check(con.execute("SELECT source FROM tok_files WHERE id=1").fetchone()[0] == "claude", "migrated rows are Claude rows")
+check(any(r_[1] == "source" for r_ in con.execute("PRAGMA table_info(tok_files)")), "source column added")
+con.close()
+check(tot_(U.tokens("7d", "", now=NOW)) == 30, "v3 read after migration")
+reset_db()
+
+# -- agent-mode root
+build()
+build_local()
+local_env_on()
+reset_db()
+full_scan()
+base_claude = tot_(U.tokens("30d", "", now=NOW, source="claude"))
+check(U.local_agent_root() == OC.resolve() / "projects", "local root is NIU_AGENT_CONFIG_DIR/projects")
+rows = db_rows("SELECT source, agent_type, domain, kind FROM tok_files WHERE source='local_agent' ORDER BY domain")
+check(len(rows) == 2 and {r_["domain"] for r_ in rows} == {"PERSONAL", "(outside)"}, f"agent-mode files tagged with the domain from the cwd: {[tuple(r_) for r_ in rows]}")
+check(all(r_["agent_type"] == "local:agent" for r_ in rows), "no SessionStart event: local:agent")
+lp = U.tokens("30d", "", now=NOW, source="local")
+mods = {x["model"]: x for x in lp["by_model"]}
+check(set(mods) == {"qwen3:14b", "hf.co/x/y:Q4"} and all(x["family"] == "local" for x in mods.values()), f"local models, family local: {list(mods)}")
+check(mods["qwen3:14b"]["total"] == 580 + 15 and mods["hf.co/x/y:Q4"]["total"] == 230, f"partial then final usage max-merged: {mods}")
+check(tot_(lp) == 825 and lp["totals"]["sessions"] == 2 and lp["totals"]["messages"] == 3, f"local totals: {lp['totals']}")
+check(totals_by_agent(U.tokens("30d", "PERSONAL", now=NOW, source="local")) == {"local:agent": 810}, "domain filter on local rows")
+check(base_claude == tot_(U.tokens("30d", "", now=NOW, source="claude")) and tot_(U.tokens("30d", "", now=NOW)) == base_claude + 825, "claude + local == all")
+check(db_rows("SELECT count(*) FROM tok_models WHERE name LIKE 'qwen%' AND family<>'local'")[0][0] == 0, "no non-local family for local models")
+# agent type from the events.db SessionStart summary, upgraded on a later pass without the file changing
+ev = niu_events.connect()
+ev.execute("INSERT INTO events(ts,event,session_id,summary) VALUES(?,?,?,?)", (T0, "SessionStart", UU[1], json.dumps({"local": "qwen3:14b", "task": "search"})))
+ev.execute("INSERT INTO events(ts,event,session_id,summary) VALUES(?,?,?,?)", (T0, "SessionStart", UU[2], json.dumps({"local": "x", "task": "<script>"})))
+ev.commit()
+ev.close()
+scan()
+at = {r_["session_id"]: r_["agent_type"] for r_ in db_rows("SELECT session_id, agent_type FROM tok_files WHERE source='local_agent'")}
+check(at[UU[1]] == "local:search" and at[UU[2]] == "local:agent", f"task from events.db; an unknown task stays local:agent: {at}")
+ev = niu_events.connect()
+ev.execute("DELETE FROM events")
+ev.commit()
+ev.close()
+# a bad model name
+put_local(f"{SLUG}/{UU[3]}.jsonl", [line("msg_" + "d" * 24, (1, 1, 0, 0), T0, model="<img onerror=x>"), line("msg_" + "e" * 24, (1, 1, 0, 0), T0, model="opus-5-5")])
+scan()
+mn = {r_[0]: r_[1] for r_ in db_rows("SELECT name, family FROM tok_models")}
+check("local-model" in mn and mn["local-model"] == "local" and not any("<" in k_ for k_ in mn), f"hostile local model name -> local-model: {mn}")
+check(mn.get("opus-5-5") == "opus" and mn.get("local:opus-5-5") == "local", f"a Claude model name is never re-labelled: {mn}")
+os.unlink(OC / "projects" / SLUG / f"{UU[3]}.jsonl")
+
+# -- keys: the same relative path under both roots
+rel = f"{SLUG}/{UU[1]}.jsonl"
+claude_key = "h:" + hashlib.sha256(rel.encode()).hexdigest()[:32]
+check(U._file_key(CLAUDE / "projects", str(CLAUDE / "projects" / rel)) == claude_key, "Claude keys are unchanged")
+lkey = U._file_key(OC / "projects", str(OC / "projects" / rel), "local_agent")
+check(lkey.startswith("l:") and lkey != claude_key, "local keys are salted")
+check(db_rows("SELECT count(*) FROM tok_files WHERE session_id=? AND kind='main' AND path IN (?, ?)", UU[1], claude_key, lkey)[0][0] == 2, "same relpath under both roots: two rows")
+
+# -- confinement of the local root
+reset_db()
+sym = OC / "projects" / SLUG / f"{UU[6]}.jsonl"
+os.symlink(OC / "projects" / SLUG / f"{UU[1]}.jsonl", sym)
+r = scan(roots=[("local_agent", U.local_agent_root())])
+check(r["files_total"] == 2 and r["messages"] == 4, f"symlinked file is not listed or read: {r}")
+sym.unlink()
+reset_db()
+r = U.scan_once(now=NOW, uid=os.getuid() + 1, roots=[("local_agent", U.local_agent_root())])
+check(r["messages"] == 0 and r["skipped_files"] >= 1, f"files owned by another uid are refused: {r}")
+badoc = tmp / "badoc"
+badoc.mkdir()
+os.symlink(OC / "projects", badoc / "projects")
+os.environ["NIU_AGENT_CONFIG_DIR"] = str(badoc)
+check(U.local_agent_root() is None, "symlinked local projects dir refused")
+os.environ["NIU_AGENT_CONFIG_DIR"] = str(tmp / "nonexistent-oc")
+check(U.local_agent_root() is None and U.tokens("7d", "", now=NOW)["coverage"]["local_root"] is False, "missing local root: None, coverage.local_root false")
+os.environ["NIU_AGENT_CONFIG_DIR"] = str(CLAUDE)
+check(U.local_agent_root() is None, "local root equal to the Claude root is scanned once")
+reset_db()
+r = full_scan()
+check(db_rows("SELECT count(*) FROM tok_files WHERE source<>'claude'")[0][0] == 0 and r["files_total"] == 8, "same root twice: Claude files only")
+local_env_on()
+check(U.tokens("7d", "", now=NOW)["coverage"]["local_root"] is True, "coverage.local_root true when the root exists (a bool, no path)")
+
+# -- the lite ledger
+reset_db()
+LEDGER.unlink(missing_ok=True)
+good = [ll(1), ll(2, tin=50, tout=10), ll(3, "logs", None, "qwen3-coder:30b", 30, 5)]
+l4 = ll(4, "search", tin=40)
+del l4["out"]
+bad = [ll(10, ep="http://evil.example/x"), ll(11, model="<b>x</b>"), ll(12, dom="/home/u/secret-project"), ll(13, tin=-1), ll(14, tout=10 ** 9),
+       ll(15, tin=True), ll(16, prompt="CANARY-PROMPT-7f3a"), {**ll(17), "id": "xyz"}, ll(18, task="rm"), ll(19, ts=4_000_000_000),
+       {k_: v_ for k_, v_ in ll(20).items() if k_ not in ("in", "out")}]
+write_ledger(good + [l4] + bad, raw=["not json CANARY-PROMPT-7f3a", ""])
+r = full_scan()
+check(r["files_total"] == 10, "the ledger is not a transcript file (8 Claude + 2 agent-mode)")
+corrupt = int(db_rows("SELECT v FROM meta WHERE k='corrupt_lines'")[0][0])
+check(corrupt == 2 + len(bad) + 1, f"bad ledger lines counted as corrupt (2 from transcripts): {corrupt}")
+lite = U.tokens("30d", "", now=NOW, source="local")
+la = totals_by_agent(lite)
+check(lite["totals"]["messages"] == 3 + 4 and tot_(lite) == 825 + 120 + 60 + 35 + 40, f"lite totals: {lite['totals']}")
+check(la == {"local:agent": 825, "local:ask": 180, "local:logs": 35, "local:search": 40}, f"agent types: {la}")
+check(db_rows("SELECT count(*) FROM tok_files WHERE source='local_lite'")[0][0] == 3, "one synthetic row per (task, domain)")
+check(all(r_["session_id"] is None and r_["kind"] == "main" and r_["path"].startswith("l:lite:") for r_ in db_rows("SELECT session_id, kind, path FROM tok_files WHERE source='local_lite'")), "synthetic rows: no session, hashed key")
+lo = U.tokens("30d", "", now=NOW, source="local")
+check(lo["totals"]["sessions"] == 2, f"lite calls are not sessions: {lo['totals']['sessions']}")
+only_lite = U.tokens("30d", "(outside)", now=NOW, source="local")
+check(totals_by_agent(only_lite).get("local:logs") == 35, f"a lite row without a domain is '(outside)': {totals_by_agent(only_lite)}")
+check("local:logs" not in totals_by_agent(U.tokens("30d", "PERSONAL", now=NOW, source="local")), "domain filter applies to lite rows")
+before_all = tot_(U.tokens("30d", "", now=NOW))
+scan()
+check(tot_(U.tokens("30d", "", now=NOW)) == before_all, "an unchanged ledger is skipped")
+full_scan(full=True)
+check(tot_(U.tokens("30d", "", now=NOW)) == before_all, "--full re-reads without double counting")
+# rotation: old generation plus a new file
+os.replace(LEDGER, LEDGER.with_name("local-usage.jsonl.1"))
+write_ledger([ll(5, tin=7, tout=3)])
+scan()
+check(tot_(U.tokens("30d", "", now=NOW)) == before_all + 10, "after rotation: .1 and the new file, no double count")
+full_scan(full=True)
+check(tot_(U.tokens("30d", "", now=NOW)) == before_all + 10, "--full after rotation: still no double count")
+# a half-written last line waits for its newline; a symlinked ledger is refused; an oversized one is skipped
+with open(LEDGER, "a") as fh:
+    fh.write(json.dumps(ll(6, tin=1, tout=1))[:30])
+scan()
+check(tot_(U.tokens("30d", "", now=NOW)) == before_all + 10, "a half-written ledger line is not read")
+with open(LEDGER, "a") as fh:
+    fh.write(json.dumps(ll(6, tin=1, tout=1))[30:] + "\n")
+scan()
+check(tot_(U.tokens("30d", "", now=NOW)) == before_all + 12, "the finished line is counted once")
+real_l = tmp / "real-ledger.jsonl"
+write_ledger([ll(7, tin=1000, tout=0)], path=real_l)
+LEDGER.unlink()
+LEDGER.with_name("local-usage.jsonl.1").unlink()
+os.symlink(real_l, LEDGER)
+scan()
+check(tot_(U.tokens("30d", "", now=NOW)) == before_all + 12, "a symlinked ledger is not read")
+LEDGER.unlink()
+with open(LEDGER, "w") as fh:
+    fh.write(("x" * 1000 + "\n") * 3000)
+os.chmod(LEDGER, 0o600)
+sk0 = int(db_rows("SELECT v FROM meta WHERE k='skipped_files'")[0][0])
+scan()
+check(int(db_rows("SELECT v FROM meta WHERE k='skipped_files'")[0][0]) == sk0 + 1, "a ledger over 2 MiB is refused and counted as skipped")
+LEDGER.unlink()
+
+# -- tokens(source=...)
+write_ledger(good + [l4])
+reset_db()
+full_scan()
+for rg in U.RANGES:
+    pa, pc, pl = (U.tokens(rg, "", now=NOW, source=s_) for s_ in ("all", "claude", "local"))
+    check(tot_(pa) == tot_(pc) + tot_(pl), f"{rg}: claude + local == all ({tot_(pc)} + {tot_(pl)} vs {tot_(pa)})")
+    check(pa["kpis"][rg]["total"] == tot_(pa) and pa["kpis"][rg]["local"] == tot_(pl) and pc["kpis"][rg]["local"] == 0, f"{rg}: kpis.local")
+    check(pa["by_source"]["local"]["total"] == tot_(pl) and pa["by_source"]["claude"]["total"] == tot_(pc) and pc["by_source"]["local"]["total"] == tot_(pl), f"{rg}: by_source ignores the filter")
+    check(sum(d["by_family"]["local"] for d in pa["daily"]) == tot_(pl) and sum(d["by_family"]["local"] for d in pc["daily"]) == 0, f"{rg}: daily local family")
+    check(pl["source"] == "local" and pc["source"] == "claude" and pa["source"] == "all", f"{rg}: source echoed")
+pa = U.tokens("30d", "", now=NOW)
+check(any(a_.startswith("local:") for a_ in pa["matrix"]["agents"]) and "qwen3:14b" in pa["matrix"]["models"], f"matrix has local rows and columns: {pa['matrix']['agents']}")
+check(U.tokens("30d", "", now=NOW, source="<script>")["source"] == "all" and U.tokens("30d", "", now=NOW, source=None)["source"] == "all", "junk source clamps to all")
+check(set(pa) == {"state", "range", "since", "now", "tz", "domain", "source", "kpis", "totals", "by_source", "by_agent", "by_model", "matrix", "daily", "coverage"}, "payload keys")
+U._tok_memo.clear()
+m1 = U.tokens_cached("30d", "", NOW, "local")
+m2 = U.tokens_cached("30d", "", NOW, "claude")
+check(m1["source"] == "local" and m2["source"] == "claude" and ("30d", "", "local") in U._tok_memo and ("30d", "", "claude") in U._tok_memo, "memo key includes source")
+check(U.tokens_cached("30d", "", NOW, "<x>")["source"] == "all" and U.tokens_cached("30d", "", NOW)["source"] == "all", "memo: junk and default source -> all")
+# disabled switches also stop the ledger collector and the scanner
+os.environ["NIU_USAGE_TOKENS"] = "0"
+n_before = LEDGER.stat().st_size
+check(LU.record("gpu", "qwen3:14b", "ask", "PERSONAL", {"prompt_eval_count": 5, "eval_count": 5}) is False and LEDGER.stat().st_size == n_before, "NIU_USAGE_TOKENS=0: ledger untouched")
+os.environ.pop("NIU_USAGE_TOKENS")
+os.environ["NIU_USAGE_COLLECT"] = "0"
+check(LU.record("gpu", "qwen3:14b", "ask", "PERSONAL", {"prompt_eval_count": 5, "eval_count": 5}) is False, "NIU_USAGE_COLLECT=0: ledger untouched")
+os.environ.pop("NIU_USAGE_COLLECT")
+
+# -- privacy of the local sources
+reset_db()
+write_ledger(good + bad, raw=["CANARY-PROMPT-7f3a /home/u/secret-project"])
+full_scan()
+blob = b"".join(f.read_bytes() for f in state.glob("usage.db*"))
+payloads = json.dumps([U.tokens(r_, d_, now=NOW, source=s_) for r_ in U.RANGES for d_ in ("", "PERSONAL", "(outside)") for s_ in U.TOKEN_SOURCES])
+for cn in CANARIES + ["evil.example", "<b>x</b>", "<img", str(OC), str(LEDGER), HEXA, "gpu"]:
+    check(cn.encode() not in blob, f"{cn!r} not in usage.db")
+    check(cn not in payloads, f"{cn!r} not in payloads")
+check("path" not in payloads and UU[1] not in payloads, "payload carries no path or session id")
+
+# cleanup: nothing local leaks into the endpoint section below
+local_env_off()
+LEDGER.unlink(missing_ok=True)
+LEDGER.with_name("local-usage.jsonl.1").unlink(missing_ok=True)
+shutil.rmtree(OC, ignore_errors=True)
+reset_db()
+
 # ---------- 9. the endpoint ----------
 build()
 reset_db()
@@ -579,6 +846,12 @@ try:
     check(req("GET", "/api/usage/tokens?range=../../x")[2]["range"] == "7d", "bad range -> 7d")
     check(req("GET", "/api/usage/tokens?range=today&range=30d")[2]["range"] == "today", "first range value wins")
     check(req("GET", "/api/usage/tokens?range=30d&domain=PERSONAL")[2]["domain"] == "PERSONAL", "domain passes through")
+    check(req("GET", "/api/usage/tokens?range=30d")[2]["source"] == "all", "default source is all")
+    sl = req("GET", "/api/usage/tokens?range=30d&source=local")
+    check(sl[0] == 200 and sl[2]["source"] == "local" and sl[2]["totals"]["total"] == 0, "source=local answered (nothing local in this fixture)")
+    check(req("GET", "/api/usage/tokens?range=30d&source=claude")[2]["totals"]["messages"] == 11, "source=claude")
+    hs = req("GET", "/api/usage/tokens?range=30d&source=%3Cscript%3E")
+    check(hs[0] == 200 and hs[2]["source"] == "all" and b"<script>" not in hs[3], "hostile source clamped to all")
     check(req("GET", "/api/usage/tokens?range=30d&domain=%3Cscript%3E")[2]["domain"] == "", "hostile domain -> all")
     check(req("GET", "/api/usage/tokens?range=30d&domain=" + "a" * 5000)[0] == 200, "long domain answered normally")
     n0 = js["totals"]["messages"]

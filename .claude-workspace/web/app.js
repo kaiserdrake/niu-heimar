@@ -1262,13 +1262,13 @@ async function loadUsage() {
   if (VIEW !== "events" || days !== USAGE.weeks * 7) return;
   renderUsage(d && typeof d.state === "string" ? d : null);
 }
-// One collapse button for the whole Claude usage panel (Weekly usage and Token usage). `init` skips the token load:
+// One collapse button for the whole LLMs usage panel (Weekly usage and Token usage). `init` skips the token load:
 // TOK isn't defined yet on the first call, and the token section loads itself when it is set up.
 function setUsageOpen(open, init) {
   USAGE.open = open; store.set("niu.usage.open", open);
   $("usagepanel").classList.toggle("collapsed", !open);
   $("usagetoggle").setAttribute("aria-expanded", String(open));
-  $("usagetoggle").setAttribute("aria-label", `${open ? "Collapse" : "Expand"} Claude usage`);
+  $("usagetoggle").setAttribute("aria-label", `${open ? "Collapse" : "Expand"} LLMs usage`);
   $("usagetoggle").textContent = open ? "▾" : "▸";
   if (open) { loadUsage(); if (!init) loadTokens(); }
 }
@@ -1374,13 +1374,16 @@ const TOK_KINDS = [["input", "input", "tk-in"], ["output", "output", "tk-out"], 
 const TOK_METRICS = { total: ["Total", ["input", "output", "cache_write", "cache_read"]], output: ["Output", ["output"]],
   inout: ["Input + cache write", ["input", "cache_write"]], cache_read: ["Cache read", ["cache_read"]] };
 const TOK_RANGES = { today: "Today", "7d": "7 days", "30d": "30 days" };
-const FAMILY = ["opus", "sonnet", "haiku", "other"];
+const FAMILY = ["opus", "sonnet", "haiku", "local", "other"];
+const TOK_SOURCES = { all: "All", claude: "Claude", local: "Local" };
 const TOK = { range: Object.hasOwn(TOK_RANGES, store.get("niu.tokens.range", "7d")) ? store.get("niu.tokens.range", "7d") : "7d",
   metric: Object.hasOwn(TOK_METRICS, store.get("niu.tokens.metric", "total")) ? store.get("niu.tokens.metric", "total") : "total",
+  source: Object.hasOwn(TOK_SOURCES, store.get("niu.tokens.source", "all")) ? store.get("niu.tokens.source", "all") : "all",
   get open() { return USAGE.open; }, data: null, asof: 0, seq: 0, stale: false };
 const TOK_MSG = {
   loading: "Loading…",
-  empty: "No Claude usage found in the transcripts yet.",
+  empty: "No LLM usage found yet.",
+  emptyLocal: "No local-model usage recorded yet (niu-agent / local_* tools).",
   disabled: "Token statistics are off (NIU_USAGE_TOKENS=0 or NIU_USAGE_COLLECT=0).",
   error: "Can't read token usage from the dashboard server.",
 };
@@ -1508,9 +1511,12 @@ function tokMatrix(m) {
 function tokCounted() {
   const det = h("details", "tokcounted");
   det.append(h("summary", "", "What is counted"),
-    h("p", "small", "Counted from Claude Code transcripts on this host (~/.claude/projects), for terminal and desktop sessions and their subagents. With All domains this includes projects outside the workspace."),
+    h("p", "small", "Claude Code transcripts on this host (~/.claude/projects), for terminal and desktop sessions and their subagents. With All domains this includes projects outside the workspace."),
+    h("p", "small", "niu-agent agent-mode transcripts (state folder ollama-claude/projects)."),
+    h("p", "small", "Lite-mode calls of niu-agent and the local_* tools (state folder local-usage.jsonl, counts only)."),
     h("p", "small", "Cache reads dominate the totals: every call re-reads the whole conversation from the cache, so a long session adds many millions of cache-read tokens. Switch the metric to Output to see what the models wrote."),
-    h("p", "small", "Not counted: sessions the dashboard did not observe (other devices, claude.ai chats, transcripts already deleted by Claude Code's cleanup, 30 days by default), local-model agents (niu-agent), and the research bot, which is shown separately."),
+    h("p", "small", "Not counted: sessions the dashboard did not observe (other devices, claude.ai chats, transcripts already deleted by Claude Code's cleanup, 30 days by default), niu-agent probe, Ollama calls made outside niu-agent, and the research bot, which is shown separately."),
+    h("p", "small", "Local tokens cost no plan quota and are not part of the Weekly %."),
     h("p", "small", "Tokens are not the plan's limit units: the weekly % in Weekly usage is the authoritative measure."));
   return det;
 }
@@ -1523,17 +1529,16 @@ function tokSummary(t, k) {
   return bits.join(". ").replace(/\.\./g, ".").replace(/([^.])$/, "$1.");
 }
 function renderTokens(t) {
-  const box = $("tokbody"), sum = $("toksum"), upd = $("tokupd");
+  const box = $("tokbody"), sum = $("toksum");
   TOK.data = t && (t.state === "ok" || t.state === "scanning") ? t : null;
   const note = (text, cls) => { box.replaceChildren(h("div", cls || "empty", text)); sum.textContent = ""; };
-  if (t && t.state === "loading") { upd.textContent = ""; return note(TOK_MSG.loading); }
+  if (t && t.state === "loading") return note(TOK_MSG.loading);
   const okShape = t && typeof t === "object" && t.totals && typeof t.totals === "object" && t.kpis && typeof t.kpis === "object" && Array.isArray(t.by_agent) && Array.isArray(t.by_model);
-  if (!t || typeof t !== "object" || !["ok", "scanning", "empty", "disabled"].includes(t.state) || (["ok", "scanning"].includes(t.state) && !okShape)) { TOK.data = null; upd.textContent = ""; return note(TOK_MSG.error, "msg err"); }
+  if (!t || typeof t !== "object" || !["ok", "scanning", "empty", "disabled"].includes(t.state) || (["ok", "scanning"].includes(t.state) && !okShape)) { TOK.data = null; return note(TOK_MSG.error, "msg err"); }
   const cov = t.coverage && typeof t.coverage === "object" ? t.coverage : {};
   if (t.state === "empty" || t.state === "disabled") {
-    upd.textContent = "";
     if (t.state === "empty" && cov.scanning) return note(`Reading transcripts for the first time: ${tokInt(tokNum(cov.files_done))} of ${tokInt(tokNum(cov.files_total))} files`);
-    return note(TOK_MSG[t.state]);
+    return note(t.state === "empty" && TOK.source === "local" ? TOK_MSG.emptyLocal : TOK_MSG[t.state]);
   }
   const metric = TOK.metric;
   const agents = tokRows(t.by_agent, metric, "agent_type"), models = tokRows(t.by_model, metric, "model");
@@ -1544,32 +1549,35 @@ function renderTokens(t) {
   const kp = h("div", "tokkpis");
   for (const r of ["today", "7d", "30d"]) {
     const v = t.kpis[r] && typeof t.kpis[r] === "object" ? t.kpis[r] : {};
-    const stat = h("div", `stat tokkpi${r === TOK.range ? " on" : ""}`, "", { "data-tip": `${TOK_RANGES[r]}\ntotal ${tokInt(tokNum(v.total))} tokens\noutput ${tokInt(tokNum(v.output))} tokens` });
+    const loc = TOK.source === "all" ? tokNum(v.local) : 0;
+    const stat = h("div", `stat tokkpi${r === TOK.range ? " on" : ""}`, "", { "data-tip": `${TOK_RANGES[r]}\ntotal ${tokInt(tokNum(v.total))} tokens\noutput ${tokInt(tokNum(v.output))} tokens${loc > 0 ? `\nlocal ${tokInt(loc)} tokens` : ""}` });
     stat.append(h("span", "small muted", TOK_RANGES[r]), h("b", "", tokFmt(tokNum(v.total))), h("span", "small muted", `output ${tokFmt(tokNum(v.output))}`));
+    if (loc > 0) stat.append(h("span", "small muted", `local ${tokFmt(loc)}`));
     kp.append(stat);
   }
   kids.push(kp);
-  const T = t.totals;
-  kids.push(h("div", "toktotals small", `${TOK_RANGES[TOK.range]} · in ${tokFmt(tokNum(T.input))} · out ${tokFmt(tokNum(T.output))} · cache write ${tokFmt(tokNum(T.cache_write))} · cache read ${tokFmt(tokNum(T.cache_read))} · ${tokInt(tokNum(T.messages))} calls · ${tokInt(tokNum(T.sessions))} sessions`));
+  const T = t.totals, bs = t.by_source && typeof t.by_source === "object" ? t.by_source : {};
+  const bsc = bs.claude && typeof bs.claude === "object" ? tokNum(bs.claude.total) : 0, bsl = bs.local && typeof bs.local === "object" ? tokNum(bs.local.total) : 0;
+  const split = TOK.source === "all" && bsl > 0 ? ` · Claude ${tokFmt(bsc)} · local ${tokFmt(bsl)}` : "";
+  kids.push(h("div", "toktotals small", `${TOK_RANGES[TOK.range]} · in ${tokFmt(tokNum(T.input))} · out ${tokFmt(tokNum(T.output))} · cache write ${tokFmt(tokNum(T.cache_write))} · cache read ${tokFmt(tokNum(T.cache_read))} · ${tokInt(tokNum(T.messages))} calls · ${tokInt(tokNum(T.sessions))} sessions${split} · updated ${hm(TOK.asof || t.now)}${tokNum(cov.oldest) ? ` · data from ${usageDay(cov.oldest)}` : ""}`));
   const lg = h("div", "toklegend small muted");
   for (const [, label, cls] of TOK_KINDS) { const it = h("span", "lgitem", label); it.prepend(tokSwatch(cls)); lg.append(it); }
   kids.push(lg);
   kids.push(...tokRankBlock("By agent type (ranked by " + TOK_METRICS[metric][0].toLowerCase() + ")", agents, metric, "agent"));
-  const rs = tokResearchRow();
+  const rs = TOK.source === "local" ? null : tokResearchRow();
   if (rs) kids.push(rs);
   kids.push(...tokRankBlock("By model", models, metric, "model"));
   kids.push(...tokDaily(t.daily, t.range));
   kids.push(tokMatrix(t.matrix), tokCounted());
   box.replaceChildren(...kids);
   sum.textContent = tokSummary(t, { agents, models });
-  upd.textContent = [`updated ${hm(TOK.asof || t.now)}`, tokNum(cov.oldest) ? `data from ${usageDay(cov.oldest)}` : ""].filter(Boolean).join(" · ");
 }
 function redrawTokens() { if (TOK.open && TOK.data) renderTokens(TOK.data); }
 async function loadTokens() {
   if (VIEW !== "events" || document.hidden || !TOK.open) return;
-  const mine = ++TOK.seq, range = TOK.range, dom = $("domain").value;
+  const mine = ++TOK.seq, range = TOK.range, src = TOK.source, dom = $("domain").value;
   if (!TOK.data) renderTokens({ state: "loading" });
-  const url = `/api/usage/tokens?range=${range}${dom ? `&domain=${encodeURIComponent(dom)}` : ""}`;
+  const url = `/api/usage/tokens?range=${range}${dom ? `&domain=${encodeURIComponent(dom)}` : ""}${src !== "all" ? `&source=${src}` : ""}`;
   const d = await fetch(url, { credentials: "same-origin" }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
   if (VIEW !== "events" || mine !== TOK.seq) return;
   if (d && typeof d.state === "string") { TOK.stale = false; TOK.asof = Date.now() / 1000; renderTokens(d); return; }
@@ -1581,6 +1589,14 @@ function setTokRange(r) {
   TOK.data = null; loadTokens();
 }
 for (const r of Object.keys(TOK_RANGES)) $(`tok-r-${r}`).onclick = () => setTokRange(r);
+function markTokSource() { for (const k of Object.keys(TOK_SOURCES)) { $(`tok-s-${k}`).classList.toggle("on", k === TOK.source); $(`tok-s-${k}`).setAttribute("aria-pressed", String(k === TOK.source)); } }
+function setTokSource(v) {
+  if (!Object.hasOwn(TOK_SOURCES, v)) return;
+  TOK.source = v; store.set("niu.tokens.source", v); markTokSource();
+  TOK.data = null; loadTokens();
+}
+for (const k of Object.keys(TOK_SOURCES)) $(`tok-s-${k}`).onclick = () => setTokSource(k);
+markTokSource();
 $("tokmetric").value = TOK.metric;
 $("tokmetric").onchange = () => { const v = $("tokmetric").value; if (!Object.hasOwn(TOK_METRICS, v)) return; TOK.metric = v; store.set("niu.tokens.metric", v); redrawTokens(); };
 loadTokens();

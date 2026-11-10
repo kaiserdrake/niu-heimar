@@ -331,7 +331,7 @@ body.ctrl .wspill { display: inline-block; }
   grid-template-areas: "left graph" "left time"; }
 .p-sessions { grid-area: sess; } .p-graph { grid-area: graph; } .p-timeline { grid-area: time; } .p-feed { grid-area: feed; } .p-prs { grid-area: prs; }
 .mcgrid .panel.p-feed, .mcgrid .panel.p-prs { display: none; }
-/* Events tab: pull requests, then the Claude usage panel (Weekly usage | Token usage side by side, one collapse
+/* Events tab: pull requests, then the LLMs usage panel (Weekly usage | Token usage side by side, one collapse
    button), over the feed. Under 1200px the two parts stack inside the panel (weekly, then tokens). */
 .p-usage { grid-area: usage; }
 .mcgrid .panel.p-usage { display: none; }
@@ -341,13 +341,20 @@ body.ctrl .wspill { display: inline-block; }
 .mcgrid[data-view="events"] .panel.p-feed { display: flex; }
 .mcgrid[data-view="events"] .panel.p-prs { display: flex; max-height: 30vh; }
 .mcgrid[data-view="events"] .panel.p-usage { display: flex; max-height: 38vh; }
-.usagegroup { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.usub { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+/* Side by side, the two sections share one header row (subgrid), so "Weekly usage" and "Token usage" line up. */
+.usagegroup { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: auto minmax(0, 1fr); }
+.usub { display: grid; grid-row: span 2; grid-template-rows: subgrid; min-height: 0; min-width: 0; }
 .usub + .usub { border-left: 1px solid var(--border); }
+.ph.usubh { flex-wrap: wrap; row-gap: 4px; }
+.ph.usubh > * { flex: none; }
 .ph.usubh h3 { margin: 0; font-size: 11px; white-space: nowrap; }
+.ph.usubh .small { white-space: nowrap; margin-left: auto; }
+.ph.usubh select { padding: 2px 6px; font-size: 12px; }
 @media (max-width: 1199px) {
   .mcgrid[data-view="events"] .panel.p-usage { max-height: 76vh; }
-  .usagegroup { grid-template-columns: minmax(0, 1fr); overflow: auto; }
+  .usagegroup { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; overflow: auto; }
+  .usub { display: flex; flex-direction: column; grid-row: auto; }
   .usub + .usub { border-left: 0; border-top: 1px solid var(--border); }
 }
 
@@ -630,7 +637,7 @@ dialog textarea { font-family: var(--mono); resize: vertical; }
 .tk-in { fill: var(--muted); } .tk-out { fill: var(--accent); } .tk-cw { fill: var(--warn); } .tk-cr { fill: var(--ok); }
 .toklegend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 3px 0; } .lgitem { display: inline-flex; align-items: center; gap: 4px; } .lgsw { flex: none; border-radius: 2px; }
 .tokdaily { display: block; width: 100%; height: 56px; background: var(--bg2); border-radius: 6px; }
-.fam-opus { fill: var(--accent); } .fam-sonnet { fill: url(#tokhatch); } .fam-haiku { fill: url(#tokdots); } .fam-other { fill: var(--muted); }
+.fam-opus { fill: var(--accent); } .fam-sonnet { fill: url(#tokhatch); } .fam-haiku { fill: url(#tokdots); } .fam-local { fill: var(--domain); } .fam-other { fill: var(--muted); }
 .lgitem .fam-sonnet, .lgitem .fam-haiku { fill: var(--ok); }
 .pat-sonnet-bg { fill: var(--bg2); } .pat-sonnet-ln { stroke: var(--ok); stroke-width: 2; }
 .pat-haiku-bg { fill: var(--bg2); } .pat-haiku-dot { fill: var(--warn); }

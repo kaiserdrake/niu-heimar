@@ -7,7 +7,8 @@ Usage:
                                     and scans Claude Code transcripts every minute for the Token usage panel;
                                     set NIU_USAGE_COLLECT=0 to stop both, NIU_USAGE_TOKENS=0 to stop the transcript scan only,
                                     NIU_CLAUDE_USAGE_API=0 to stop the background usage API calls)
-  niu-dash usage-scan [--full]      read Claude Code transcripts into usage.db in the foreground until done; prints counts only
+  niu-dash usage-scan [--full]      read Claude Code and niu-agent (local model) transcripts plus the lite-call ledger into usage.db
+                                    in the foreground until done; prints counts only
                                     (files, messages, corrupt lines). --full forgets all offsets and reads everything again.
                                     (the server does the same in small steps every minute; NIU_USAGE_TOKENS=0 turns that off)
   niu-dash pair [--name laptop]     show a one-time code to pair a browser (interactive terminal only)
@@ -274,9 +275,10 @@ class Handler(BaseHTTPRequestHandler):
             days = parse_qs(urlparse(self.path).query).get("days", [None])[0]
             self._json(niu_usage.history_cached(days))
         elif path == "/api/usage/tokens":
-            # Token totals from usage.db (aggregates only: no paths, no text). range is an enum, domain is validated; cached 60 s.
+            # Token totals from usage.db (aggregates only: no paths, no text). range and source are enums, domain is validated; cached 60 s.
             q = parse_qs(urlparse(self.path).query)
-            self._json(niu_usage.tokens_cached(q.get("range", [None])[0], q.get("domain", [""])[0]))
+            src = q.get("source", ["all"])[0]
+            self._json(niu_usage.tokens_cached(q.get("range", [None])[0], q.get("domain", [""])[0], source=src if src in niu_usage.TOKEN_SOURCES else "all"))
         elif path == "/api/me":
             d = device_for(self._cookie())
             self._json({"paired": bool(d), "device": d and {"id": d["id"], "name": d["name"]}})
@@ -471,8 +473,8 @@ def cmd_serve(args):
 def cmd_usage_scan(args):
     if niu_usage.tokens_disabled():
         sys.exit("niu-dash: token scanning is off (NIU_USAGE_COLLECT=0 or NIU_USAGE_TOKENS=0)")
-    if niu_usage.claude_root() is None:
-        sys.exit("niu-dash: no Claude Code transcripts folder found (CLAUDE_CONFIG_DIR or ~/.claude/projects)")
+    if niu_usage.claude_root() is None and niu_usage.local_agent_root() is None and not niu_usage.ledger_exists():
+        sys.exit("niu-dash: no transcripts folder found (CLAUDE_CONFIG_DIR or ~/.claude/projects, or the niu-agent state folder)")
     try:
         r = niu_usage.scan_to_completion(full=args.full)
     except Exception as e:  # noqa: BLE001 - counts only; never print exception text (it could carry a path)

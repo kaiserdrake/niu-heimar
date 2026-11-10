@@ -32,7 +32,7 @@ const document = {
 const ctx = {
   document, window: null, console, setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {},
   requestAnimationFrame: () => 0, cancelAnimationFrame() {}, location: { hash: "", pathname: "/", search: "" },
-  history: { replaceState() {} }, localStorage: { getItem: () => null, setItem() {} }, innerWidth: 1400, innerHeight: 900,
+  history: { replaceState() {} }, localStorage: { getItem: () => null, setItem(k, v) { (globalThis.LS_SET ||= []).push([k, v]); } }, innerWidth: 1400, innerHeight: 900,
   matchMedia: () => ({ matches: false, addEventListener() {} }), addEventListener() {}, CSS: { escape: (s) => s },
   fetch: () => new Promise(() => {}), EventSource: function () { return { addEventListener() {}, close() {} }; },
   Notification: { permission: "denied" }, navigator: {}, URLSearchParams, Date, Math, JSON, Map, Set, Promise, Object, Array, String, Number,
@@ -849,7 +849,8 @@ async function tokenChecks(fx) {
     const sum = textOf(get("toksum")).trim();
     if (!sum.startsWith("Token usage, 7 days:") || !/Most by session/.test(sum) || !/cache reads \d+%/.test(sum)) fail("summary: " + sum);
     if (get("toksum").getAttribute("aria-live") !== null && get("toksum").getAttribute("aria-live") !== "polite") fail("aria-live");
-    if (!/updated/.test(get("tokupd").textContent) || !/data from/.test(get("tokupd").textContent)) fail("update line: " + get("tokupd").textContent);
+    if (!/sessions · updated \d\d:\d\d · data from /.test(textOf(get("tokbody")))) fail("token status not in the totals line: " + textOf(get("tokbody")));
+    if (els.has("tokupd")) fail("token status must not be in the section header");
     if (find(/\btokrs\b/, "div").length) fail("research row shown without research data");
     // research bot row: shown muted below the agents, never in totals or shares
     const before = JSON.stringify(run("tokRows(TOK_FX.by_agent, 'total', 'agent_type').map((r) => [r.name, r.total, r.share])"));
@@ -877,8 +878,37 @@ async function tokenChecks(fx) {
     run('TOK.metric = "output"; renderTokens(TOK_FX)');
     if (rowsOf().some((r) => allOf(r).some((n) => /\btk-(cr|in|cw)\b/.test(cls(n))))) fail("output metric draws only output segments");
     run('TOK.metric = "total"');
+    // local models: fam-local column and legend, KPI "local" line only under All, totals split, research row hidden under Local
+    run(`TOK_LOC = { ...TOK_FX, kpis: { ...TOK_FX.kpis, today: { ...TOK_FX.kpis.today, local: 250000 } },
+      by_source: { claude: { total: 40000000, output: 1, messages: 1 }, local: { total: 2494000, output: 1, messages: 1 } },
+      by_model: [...TOK_FX.by_model, { model: "qwen3:14b", family: "local", input: 5, output: 7, cache_write: 0, cache_read: 0, total: 12, share: 1 }],
+      daily: TOK_FX.daily.map((d, i) => (i === 0 ? { ...d, by_family: { ...d.by_family, local: 90000 } } : d)) }`);
+    run('RESEARCH = { state: "ok", data: { ledger: { today: { tokens_in: 1, tokens_out: 1 }, last_7_days: [{ tokens_in: 1, tokens_out: 1 }] } } }; TOK.source = "all"; renderTokens(TOK_LOC)');
+    if (!find(/\bfam-local\b/, "rect").length) fail("daily column fam-local");
+    if (!find(/\blgitem\b/, "span").some((n) => /^local/.test(textOf(n).trim()) && allOf(n).some((m) => /\bfam-local\b/.test(cls(m))))) fail("legend item fam-local");
+    let k0 = find(/\btokkpi\b/, "div")[0];
+    if (!/local 250k/.test(textOf(k0)) || !/local 250,000 tokens/.test(k0.getAttribute("data-tip")) || /local/.test(textOf(find(/\btokkpi\b/, "div")[1]))) fail("KPI local line under All: " + textOf(k0));
+    if (!/ · Claude 40\.0M · local 2\.5M · updated/.test(textOf(get("tokbody")))) fail("totals split under All: " + textOf(get("tokbody")).slice(0, 400));
+    if (!names().includes("qwen3:14b") || !find(/\btokrs\b/, "div").length) fail("local model row and research row under All");
+    run('TOK.source = "claude"; renderTokens(TOK_LOC)');
+    if (/local 250k/.test(textOf(find(/\btokkpi\b/, "div")[0])) || / · Claude 40/.test(textOf(get("tokbody")))) fail("KPI local line and totals split are All-only");
+    run('TOK.source = "local"; renderTokens(TOK_LOC)');
+    if (find(/\btokrs\b/, "div").length) fail("research row hidden under Local");
+    run('renderTokens({ state: "empty" })');
+    if (!/No local-model usage recorded yet \(niu-agent \/ local_\* tools\)\./.test(textOf(get("tokbody")))) fail("empty message under Local: " + textOf(get("tokbody")));
+    run('TOK.source = "claude"; renderTokens({ state: "empty" })');
+    if (!/^No LLM usage found yet\.$/.test(textOf(get("tokbody")).trim())) fail("empty message under Claude");
+    run('TOK.source = "all"; RESEARCH = null; renderTokens(TOK_LOC)');
+    if (!/niu-agent agent-mode transcripts/.test(textOf(get("tokbody"))) || !/local-usage\.jsonl/.test(textOf(get("tokbody"))) || !/not part of the Weekly %/.test(textOf(get("tokbody")))) fail("'What is counted' covers local usage");
+    // hostile values in the new keys
+    run(`renderTokens({ ...TOK_FX, source: "<b>", kpis: { ...TOK_FX.kpis, today: { total: 5, output: 1, local: "x" }, "7d": { total: 5, output: 1, local: -4 } },
+      by_source: { claude: "x", local: { total: "<i>" } }, by_model: [{ model: "m", family: 'local" onload', input: 1 }], coverage: { ...TOK_FX.coverage, local_root: "<b>" } })`);
+    if (/local \d|· local/.test(textOf(get("tokbody"))) ) fail("hostile local values must not draw a local line: " + textOf(get("tokbody")).slice(0, 300));
+    if (!find(/\bfam-other\b/, "rect").length && !allOf(get("tokbody")).some((n) => /\bfam-other\b/.test(cls(n)))) fail("hostile family falls back to fam-other");
+    if (allOf(get("tokbody")).some((n) => /onload/.test(cls(n)))) fail("hostile family leaked into a class");
+    run('RESEARCH = null; TOK.source = "all"');
     // states
-    const msgs = { loading: /^Loading…$/, empty: /No Claude usage found in the transcripts yet\./, disabled: /Token statistics are off \(NIU_USAGE_TOKENS=0/ };
+    const msgs = { loading: /^Loading…$/, empty: /No LLM usage found yet\./, disabled: /Token statistics are off \(NIU_USAGE_TOKENS=0/ };
     for (const [state, re] of Object.entries(msgs)) {
       run(`renderTokens({ state: "${state}" })`);
       if (!re.test(textOf(get("tokbody")).trim()) || textOf(get("toksum")).trim() !== "") fail(`${state} message: ` + textOf(get("tokbody")));
@@ -901,7 +931,7 @@ async function tokenChecks(fx) {
       matrix: { agents: ["a", 7, null], models: ["m"], total: [[1, "x"], "no", null] }, daily: [null, { label: "<b>", by_family: "no" }, { label: 5, by_family: { opus: "x", sonnet: -3, haiku: 1e300 } }],
       coverage: { oldest: "x", last_scan: "y", scanning: "yes", files_done: -1, files_total: "<b>", corrupt_lines: "<i>" } };
     run("renderTokens(TOK_HOSTILE)");
-    const ht = textOf(get("tokbody")) + textOf(get("toksum")) + get("tokupd").textContent;
+    const ht = textOf(get("tokbody")) + textOf(get("toksum"));
     if (!ht.includes("<script>alert(1)</script>")) fail("hostile agent name must appear as literal text");
     if (find(/javascript|<svg/, "rect").length || allOf(get("tokbody")).some((n) => /javascript|<svg|onload/.test(cls(n)))) fail("hostile family leaked into a class");
     if (allOf(get("tokbody")).some((n) => n.tagName === "script" || n.tagName === "img" || n.tagName === "b" && n.textContent === "<b>x</b>")) fail("markup created from payload text");
@@ -917,6 +947,13 @@ async function tokenChecks(fx) {
   if (calls.length) fail("fetched while the Events tab is not visible");
   run('VIEW = "events"'); await run("loadTokens()");
   if (calls.length !== 1 || calls[0] !== "/api/usage/tokens?range=7d") fail("fetch url: " + calls);
+  run('setTokSource("local")'); await new Promise((r) => setImmediate(r));
+  if (!calls.includes("/api/usage/tokens?range=7d&source=local") || get("tok-s-local").getAttribute("aria-pressed") !== "true" || get("tok-s-all").getAttribute("aria-pressed") !== "false") fail("source button: " + calls);
+  if (!(globalThis.LS_SET || []).some(([k, v]) => k === "niu.tokens.source" && v === '"local"')) fail("source choice is stored");
+  run('setTokSource("<script>")'); if (run("TOK.source") !== "local") fail("junk source rejected");
+  run('setTokSource("all")'); await new Promise((r) => setImmediate(r));
+  if (calls[calls.length - 1] !== "/api/usage/tokens?range=7d" || (globalThis.LS_SET || []).filter(([k]) => k === "niu.tokens.source").pop()[1] !== '"all"') fail("All sends no source param: " + calls);
+  calls.length = 0;
   get("domain").value = "PER SONAL&x";
   run("TOK.data = null"); calls.length = 0; await run("loadTokens()");
   if (calls[0] !== "/api/usage/tokens?range=7d&domain=PER%20SONAL%26x") fail("domain is encoded: " + calls);
@@ -927,7 +964,7 @@ async function tokenChecks(fx) {
   run("setUsageOpen(false)"); calls.length = 0; await run("loadTokens()");
   if (calls.length) fail("tokens fetched while the usage panel is collapsed");
   if (get("usagetoggle").getAttribute("aria-expanded") !== "false" || !get("usagepanel").classList.contains("collapsed")) fail("collapse state");
-  if (get("usagetoggle").getAttribute("aria-label") !== "Expand Claude usage") fail("toggle label: " + get("usagetoggle").getAttribute("aria-label"));
+  if (get("usagetoggle").getAttribute("aria-label") !== "Expand LLMs usage") fail("toggle label: " + get("usagetoggle").getAttribute("aria-label"));
   run("setUsageOpen(true)"); await new Promise((r) => setImmediate(r));
   if (!calls.some((u) => u.startsWith("/api/usage/tokens")) || !calls.some((u) => u.startsWith("/api/usage/history"))) fail("expanding did not load both sections: " + calls);
   if (typeof ctx.setTokOpen !== "undefined" || els.has("toktoggle")) fail("the Token usage section must not have its own toggle");

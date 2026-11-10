@@ -66,7 +66,7 @@ check(U.record(rd(T0, 10), now=T0 + 5) == 1, "first reading stored")
 check(stat.S_IMODE(p.stat().st_mode) == 0o600, f"usage.db mode 600: {oct(p.stat().st_mode)}")
 check(stat.S_IMODE(p.parent.stat().st_mode) == 0o700, "usage dir mode 700")
 con = U.connect(readonly=True)
-check(con.execute("PRAGMA user_version").fetchone()[0] == 2, "user_version 2 (limit samples and token tables)")
+check(con.execute("PRAGMA user_version").fetchone()[0] == 3, "user_version 3 (limit samples and token tables)")
 idx = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='index'")}
 check("limit_samples_ts" in idx, "ts index exists")
 try:
