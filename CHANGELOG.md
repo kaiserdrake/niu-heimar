@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.17.1...niu-heimar-v0.18.0) (2026-11-10)
+
+
+### Features
+
+* **dashboard:** say why usage readings stopped and renew an expired token ([#63](https://github.com/kaiserdrake/niu-heimar/issues/63)) ([6948f4e](https://github.com/kaiserdrake/niu-heimar/commit/6948f4e816845678e498111881fc22598b9c3c53))
+* **dashboard:** tidy weekly usage labels, fit to data, drag-to-zoom ([#65](https://github.com/kaiserdrake/niu-heimar/issues/65)) ([247a63e](https://github.com/kaiserdrake/niu-heimar/commit/247a63eb53bd3b6e5d22229161b63877c2e2ae2e))
+
 ## [0.17.1](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.17.0...niu-heimar-v0.17.1) (2026-11-09)
 
 
