@@ -482,7 +482,12 @@ progress.lim.bad::-webkit-progress-value { background: var(--bad); } progress.li
 .rsbody.stale > :not(.rshead) { opacity: .55; filter: grayscale(.6); }
 .rshead { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 12.5px; }
 .rshead .warnnote { color: var(--warn); font-weight: 600; }
-.rsgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+/* Status cards fill the view: 4 across on a wide panel, 2 x 2 in the middle (no lone card on a row), 1 when narrow;
+   the grid takes the height the logs used to have (they moved to Activities), so cards share it evenly. */
+#rsbody { container-type: inline-size; }
+.rsgrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: minmax(min-content, 1fr); gap: 10px; flex: 1 0 auto; }
+@container (max-width: 1099px) { .rsgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container (max-width: 559px) { .rsgrid { grid-template-columns: minmax(0, 1fr); } }
 .rscard { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; min-width: 0; background: var(--bg2); }
 .rscard h3 { margin: 0 0 6px; }
 .rscard:empty, .rssec:empty { display: none; }
@@ -526,7 +531,7 @@ svg .slotline { stroke: var(--border); stroke-dasharray: 2 3; }
 .rssetup { font-size: 12.5px; } .rssetup ol { margin: 6px 0 0 18px; padding: 0; } .rssetup li { margin: 3px 0; }
 .rssetup code { overflow-wrap: anywhere; }
 .rsstuck { color: var(--bad); font-weight: 600; }
-@media (max-width: 899px) { .rsgrow { grid-template-columns: 7em 9em minmax(0, 1fr); } .rsgrow .gp, .rsgrow .gs { display: none; } .rsgrid { grid-template-columns: minmax(0, 1fr); } .rsbody { overflow-x: auto; } }
+@media (max-width: 899px) { .rsgrow { grid-template-columns: 7em 9em minmax(0, 1fr); } .rsgrow .gp, .rsgrow .gs { display: none; } .rsbody { overflow-x: auto; } }
 
 /* ---- Topics sub-view of the Research tab (existing colour variables only) ---- */
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; flex: none; }

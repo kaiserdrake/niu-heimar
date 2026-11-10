@@ -120,7 +120,7 @@ function setView(v) {
     $(id).classList.toggle("on", VIEW === name); $(id).setAttribute("aria-pressed", String(VIEW === name));
   }
   store.set("niu.view", VIEW);
-  const hash = VIEW === "agents" ? "" : VIEW === "research" && RSVIEW === "topics" ? "#research/topics" : `#${VIEW}`;
+  const hash = VIEW === "agents" ? "" : VIEW === "research" && RSVIEW !== "status" ? `#research/${RSVIEW}` : `#${VIEW}`;
   if (location.hash !== hash) history.replaceState(null, "", hash || location.pathname);
   connect();
   setTimeout(refit, 50);
@@ -1685,7 +1685,8 @@ function renderResearch() {
   rsBadge(r);
   if (r.state === "disabled") { if (VIEW === "research") setView("agents"); return; }
   if (VIEW !== "research") return;
-  $("rsbody").classList.toggle("stale", !!r.stale);
+  $("rsbody").classList.toggle("stale", !!r.stale); $("rsact").classList.toggle("stale", !!r.stale);
+  $("rsstate").replaceChildren(...(r.data ? [] : [rsStateBlock(r)]));   // the logs moved to Activities: keep setup / error text on Status
   rsHead(r); rsGate(r); rsQuota(r); rsComp(r); rsExplore(r); rsSched(r); rsLanes(r); rsGateLog(r); rsLast(r); rsErrors(r);
 }
 
@@ -2181,7 +2182,8 @@ function rsErrors(r) {
 const TP_AGENTS = ["general", "hobby", "fintrend"];
 const TP_AGENT_LABEL = { general: "General", hobby: "Hobby", fintrend: "Fintrend" };
 const TP_CAP = 200, TP_MAXKW = 20, TP_MAXEX = 50, TP_NAME = 120, TP_TERM = 80;
-let RSVIEW = store.get("niu.rsview", "status") === "topics" ? "topics" : "status";
+const RS_VIEWS = ["status", "topics", "activity"];   // Status | Topics | Activities (gate log, runs, errors)
+let RSVIEW = RS_VIEWS.includes(store.get("niu.rsview", "status")) ? store.get("niu.rsview", "status") : "status";
 const TP_PAGE = 50;
 const TP_STATES = ["current", "active", "inactive", "archived", "all"], TP_RUNS = ["any", "in", "below"], TP_ORIGINS = ["any", "chat", "discovery", "explore", "none"];
 const TP_SORTS = ["run", "weight", "name", "updated", "newest"], TP_DENSITY = ["compact", "comfortable"];
@@ -2466,20 +2468,22 @@ function tpCollect() {
 
 // ----- sub-view switch -----
 function setRsView(v, init) {
-  RSVIEW = v === "topics" ? "topics" : "status";
+  RSVIEW = RS_VIEWS.includes(v) ? v : "status";
   store.set("niu.rsview", RSVIEW);
-  for (const [id, name] of [["rsview-status", "status"], ["rsview-topics", "topics"]]) {
+  for (const name of RS_VIEWS) {
+    const id = `rsview-${name}`;
     $(id).classList.toggle("on", RSVIEW === name); $(id).setAttribute("aria-pressed", String(RSVIEW === name));
   }
-  $("rsbody").hidden = RSVIEW === "topics"; $("tpbody").hidden = RSVIEW !== "topics";
+  $("rsbody").hidden = RSVIEW !== "status"; $("tpbody").hidden = RSVIEW !== "topics"; $("rsact").hidden = RSVIEW !== "activity";
   $("rsrefresh").hidden = $("rsupd").hidden = RSVIEW === "topics";
   if (init) return;
-  const hash = RSVIEW === "topics" ? "#research/topics" : "#research";
+  const hash = RSVIEW === "status" ? "#research" : `#research/${RSVIEW}`;
   if (VIEW === "research" && location.hash !== hash) history.replaceState(null, "", hash);
   if (RSVIEW === "topics") loadTopics(); else renderResearch();
 }
 $("rsview-status").onclick = () => setRsView("status");
 $("rsview-topics").onclick = () => setRsView("topics");
+$("rsview-activity").onclick = () => setRsView("activity");
 
 // ----- data -----
 async function loadTopics(force) {
@@ -2991,6 +2995,6 @@ loadMe();
 loadResearch();  // also keeps the tab badge current while another tab is open
 setInterval(() => { if (!document.hidden) loadResearch(); }, 30000);
 $("rsrefresh").onclick = () => loadResearch(true);
-if (location.hash === "#research/topics") RSVIEW = "topics";
+if (location.hash === "#research/topics") RSVIEW = "topics"; else if (location.hash === "#research/activity") RSVIEW = "activity";
 setRsView(RSVIEW, true);
-setView({ "#events": "events", "#research": "research", "#research/topics": "research" }[location.hash] || store.get("niu.view", "agents"));
+setView({ "#events": "events", "#research": "research", "#research/topics": "research", "#research/activity": "research" }[location.hash] || store.get("niu.view", "agents"));
