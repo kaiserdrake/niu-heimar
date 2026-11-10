@@ -554,6 +554,11 @@ svg .slotline { stroke: var(--border); stroke-dasharray: 2 3; }
 .tpbar select { font: inherit; font-size: 12px; padding: 1px 4px; max-width: 150px; }
 .tpbar select[hidden], .tpbar button[hidden] { display: none; }
 .tpbar button.on { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); }
+/* toolbar buttons match the selects and the panel-header .tiny buttons (the global button padding made them taller),
+   and "+ Add" uses the theme's accent pair instead of white on a solid accent, which is harsh in the dark themes */
+.tpbar button.tiny { font-size: 12px; padding: 1px 8px; line-height: inherit; }
+.tpbar button.primary { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); font-weight: 600; }
+.tpbar button.primary:hover:not(:disabled) { border-color: var(--text); }
 button.tpgroup { display: flex; align-items: center; gap: 6px; width: 100%; margin: 8px 0 2px; padding: 3px 8px; text-align: left; font-weight: 600; background: var(--bg2); }
 .tpchev { color: var(--muted); width: 1em; }
 .tpcut { display: flex; align-items: center; gap: 8px; margin: 2px 0; font-size: 11.5px; color: var(--warn); }
