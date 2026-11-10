@@ -1611,8 +1611,8 @@ const RS_STUCK_SECS = 45 * 60;
 const RS_REASON = { ok: "quota is fine", ok_conservative: "usage not readable, coarse check: conservative run", weekly_low: "weekly limit nearly used up",
   low_quota: "5-hour window too full", probe_warning: "usage not readable, probe warns of a limit", no_signal: "no usage signal", manual_cap: "manual-run cap reached",
   grace_expired: "gave up after the grace period", kill_switch: "stopped by the kill switch", session_cap: "daily Claude session cap reached" };
-const RS_KIND = { standard: "standard", comprehensive: "overnight", delta: "delta" };
-const RS_KIND_LETTER = { standard: "S", comprehensive: "C", delta: "D" };
+const RS_KIND = { standard: "standard", comprehensive: "overnight", delta: "delta", explore: "explore" };
+const RS_KIND_LETTER = { standard: "S", comprehensive: "C", delta: "D", explore: "E" };
 const RS_BRIEF_STATE = { scheduled: "brief due", in_progress: "brief being built", ready: "brief ready", empty: "brief empty (nothing new)" };
 const RS_STALE = { comprehensive_missed: "overnight run did not happen", comprehensive_skipped: "overnight run was skipped",
   comprehensive_failed: "overnight run failed", comprehensive_deadline: "overnight run missed its deadline" };

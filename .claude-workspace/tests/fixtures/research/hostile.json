@@ -181,6 +181,17 @@
  },
  "recent_runs": [
   {
+   "id": "00000000-0000-4000-8000-0000000000e1",
+   "slot_key": "explore:<img src=x onerror=alert(1)>",
+   "trigger": "cron",
+   "status": "succeeded",
+   "mode": "normal",
+   "kind": "explore",
+   "started_at": "2026-11-07T01:30:05Z",
+   "finished_at": null,
+   "agents": []
+  },
+  {
    "id": "00000000-0000-4000-8000-000000000002",
    "slot_key": "2026-11-07T00:00[Asia/Tokyo]",
    "trigger": "cron",

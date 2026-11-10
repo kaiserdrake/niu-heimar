@@ -395,6 +395,13 @@ check("brief" not in m1 and nr.shape(m1)["brief"] is None and nr.shape(m1)["sche
 sh = nr.shape(m2)
 check(sh["brief"]["state"] == "ready" and sh["brief"]["stale_reason"] == "comprehensive_failed" and sh["last_run"]["kind"] == "comprehensive"
       and sh["schedule"]["brief_at"] == "08:00" and sh["gate"]["recent"][1]["reason"] == "session_cap", "m2 additive fields survive shape()")
+ex = sh["recent_runs"][0]
+check(ex["kind"] == "explore" and ex["slot_key"] == "explore:2026-11-07", f"m2 explore run survives shape(): {ex}")
+check(nr.shape({"schedule": {"next_slot_kind": "explore"}})["schedule"]["next_slot_kind"] == "unknown", "explore is not a slot kind")
+hr = out["recent_runs"][0]
+mk = "explore:manual:00000000-0000-4000-8000-0000000000e2"
+check(nr.shape({"recent_runs": [{"slot_key": mk, "kind": "explore"}]})["recent_runs"][0]["slot_key"] == mk, "manual explore slot key survives shape()")
+check(hr["kind"] == "explore" and hr["slot_key"] is None, f"hostile explore slot key -> None: {hr}")
 r = poll(body=HOSTILE)
 check(r["state"] == "ok" and "sk-ant" not in json.dumps(r) and "onerror" not in json.dumps(r), "hostile payload through the poller")
 
@@ -412,7 +419,11 @@ if SCHEMA.exists():
     except ImportError:
         notes.append("jsonschema not installed: fixtures were not validated against monitor.v1.json")
     defs = schema["$defs"]
-    names = set(schema["properties"]) | {k for d in defs.values() for k in d.get("properties", {})}
+    # monitor.v1's additive companion / explore blocks are not shown yet (left to the Research tab redesign,
+    # docs/design/2026-11-10-research-tab-companion.md): shape() drops them, so their keys are not expected.
+    deferred = {"CompanionModel", "ExploreModel"}
+    names = (set(schema["properties"]) - {"companion", "explore"}) | \
+        {k for n, d in defs.items() if n not in deferred for k in d.get("properties", {})}
 
     def keys(x):
         return {k for d in (x if isinstance(x, list) else [x]) for k in (d if isinstance(d, dict) else {})} | \
@@ -429,7 +440,8 @@ if SCHEMA.exists():
     check(nr.ERRORS == enum("CompactAgent", "error_code"), "error code enum matches the schema")
     check(nr.DIGEST == enum("DigestModel", "status"), "digest enum matches the schema")
     check(nr.SOURCES == enum("GatePreviewModel", "source") | enum("GateRecent", "source"), "gate source enums match the schema")
-    check(nr.KINDS == enum("CompactRun", "kind") == enum("GatePending", "kind") == enum("Schedule", "next_slot_kind"), "run kind enums match")
+    check(nr.KINDS == enum("CompactRun", "kind") == enum("GatePending", "kind") and nr.SLOT_KINDS == enum("Schedule", "next_slot_kind"),
+          "run kind enums match (run rows include explore, slots do not)")
     check(nr.BRIEF_STATES == enum("BriefModel", "state") and nr.STALE_REASONS == enum("BriefModel", "stale_reason"), "brief enums match")
     check(nr.TRIGGERS == enum("CompactRun", "trigger") and nr.MODES == enum("CompactRun", "mode"), "trigger / mode enums match")
 else:
