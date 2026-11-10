@@ -140,6 +140,14 @@ g host-run-mount "$A" 'docker run --rm --mount source=demo_data,target=/d busybo
 g host-volumes-from "$A" 'docker run --volumes-from demo-proxy busybox true' stopped "$T/other"
 g host-container-run "$A" 'docker container run -v demo_data:/d busybox true' stopped "$T/other"
 g host-run-bind EMPTY 'docker run --rm -v ./x:/d busybox true' stopped "$T/other"
+# the host-wide label names the live stacks (worktrees left out), not just the alphabetically first one
+mkdir -p "$T/DOM/alpha/.claude"; printf 'mode: live-dev-same-dir\n' > "$T/DOM/alpha/.claude/deploy-mode"
+g host-label-outside 'LIVE STACK (docker host; live: alpha, live)' 'docker stop demo-proxy' stopped "$T/other"
+g host-label-outside-ask "$A" 'docker stop demo-proxy' stopped "$T/other"
+g host-label-inside 'LIVE STACK (live)' 'docker stop demo-proxy' stopped "$ROOT"
+for n in b1 b2 b3; do mkdir -p "$T/DOM/$n/.claude"; printf 'mode: live-dev-same-dir\n' > "$T/DOM/$n/.claude/deploy-mode"; done
+g host-label-capped 'LIVE STACK (docker host; live: alpha, b1, b2, b3, +1 more)' 'docker stop demo-proxy' stopped "$T/other"
+rm -rf "$T/DOM/alpha" "$T/DOM/b1" "$T/DOM/b2" "$T/DOM/b3"
 g compose-file-env "$A" "COMPOSE_FILE=$ROOT/docker-compose.yml docker compose up -d" stopped "$T/other"
 g git-bisect "$A" 'git bisect start'
 g git-sparse "$A" 'git sparse-checkout set x'

@@ -482,6 +482,14 @@ def part_dirs(t, cwd):
     return out
 
 
+def host_label(roots_all, limit=4):
+    """Label for a docker-host-wide command run outside every live stack: name the live stacks it could affect,
+    not just one of them (worktrees are copies, so they are left out unless nothing else is left)."""
+    names = sorted({r.name for r in roots_all if not is_worktree(r)} or {r.name for r in roots_all})
+    more = f", +{len(names) - limit} more" if len(names) > limit else ""
+    return f"docker host; live: {', '.join(names[:limit])}{more}"
+
+
 def under(path, base):
     return path == base or base in path.parents
 
@@ -516,7 +524,7 @@ def guard(data):
                     name = (next(iter(roots)) if roots else sorted(roots_all)[0]).name
                     return decide("deny", f"LIVE STACK ({name}): {why}.")
                 if dec == "host":  # acts on the whole docker host (fixed container names, named volumes)
-                    asks.append(((sorted(roots) or sorted(roots_all))[0].name, why))
+                    asks.append((sorted(roots)[0].name if roots else host_label(roots_all), why))
                     continue
                 if not roots:
                     continue
