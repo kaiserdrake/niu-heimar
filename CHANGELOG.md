@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.19.0...niu-heimar-v0.20.0) (2026-11-10)
+
+
+### Features
+
+* **dashboard:** LLMs usage panel with local Ollama token usage ([#68](https://github.com/kaiserdrake/niu-heimar/issues/68)) ([008fc5d](https://github.com/kaiserdrake/niu-heimar/commit/008fc5d0655de9c538e47cf796ec550183459e28))
+
 ## [0.19.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.18.0...niu-heimar-v0.19.0) (2026-11-10)
 
 
