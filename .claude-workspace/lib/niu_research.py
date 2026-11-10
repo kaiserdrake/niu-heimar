@@ -60,6 +60,12 @@ SOURCES = frozenset(("usage_api", "probe", "none", "rate_limit_event"))
 ERRORS = frozenset("timeout aborted_quota max_turns max_budget structure_invalid no_sources rate_limited auth interrupted network internal".split())
 TRIGGERS = frozenset(("cron", "manual", "catchup"))
 MODES = frozenset(("normal", "conservative"))
+JOBS = frozenset("comprehensive delta brief explore reflect discovery checkins".split())   # schedule.jobs[].job
+WEEKDAYS = frozenset("mon tue wed thu fri sat sun".split())
+BOTS = frozenset(("up", "stale", "unknown"))                     # companion.bot
+OLLAMA = frozenset(("up", "down", "disabled", "unknown"))        # companion.ollama
+BRIEF_DELIVERY = frozenset(("webhook", "bot"))
+EXPLORE_STATUS = frozenset(("succeeded", "quiet", "failed", "skipped_gate", "aborted_quota"))   # explore.last_status
 DIGEST = frozenset("not_built pending held_quiet_hours sent partial failed dead nothing_new suppressed".split())
 
 MESSAGES = {
@@ -444,6 +450,31 @@ def _ledger_day(d):
             "web_searches": _cnt(d.get("web_searches")), "equiv_usd": _usd(d.get("equiv_usd"))}
 
 
+def _job(j):
+    return {"job": _enum(j.get("job"), JOBS), "at": _re(j.get("at"), HHMM_RE), "weekday": _nenum(j.get("weekday"), WEEKDAYS),
+            "enabled": _bool(j.get("enabled")), "next_at": _ts(j.get("next_at"))}
+
+
+def _companion(c):
+    if not isinstance(c, dict):
+        return None
+    return {"bot": _enum(c.get("bot"), BOTS), "ollama": _enum(c.get("ollama"), OLLAMA),
+            "brief_delivery": _enum(c.get("brief_delivery"), BRIEF_DELIVERY), "feedback_7d": _cnt(c.get("feedback_7d")),
+            "feedback_7d_chat": _cnt(c.get("feedback_7d_chat")), "pending_proposals": _cnt(c.get("pending_proposals")),
+            "candidate_notes": _cnt(c.get("candidate_notes")), "active_notes": _cnt(c.get("active_notes")),
+            "last_reflect_at": _ts(c.get("last_reflect_at")), "last_discovery_at": _ts(c.get("last_discovery_at"))}
+
+
+def _explore(e):
+    if not isinstance(e, dict):
+        return None
+    return {"queries_today": _cnt(e.get("queries_today")), "results_today": _cnt(e.get("results_today")),
+            "items_today": _cnt(e.get("items_today")), "posted_today": _cnt(e.get("posted_today")),
+            "likes_7d": _cnt(e.get("likes_7d")), "dislikes_7d": _cnt(e.get("dislikes_7d")),
+            "topic_proposals_30d": _cnt(e.get("topic_proposals_30d")), "last_run_at": _ts(e.get("last_run_at")),
+            "last_status": _nenum(e.get("last_status"), EXPLORE_STATUS), "last_error": _nenum(e.get("last_error"), ERRORS)}
+
+
 def _brief(b):
     if not isinstance(b, dict):
         return None
@@ -468,10 +499,14 @@ def shape(raw, now=None):
                      "timezone": _re(sch.get("timezone"), TZ_RE), "next_slot_key": _re(sch.get("next_slot_key"), SLOT_RE),
                      "next_slot_kind": _nenum(sch.get("next_slot_kind"), SLOT_KINDS), "next_slot_at": _ts(sch.get("next_slot_at")),
                      "brief_at": _re(sch.get("brief_at"), HHMM_RE), "next_brief_at": _ts(sch.get("next_brief_at")), "manual_runs_today": _cnt(sch.get("manual_runs_today")),
-                     "manual_runs_per_day": _cnt(sch.get("manual_runs_per_day"))},
+                     "manual_runs_per_day": _cnt(sch.get("manual_runs_per_day")),
+                     # None = an older server without the list; [] = no jobs
+                     "jobs": [_job(j) for j in _list(sch.get("jobs"), 8)] if isinstance(sch.get("jobs"), list) else None},
         "gate": {"preview": _preview(gate.get("preview")), "pending": _pending(gate.get("pending")),
                  "recent": [_gate_row(g) for g in _list(gate.get("recent"), 12)]},
         "brief": _brief(raw.get("brief")),
+        "companion": _companion(raw.get("companion")),
+        "explore": _explore(raw.get("explore")),
         "current_run": _run(raw.get("current_run")),
         "last_run": _run(raw.get("last_run")),
         "recent_runs": [_compact_run(r) for r in _list(raw.get("recent_runs"), 6)],
