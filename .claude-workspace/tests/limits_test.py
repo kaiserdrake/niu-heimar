@@ -94,8 +94,82 @@ creds = tmp / "creds.json"
 creds.write_text(json.dumps({"claudeAiOauth": {"accessToken": "tok-secret"}}))
 os.environ["NIU_CLAUDE_CREDENTIALS"] = str(creds)
 check(niu_limits._fetch_usage(url="http://127.0.0.1:1/x", timeout=1) is None, "unreachable API -> None, no exception")
+check(niu_limits.api_error() == "unreachable", f"unreachable API is reported: {niu_limits.api_error()}")
+creds.write_text(json.dumps({"claudeAiOauth": {"accessToken": "tok-secret", "expiresAt": int((time.time() - 60) * 1000)}}))
+seen = []
+class _Spy(niu_limits.urllib.request.OpenerDirector):
+    def open(self, *a, **k):
+        seen.append(a); raise OSError("must not be called")
+real_opener, niu_limits._opener = niu_limits._opener, _Spy()
+check(niu_limits._fetch_usage() is None and niu_limits.api_error() == "expired" and not seen, "expired token: reported, never sent")
+creds.write_text(json.dumps({"claudeAiOauth": {"accessToken": "tok-secret", "expiresAt": int((time.time() + 3600) * 1000)}}))
+niu_limits._fetch_usage()
+check(len(seen) == 1 and niu_limits.api_error() == "unreachable", "unexpired token is used")
+class _Deny(niu_limits.urllib.request.OpenerDirector):
+    def open(self, req, *a, **k):
+        raise niu_limits.urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+niu_limits._opener = _Deny()
+check(niu_limits._fetch_usage() is None and niu_limits.api_error() == "rejected", "HTTP 401 -> rejected")
+niu_limits._opener = real_opener
+niu_limits._api.update(at=0.0, error="expired")
+claude_limits(now=now + 5000, fetch=fake)
+check(niu_limits.api_error() is None, "a successful fetch clears the error")
+# automatic renewal through `claude auth status`
+def expired_creds():
+    creds.write_text(json.dumps({"claudeAiOauth": {"accessToken": "tok-secret", "expiresAt": int((time.time() - 60) * 1000)}}))
+fake_bin = tmp / "bin" / "claude"
+fake_bin.parent.mkdir(exist_ok=True)
+fake_bin.write_text("#!/bin/sh\n"); fake_bin.chmod(0o755)
+real_which, niu_limits.shutil.which = niu_limits.shutil.which, lambda name: str(fake_bin)
+ran = []
+def renews(cmd, **kw):
+    ran.append((cmd, kw))
+    creds.write_text(json.dumps({"claudeAiOauth": {"accessToken": "tok-new", "expiresAt": int((time.time() + 3600) * 1000)}}))
+expired_creds(); niu_limits._api.update(at=123.0, error="expired"); niu_limits._renew.update(at=0.0, running=False, result=None)
+niu_limits._maybe_renew(now, run=renews, wait=True)
+check(ran and ran[0][0] == [str(fake_bin), "auth", "status"] and ran[0][1].get("timeout") == niu_limits.RENEW_TIMEOUT_SECS,
+      f"expired token -> runs claude auth status with a timeout: {ran}")
+check(niu_limits._renew["result"] == "renewed" and niu_limits._api["at"] == 0.0, "renewed token -> API refetched on next read")
+niu_limits._maybe_renew(now + 60, run=renews, wait=True)
+check(len(ran) == 1, "renewal is tried at most once an hour")
+expired_creds(); niu_limits._renew.update(at=0.0)
+niu_limits._maybe_renew(now, run=lambda cmd, **kw: None, wait=True)
+check(niu_limits._renew["result"] == "failed" and niu_limits.api_error() == "renew_failed", "token still expired after the CLI -> renew_failed")
+def boom(cmd, **kw):
+    raise niu_limits.subprocess.TimeoutExpired(cmd, 30)
+niu_limits._renew.update(at=0.0)
+niu_limits._maybe_renew(now, run=boom, wait=True)
+check(niu_limits._renew["result"] == "failed" and not niu_limits._renew["running"], "CLI timeout -> failed, never raises")
+niu_limits.shutil.which = lambda name: None
+real_home = niu_limits.Path.home
+niu_limits.Path.home = staticmethod(lambda: tmp / "nohome")
+niu_limits._renew.update(at=0.0)
+niu_limits._maybe_renew(now, run=renews, wait=True)
+check(niu_limits._renew["result"] == "no_cli" and len(ran) == 1, "no claude CLI found -> no_cli")
+niu_limits.Path.home = real_home
+niu_limits.shutil.which = lambda name: str(fake_bin)
+os.environ["NIU_CLAUDE_AUTO_RENEW"] = "0"
+niu_limits._renew.update(at=0.0, result=None)
+niu_limits._maybe_renew(now, run=renews, wait=True)
+check(len(ran) == 1, "NIU_CLAUDE_AUTO_RENEW=0 turns renewal off")
+os.environ.pop("NIU_CLAUDE_AUTO_RENEW")
+niu_limits.shutil.which = real_which
+niu_limits._renew.update(at=0.0, running=False, result=None); niu_limits._api.update(error=None)
+os.environ["NIU_CLAUDE_USAGE_API"] = "0"
+check(niu_limits.api_error() == "off", "NIU_CLAUDE_USAGE_API=0 -> off")
+os.environ.pop("NIU_CLAUDE_USAGE_API")
+started = []
+real_maybe, niu_limits._maybe_renew = niu_limits._maybe_renew, lambda now, **kw: started.append(now)
+niu_limits._api.update(at=0.0, error="expired")
+niu_limits._api_limits(now, fetch=lambda: None)
+check(started == [now], "failed fetch with an expired token starts a renewal")
+niu_limits._api.update(at=0.0, error="unreachable"); started.clear()
+niu_limits._api_limits(now, fetch=lambda: None)
+check(not started, "other failures don't start a renewal")
+niu_limits._maybe_renew = real_maybe
 creds.write_text("garbage")
 check(niu_limits._fetch_usage(url="http://127.0.0.1:1/x", timeout=1) is None, "bad credentials file -> None")
+check(niu_limits.api_error() == "no_login", "bad credentials file -> no_login")
 (tmp / "state" / "claude-limits.json").write_text(json.dumps({"rate_limits": sample["rate_limits"], "updated": "bad"}))
 niu_limits._api.update(at=0.0, rate_limits=None)
 check(claude_limits(now=now + 9999, fetch=lambda: None)["source"] == "statusline", "corrupt 'updated' does not crash; failed fetch keeps status line")

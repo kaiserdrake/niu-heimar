@@ -1,8 +1,11 @@
 """Claude plan usage limits (5-hour and weekly), as last reported by Claude Code's status line (bin/niu-statusline)."""
 import json
 import os
+import shutil
+import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -16,8 +19,14 @@ API_PREFERRED_AFTER_SECS = 2 * 60  # a status-line report older than this loses 
 # terminal status line. Read-only: the token is never stored, logged or refreshed, and only percentages are kept.
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 API_REFRESH_SECS = 5 * 60
-_api = {"at": 0.0, "rate_limits": None}
+_api = {"at": 0.0, "rate_limits": None, "error": None}
 _api_lock = threading.Lock()
+# When the token has expired, ask Claude Code to renew it: `claude auth status` (no model call, no usage), at most once an
+# hour, in a background thread. Claude Code does the refresh and writes its own credentials file; this module never
+# touches the refresh token. NIU_CLAUDE_AUTO_RENEW=0 turns it off.
+RENEW_EVERY_SECS = 60 * 60
+RENEW_TIMEOUT_SECS = 30
+_renew = {"at": 0.0, "running": False, "result": None}
 
 
 def _epoch(v):
@@ -47,21 +56,99 @@ def _credentials_path():
 def _fetch_usage(url=USAGE_URL, timeout=8):
     """Plan usage from Anthropic, shaped like the status line's rate_limits block; None on any problem."""
     try:
-        token = json.loads(_credentials_path().read_text())["claudeAiOauth"]["accessToken"]
+        oauth = json.loads(_credentials_path().read_text())["claudeAiOauth"]
+        token = oauth["accessToken"]
         if not isinstance(token, str) or not token:
+            _api["error"] = "no_login"
             return None
+        exp = _epoch(oauth.get("expiresAt"))
+        if exp is not None and exp <= time.time():
+            _api["error"] = "expired"  # only Claude Code renews it; an expired token is never sent
+            return None
+    except Exception:  # noqa: BLE001 - missing or unreadable credentials file
+        _api["error"] = "no_login"
+        return None
+    try:
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20",
                                                    "User-Agent": "niu-heimar-dashboard"})
         with _opener.open(req, timeout=timeout) as r:
             body = json.loads(r.read(65536))
-    except Exception:  # noqa: BLE001 - any failure (network, HTTP, parse) just means no API numbers
+    except urllib.error.HTTPError as e:
+        _api["error"] = "rejected" if e.code in (401, 403) else "unreachable"
+        return None
+    except Exception:  # noqa: BLE001 - any other failure (network, parse) just means no API numbers
+        _api["error"] = "unreachable"
         return None
     out = {}
     for key in ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"):
         b = body.get(key) if isinstance(body, dict) else None
         if isinstance(b, dict) and isinstance(b.get("utilization"), (int, float)):
             out[key] = {"used_percentage": b["utilization"], "resets_at": b.get("resets_at")}
+    _api["error"] = None if out else "unreachable"
     return out or None
+
+
+def _claude_bin():
+    """The claude CLI: on PATH, else where the native installer puts it (a systemd user service's PATH lacks ~/.local/bin)."""
+    found = shutil.which("claude")
+    if found:
+        return found
+    for p in (Path.home() / ".local" / "bin" / "claude", Path.home() / ".claude" / "local" / "claude"):
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p)
+    return None
+
+
+def _token_expired():
+    """True/False from the credentials file's expiresAt; None when unknown."""
+    try:
+        exp = _epoch(json.loads(_credentials_path().read_text())["claudeAiOauth"].get("expiresAt"))
+    except Exception:  # noqa: BLE001
+        return None
+    return None if exp is None else exp <= time.time()
+
+
+def _renew_worker(run):
+    try:
+        exe = _claude_bin()
+        if not exe:
+            _renew["result"] = "no_cli"
+            return
+        try:
+            run([exe, "auth", "status"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=RENEW_TIMEOUT_SECS, check=False, cwd=str(Path.home()))
+        except Exception:  # noqa: BLE001 - timeout, missing binary, ...
+            _renew["result"] = "failed"
+            return
+        if _token_expired() is False:
+            _renew["result"] = "renewed"
+            with _api_lock:
+                _api["at"] = 0.0  # fetch again on the next read instead of waiting out the 5 minutes
+        else:
+            _renew["result"] = "failed"
+    finally:
+        _renew["running"] = False
+
+
+def _maybe_renew(now, run=None, wait=False):
+    """Start one renewal attempt if the token has expired, auto-renew is on and the last attempt is over an hour old."""
+    if os.environ.get("NIU_CLAUDE_AUTO_RENEW") == "0" or _renew["running"] or now - _renew["at"] < RENEW_EVERY_SECS:
+        return
+    _renew.update(at=now, running=True, result=None)
+    t = threading.Thread(target=_renew_worker, args=(run or subprocess.run,), daemon=True, name="niu-token-renew")
+    t.start()
+    if wait:
+        t.join()
+
+
+def api_error():
+    """Why the usage API gave no numbers on its last attempt: 'off', 'expired', 'renew_failed', 'rejected', 'no_login', 'unreachable', or None."""
+    if os.environ.get("NIU_CLAUDE_USAGE_API") == "0":
+        return "off"
+    err = _api.get("error")
+    if err == "expired" and _renew["result"] in ("failed", "no_cli"):
+        return "renew_failed"
+    return err
 
 
 def _api_limits(now, fetch=None):
@@ -73,7 +160,9 @@ def _api_limits(now, fetch=None):
             _api["at"] = now  # also throttles retries after a failure
             got = (fetch or _fetch_usage)()
             if got:
-                _api["rate_limits"], _api["fetched"] = got, now
+                _api["rate_limits"], _api["fetched"], _api["error"] = got, now, None
+            elif _api.get("error") == "expired":
+                _maybe_renew(now)
         return _api["rate_limits"], _api.get("fetched", 0)
 
 

@@ -186,6 +186,13 @@ default), a dotted **pace** line that projects the current week to its reset, an
 - *History starts when the dashboard first runs:* earlier weeks can't be recovered. While the dashboard is down, or when no
   terminal Claude session runs and the usage API is off or unreachable, no samples arrive; the graph draws those stretches
   (more than 25 minutes without a sample) as hatched **gaps** instead of joining the points.
+- *Why readings stopped:* the "No new readings" note names the reason when it's known. **The Claude login token has
+  expired** means only Claude Code renews it, since the dashboard never sends an expired token or touches the refresh
+  token. So the dashboard asks Claude Code to renew it: it runs `claude auth status` (no model call, no usage) in the
+  background, at most once an hour, and fetches again as soon as the token is valid. If that doesn't renew it, the note says
+  so: run `claude -p hi` in a terminal, and readings return within 5 minutes. `NIU_CLAUDE_AUTO_RENEW=0` turns the automatic
+  renewal off. Other reasons: the token was rejected, no login was found, the API is off (`NIU_CLAUDE_USAGE_API=0`), or it's
+  unreachable.
 - *Background calls:* the usage API is now also called while no browser is open, still at most once every 5 minutes (288 a day).
   `NIU_CLAUDE_USAGE_API=0` turns those calls off (the status line still feeds the graph during terminal sessions). To stop
   recording completely, set `NIU_USAGE_COLLECT=0` (`systemctl --user edit niu-dash`, `Environment=NIU_USAGE_COLLECT=0`) and

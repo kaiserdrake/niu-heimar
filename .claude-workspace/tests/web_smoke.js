@@ -669,6 +669,12 @@ async function usageChecks(fx) {
     // stale note
     run("renderUsage({ ...USAGE_FX, current: { ...USAGE_FX.current, stale: true } })");
     if (!/No new readings since .*usage API is off or unreachable/.test(textOf(get("usagegraph")))) fail("stale note");
+    run("renderUsage({ ...USAGE_FX, current: { ...USAGE_FX.current, stale: true, api_error: 'expired' } })");
+    if (!/No new readings since .*login token has expired.*claude -p hi/.test(textOf(get("usagegraph")))) fail("expired-token note");
+    run("renderUsage({ ...USAGE_FX, current: { ...USAGE_FX.current, stale: true, api_error: 'renew_failed' } })");
+    if (!/automatic renewal \(claude auth status\) didn't renew it/.test(textOf(get("usagegraph")))) fail("renew-failed note");
+    run("renderUsage({ ...USAGE_FX, current: { ...USAGE_FX.current, stale: true, api_error: 'off' } })");
+    if (!/usage API is off \(NIU_CLAUDE_USAGE_API=0\)/.test(textOf(get("usagegraph")))) fail("api-off note");
     // fixed state messages
     const msgs = { loading: /^Loading…$/, empty: /Collecting: the first sample appears within 5 minutes/, disabled: /Usage history is off \(NIU_USAGE_COLLECT=0\)/ };
     for (const [state, re] of Object.entries(msgs)) {

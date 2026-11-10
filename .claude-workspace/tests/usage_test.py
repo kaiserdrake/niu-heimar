@@ -169,6 +169,12 @@ check(h["current"]["used"] == 30.0 and h["current"]["resets_at"] == int(reset_b)
 check(h["collecting_since"] == int(now - 12 * D), "collecting_since from meta")
 check(h["recorder"]["state"] in ("stopped", "running") and h["recorder"]["last_error"] in ("none", "reading", "database", "other"), "recorder enum")
 check(U.history(35, now=now + 3600)["current"]["stale"] is True, "current is stale after 30 min without readings")
+import niu_limits  # noqa: E402
+niu_limits._api["error"] = "expired"
+cur_stale = U.history(35, now=now + 3600)["current"]
+check(cur_stale.get("api_error") in ("expired", "off"), f"stale current carries the usage API error: {cur_stale}")
+check("api_error" not in U.history(35, now=now)["current"], "fresh current has no api_error")
+niu_limits._api["error"] = None
 # the same data with a last sample 8 h before the reset reads as partial
 c = U.connect()
 c.execute("DELETE FROM limit_samples WHERE key='seven_day' AND ts > ?", (reset_a - 3600 * 8,))

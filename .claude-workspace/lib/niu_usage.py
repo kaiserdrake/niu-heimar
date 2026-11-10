@@ -880,7 +880,18 @@ def history(days=None, now=None):
     if last_sd is not None:
         current = {"used": round(last_sd["used"], 1), "resets_at": None if last_sd["resets_at"] is None else int(last_sd["resets_at"]),
                    "updated": int(last_sd["ts"]), "source": last_sd["source"], "stale": now - last_sd["ts"] > CURRENT_STALE_SECS}
+        if current["stale"]:
+            current["api_error"] = _api_error()
     return {**base, "collecting_since": collecting, "series": series, "resets": [w["resets_at"] for w in wks], "weeks": wks, "current": current}
+
+
+def _api_error():
+    """niu_limits.api_error(), or None if that can't be read (history() never raises)."""
+    try:
+        import niu_limits
+        return niu_limits.api_error()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 _memo = {}

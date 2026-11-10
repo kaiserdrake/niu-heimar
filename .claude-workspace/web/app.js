@@ -1016,6 +1016,15 @@ const USAGE_MSG = {
   disabled: "Usage history is off (NIU_USAGE_COLLECT=0).",
   error: "Can't read usage history from the dashboard server.",
 };
+const USAGE_API_ERR = {
+  expired: "the Claude login token has expired. Run any terminal Claude Code command (for example claude -p hi) to renew it.",
+  renew_failed: "the Claude login token has expired and automatic renewal (claude auth status) didn't renew it. Run claude -p hi in a terminal.",
+  rejected: "Anthropic rejected the Claude login token. Run any terminal Claude Code command to renew it, or sign in again.",
+  no_login: "no Claude Code login was found for the usage API. Sign in with the terminal claude command.",
+  off: "no terminal Claude session, and the usage API is off (NIU_CLAUDE_USAGE_API=0).",
+  unreachable: "no terminal Claude session, and the usage API is unreachable.",
+  unknown: "no terminal Claude session, and the usage API is off or unreachable.",
+};
 const USAGE_REC = { reading: "the last attempt to read the limits failed", database: "the last attempt to save a sample failed", other: "the last sampling attempt failed" };
 const USAGE_GAP_TIP = "No samples\ndashboard down, or no terminal session and the usage API off";
 const USAGE_SRC = { api: "usage API", statusline: "terminal status line" };
@@ -1148,7 +1157,7 @@ function renderUsage(u) {
     root.append(svg("rect", { x: X(t0), y: T, width: Math.max(1, (W - L - R) / nb), height: H - T - B, class: "hit", "data-tip": `${usageWhen(t0 + bw / 2)}\n${lines.join("\n")}` }));
   }
   const kids = [];
-  if (cur && cur.stale) kids.push(h("div", "usagenote warn small", `No new readings since ${hm(cur.updated)}: no terminal Claude session, and the usage API is off or unreachable.`));
+  if (cur && cur.stale) kids.push(h("div", "usagenote warn small", `No new readings since ${hm(cur.updated)}: ${USAGE_API_ERR[cur.api_error] || USAGE_API_ERR.unknown}`));
   const rec = u.recorder;
   if (rec && rec.errors > 0 && USAGE_REC[rec.last_error]) kids.push(h("div", "usagenote warn small", `Recorder: ${USAGE_REC[rec.last_error]} (${rec.errors} error${rec.errors === 1 ? "" : "s"} since the dashboard started).`));
   box.replaceChildren(...kids, root);
