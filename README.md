@@ -177,7 +177,11 @@ not a hard security boundary against processes running as your own user.
 over the last 2, 5 or 10 weeks. It shows each weekly reset as a dashed marker, an **"ended N%"** label per finished week
 (the highest value seen before it reset; **"ended ≥N%"** when sampling stopped more than 6 hours before the reset), the
 Opus and Sonnet weekly lines only when Anthropic reports them, an optional 5-hour line (the *5-hour* checkbox, off by
-default), a dotted **pace** line that projects the current week to its reset, and a plain-text summary underneath.
+default), a dotted **pace** line that projects the current week to its reset, and a plain-text summary underneath. Until the
+history covers the chosen range, the graph starts at the first sample instead of showing empty weeks.
+- *Zoom:* drag across the graph (mouse, pen or a sideways touch drag) to zoom to that stretch of time; spans of 3 days or
+  less show hours. Double-click the graph or press **Reset zoom** to go back. The zoom stays through the automatic
+  refresh and is cleared when you pick 2w, 5w or 10w or reload the page; it only redraws data already loaded.
 - *Where it comes from:* while `niu-dash serve` runs (also with no browser open), a background thread reads the Claude limits
   every 5 minutes (the same two sources as above) and stores a sample in `~/.local/state/niu-heimar/usage.db` (mode 600,
   next to `events.db`). A sample is stored only when the value changes, plus a heartbeat every 10 minutes; each row carries the

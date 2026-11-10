@@ -666,6 +666,104 @@ async function usageChecks(fx) {
     run("USAGE.h5 = false; USAGE.weeks = 2; renderUsage(USAGE_FX)");
     if (find(/\bul-week\b/, "path").length < 1) fail("2-week view draws nothing");
     run("USAGE.weeks = 5");
+    // fit to data, label placement, drag-to-zoom
+    const W = 900, ls = () => get("usagegraph")._ls;
+    const fire = (type, ev) => { for (const f of ls()[type] || []) f(ev); };
+    const render = (js) => { run(js); run("USAGE.view").root.getBoundingClientRect = () => ({ left: 0, top: 0, width: 900, height: 230 }); };
+    const evt = (x, o = {}) => ({ pointerId: 1, isPrimary: true, button: 0, pointerType: "mouse", clientX: x, clientY: 100, target: find(/\busagesvg\b/, "svg")[0], preventDefault() {}, ...o });
+    const inv = (x) => { const v = run("USAGE.view"); return v.t0 + (x - v.L) / (v.W - v.L - v.R) * (v.t1 - v.t0); };
+    const drag = (x0, x1, o = {}) => { fire("pointerdown", evt(x0, o)); fire("pointermove", evt((x0 + x1) / 2, o)); fire("pointermove", evt(x1, o)); fire("pointerup", evt(x1, o)); };
+    render("USAGE.zoom = null; USAGE.drag = null; USAGE.weeks = 5; renderUsage(USAGE_FX)");
+    let v = run("USAGE.view");
+    if (!(v.t0 > fx.current.resets_at - 35 * 86400) || !(v.t0 < fx.collecting_since)) fail("5w view does not fit the data: " + v.t0);
+    render("USAGE.weeks = 2; renderUsage(USAGE_FX)");
+    if (run("USAGE.view").t0 !== fx.current.resets_at - 14 * 86400) fail("2w view should be the full range");
+    render("USAGE.weeks = 5; renderUsage(USAGE_FX)");
+    if (!get("usagezoomreset").hidden) fail("Reset zoom shown while not zoomed");
+    const sizeOf = (c) => (/resetlbl|pacelbl|guidelbl/.test(c) ? 10 : 11);
+    const labelCheck = (name) => {
+      const boxes = find(/resetlbl|pacelbl|guidelbl|nowlbl|wklbl/, "text").map((n) => ({ n, b: run("usageTextBox")(+n.getAttribute("x"), +n.getAttribute("y"), n.getAttribute("text-anchor") || "start", n.textContent, sizeOf(cls(n)), /nowlbl|wklbl/.test(cls(n))) }));
+      for (let i = 0; i < boxes.length; i++) {
+        const a = boxes[i].b;
+        if (a.x0 < 0 || a.x1 > W) fail(`${name}: label outside the graph: ${boxes[i].n.textContent}`);
+        for (let j = i + 1; j < boxes.length; j++) { const b = boxes[j].b; if (a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0) fail(`${name}: labels overlap: "${boxes[i].n.textContent}" and "${boxes[j].n.textContent}"`); }
+      }
+      const fl = boxes.find((x) => /guidelbl/.test(cls(x.n)));
+      if (fl && (fl.n.getAttribute("text-anchor") !== "start" || +fl.n.getAttribute("x") >= 60)) fail(name + ": floor label should sit at the left end");
+      const rl = boxes.find((x) => /resetlbl/.test(cls(x.n)));
+      if (!rl || rl.n.getAttribute("text-anchor") !== "end") fail(name + ": the current reset label should sit left of its line");
+      const t = textOf(get("usagegraph"));
+      if (!/ended 83%/.test(t) || !/ended ≥67%/.test(t)) fail(name + ": ended labels missing");
+      return t;
+    };
+    labelCheck("default");
+    ctx.USAGE_CROWD = { ...fx, current: { ...fx.current, used: 55 } };
+    render("renderUsage(USAGE_CROWD)");
+    if (!/pace ≈ 96%/.test(labelCheck("crowded"))) fail("crowded case: pace ≈ 96% missing (is the fixture pace still about 96?)");
+    render("renderUsage(USAGE_FX)");
+    // a click or a tiny drag never zooms
+    fire("pointerdown", evt(300)); fire("pointermove", evt(303)); fire("pointerup", evt(303));
+    if (run("USAGE.zoom") !== null || run("USAGE.drag") !== null) fail("a click must not zoom");
+    // ignored input
+    fire("pointerdown", evt(300, { button: 2 }));
+    if (run("USAGE.drag") !== null) fail("right button started a drag");
+    fire("pointerdown", evt(10));
+    if (run("USAGE.drag") !== null) fail("pointerdown left of the plot started a drag");
+    fire("pointerdown", evt(300, { isPrimary: false }));
+    if (run("USAGE.drag") !== null) fail("a non-primary pointer started a drag");
+    fire("pointerdown", evt(300)); fire("pointermove", evt(400)); fire("pointercancel", evt(400));
+    if (run("USAGE.drag") !== null || run("USAGE.zoom") !== null || get("usagegraph").classList.contains("usagedrag")) fail("pointercancel must cancel the drag");
+    fire("pointerdown", evt(300)); fire("pointermove", evt(400)); fire("lostpointercapture", evt(400)); fire("pointerup", evt(400));
+    if (run("USAGE.zoom") !== null) fail("lostpointercapture must cancel the drag");
+    // drag zooms
+    const ta = inv(300), tb = inv(500);
+    fire("pointerdown", evt(300)); run("TIP.hidden = false"); fire("pointermove", evt(400));
+    if (run("TIP.hidden") !== true || !get("usagegraph").classList.contains("usagedrag") || !find(/\busagesel\b/, "rect").length) fail("drag state: tooltip hidden, cursor class, selection rect");
+    fire("pointermove", evt(500)); fire("pointerup", evt(500));
+    let z = run("USAGE.zoom");
+    if (!z || Math.abs(z.t0 - ta) > 60 || Math.abs(z.t1 - tb) > 60) fail("zoom range: " + JSON.stringify(z) + " vs " + ta + ".." + tb);
+    if (get("usagezoomreset").hidden !== false) fail("Reset zoom not shown while zoomed");
+    if (run("USAGE.drag") !== null) fail("drag not cleared");
+    let nh = find(/\bhit\b/, "rect").length;
+    if (nh < 20 || nh > 240) fail("hit rects when zoomed: " + nh);
+    if (find(/\busagesvg\b/, "svg")[0].getAttribute("aria-label") !== run("usageSummary(USAGE_FX)")) fail("aria-label changed when zoomed");
+    // survives a refresh, the 5-hour toggle and redraw
+    render("renderUsage(USAGE_FX)");
+    run("USAGE.h5 = true; redrawUsage(); USAGE.h5 = false");
+    if (JSON.stringify(run("USAGE.zoom")) !== JSON.stringify(z) || run("USAGE.view").t0 !== z.t0) fail("zoom lost on refresh/redraw");
+    // double-click resets, then the button does
+    fire("dblclick", evt(300));
+    if (run("USAGE.zoom") !== null || get("usagezoomreset").hidden !== true) fail("double-click did not reset the zoom");
+    render("renderUsage(USAGE_FX)");
+    drag(300, 500, { pointerType: "touch" });
+    if (!run("USAGE.zoom")) fail("a touch drag should zoom like the mouse");
+    get("usagezoomreset").onclick();
+    if (run("USAGE.zoom") !== null || get("usagezoomreset").hidden !== true) fail("Reset zoom button");
+    // a selection under 8 px is ignored; a tiny time span is widened to the 2 hour minimum
+    render("renderUsage(USAGE_FX)");
+    drag(300, 306);
+    if (run("USAGE.zoom") !== null) fail("a 6 px selection must not zoom");
+    render(`USAGE.zoom = { t0: ${fx.now} - 10800, t1: ${fx.now} }; renderUsage(USAGE_FX)`);
+    drag(300, 310);
+    z = run("USAGE.zoom");
+    if (!z || Math.abs(z.t1 - z.t0 - 7200) > 1) fail("minimum span: " + JSON.stringify(z));
+    // zoom inside a zoom narrows further
+    render("USAGE.zoom = { t0: USAGE.view.dmin, t1: USAGE.view.dmax }; renderUsage(USAGE_FX)");
+    drag(100, 600);
+    z = run("USAGE.zoom");
+    if (!z || z.t1 - z.t0 >= run("USAGE.view").dmax - run("USAGE.view").dmin) fail("nested zoom: " + JSON.stringify(z));
+    // hour ticks and the now label at a short span
+    render(`USAGE.zoom = { t0: ${fx.now} - 86400, t1: ${fx.now} }; renderUsage(USAGE_FX)`);
+    if (!find(/^lbl$/, "text").some((n) => /^\d{2}:\d{2}$/.test(n.textContent))) fail("no hour ticks when zoomed to a day");
+    if (!new RegExp(`now ${Math.round(fx.current.used)}%`).test(textOf(get("usagegraph")))) fail("now label missing when zoomed to now");
+    // a range change clears the zoom
+    run("setUsageWeeks(2)");
+    if (run("USAGE.zoom") !== null) fail("setUsageWeeks must clear the zoom");
+    run("setUsageWeeks(5)");
+    // a zoom outside the data is dropped
+    render("USAGE.zoom = { t0: 1, t1: 2 }; renderUsage(USAGE_FX)");
+    if (run("USAGE.zoom") !== null) fail("out-of-domain zoom kept");
+    render("renderUsage(USAGE_FX)");
     // stale note
     run("renderUsage({ ...USAGE_FX, current: { ...USAGE_FX.current, stale: true } })");
     if (!/No new readings since .*usage API is off or unreachable/.test(textOf(get("usagegraph")))) fail("stale note");
