@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.21.0...niu-heimar-v0.22.0) (2026-11-10)
+
+
+### Features
+
+* **niu-dash:** Research tab companion, explore and day schedule; Topics view for 300 topics ([#73](https://github.com/kaiserdrake/niu-heimar/issues/73)) ([9f53cca](https://github.com/kaiserdrake/niu-heimar/commit/9f53cca5b118eb7e33bac1665c5b558557024b4b))
+
 ## [0.21.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.20.0...niu-heimar-v0.21.0) (2026-11-10)
 
 
