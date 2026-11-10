@@ -106,6 +106,8 @@ CLAUDE.md                     common rules (inherited by every project)
   automatic fallback to the local CPU.
 - From a shell: `niu-agent status`, `niu-agent probe`, `niu-agent search "…"`, `niu-agent diff --base main`, `niu-agent logs --service=web`,
   `niu-agent ci --kind=failed_run` and `niu-agent git --kind=log --range=HEAD~10..HEAD`.
+- Lite-mode calls append their token counts to `local-usage.jsonl` in the state folder (counts only, no prompts or answers, mode 0600,
+  about 1 MiB cap) for the dashboard's *Token usage*; `NIU_USAGE_TOKENS=0` turns it off.
 
 **One-time setup**
 1. Publish the local container on loopback: add `ports: ["127.0.0.1:11434:11434"]` to the `ollama-local` service,
@@ -173,10 +175,10 @@ not a hard security boundary against processes running as your own user.
   set `NIU_CLAUDE_USAGE_API=0` in the service's environment (`systemctl --user edit niu-dash`, and the same for
   `niu-notify`, adding `Environment=NIU_CLAUDE_USAGE_API=0` under `[Service]`).
 
-**Claude usage** (Events tab, between *Pull requests* and the event feed): one panel with *Weekly usage* and *Token usage*
-side by side (stacked under 1200 px), collapsed and expanded together with one button.
+**LLMs usage** (Events tab, between *Pull requests* and the event feed): one panel with *Weekly usage* and *Token usage*
+side by side (stacked under 1200 px), their headers on one row, collapsed and expanded together with one button.
 
-**Weekly usage** (in *Claude usage*): a graph of the weekly Claude usage %
+**Weekly usage** (in *LLMs usage*; Claude only, since it is the plan limit): a graph of the weekly Claude usage %
 over the last 2, 5 or 10 weeks. It shows each weekly reset as a dashed marker, an **"ended N%"** label per finished week
 (the highest value seen before it reset; **"ended ≥N%"** when sampling stopped more than 6 hours before the reset), the
 Opus and Sonnet weekly lines only when Anthropic reports them, an optional 5-hour line (the *5-hour* checkbox, off by
@@ -206,12 +208,12 @@ history covers the chosen range, the graph starts at the first sample instead of
   restart; the panel then says so. To start over, delete `usage.db*` in the state folder. The browser fetches
   `GET /api/usage/history?days=35` (7 to 70, cached for 60 seconds, read-only) only while the Events tab is visible.
 
-**Token usage** (in *Claude usage*, next to *Weekly usage*): how many tokens Claude Code used, by agent type and by model. *Today / 7 days / 30 days* boxes show the totals
+**Token usage** (in *LLMs usage*, next to *Weekly usage*; the line under the boxes ends with the update time and how far back the data goes): how many tokens Claude Code and the local models (Ollama, through `niu-agent`) used, by agent type and by model. The *All / Claude / Local* switch in its header filters the whole section (default *All*; your choice is remembered in the browser). With *All*, the boxes add a "local N" line when there is local usage and the line under them splits Claude from local; local rows show up as `local:search`, `local:diff`, `local:ask`, `local:logs`, `local:ci`, `local:git` (agent-mode and lite runs of the same task share one row; failed runs count) with their own colour in *Per day*. Local tokens cost no plan quota and are not part of the Weekly %. *Today / 7 days / 30 days* boxes show the totals
 (with the output share). *By agent type* and *By model* rank horizontal bars split into **input, output, cache write and
 cache read**, each with its share. The *metric* picker (Total, Output, Input + cache write, Cache read) re-ranks the rows and
-recomputes the shares; *Per day* stacks the totals by model family (opus, sonnet, haiku, other; hourly for *Today*), and the
+recomputes the shares; *Per day* stacks the totals by model family (opus, sonnet, haiku, local, other; hourly for *Today*), and the
 *Agent × model table* is the same data as plain numbers. The research bot's own tokens (from the Research tab's ledger) appear
-as a muted row, outside the totals and shares. The header's domain filter applies; *All domains* includes sessions outside
+as a muted row, outside the totals and shares (hidden under *Local*). The header's domain filter applies; *All domains* includes sessions outside
 the workspace as `(outside)`.
 - *Cache reads dominate the totals:* every call re-reads the conversation from the prompt cache, so a long session adds many
   millions of cache-read tokens. Use the *Output* metric to see what the models wrote. Tokens are not the plan's limit
@@ -222,8 +224,10 @@ the workspace as `(outside)`.
   counters and the time are kept; the working folder is used once to find the domain and project (nothing outside the
   workspace is kept). Prompts, replies, file paths and the task-result `totalTokens` summaries are never stored, shown or
   logged. A response written as several lines is counted once. Sessions the dashboard did not observe (other devices,
-  claude.ai chats, transcripts Claude Code already deleted, 30 days by default) are missing; local-model agents (`niu-agent`)
-  are not counted.
+  claude.ai chats, transcripts Claude Code already deleted, 30 days by default) are missing, and so are `niu-agent probe`, Ollama calls made outside `niu-agent`, and the research bot (shown separately).
+- *Local models:* agent-mode runs are read from the `niu-agent` transcripts in `<NIU_AGENT_CONFIG_DIR or state folder/ollama-claude>/projects`
+  with the same rules as above. Lite-mode calls are read from `local-usage.jsonl` in the state folder (counts, endpoint name, model,
+  task and domain only; see *Local agents*).
 - *When:* the same background thread as above scans every 60 seconds, incrementally (each file's read position is remembered),
   within 32 MiB / 1.5 seconds per pass, so the first backfill takes a few minutes and the panel shows
   "Reading transcripts for the first time: N of M files". Rows are kept for 90 days in `usage.db`. `NIU_USAGE_TOKENS=0`

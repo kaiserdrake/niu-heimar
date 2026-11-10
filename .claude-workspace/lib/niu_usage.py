@@ -5,6 +5,10 @@ weekly graph, and per-message token counts read from Claude Code transcripts for
 is the background thread started by `niu-dash serve` (or `niu-dash usage-scan`); HTTP requests only read, through
 read-only connections. Nothing secret is ever stored: limit rows hold a key, a time, a percentage and a reset time; token
 rows hold numbers, ids, model names and agent types, never transcript text, prompts or paths outside the workspace.
+
+Token rows come from two kinds of source: Claude Code transcripts (`~/.claude/projects`) and local Ollama models, read from
+niu-agent's agent-mode transcripts (a second root with the same confinement) and from the counts-only lite-mode ledger
+(`local-usage.jsonl`, written by niu_local_usage). Rows carry `tok_files.source` (claude | local_agent | local_lite).
 """
 import hashlib
 import json
@@ -60,7 +64,12 @@ RE_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,59}")
 RE_AGENT_TYPE = re.compile(r"[A-Za-z0-9_.:-]{1,80}")
 RE_DOMAIN_Q = re.compile(r"[A-Za-z0-9 ._()-]{1,64}")
 OUTSIDE = "(outside)"
-FAMILIES = ("opus", "sonnet", "haiku", "other")
+RE_LOCAL_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}")
+FAMILIES = ("opus", "sonnet", "haiku", "local", "other")
+TOKEN_SOURCES = ("all", "claude", "local")
+SRC_CLAUDE, SRC_AGENT, SRC_LITE = "claude", "local_agent", "local_lite"
+LOCAL_TASKS = ("search", "diff", "ask")          # tasks an agent-mode run can have (events.db SessionStart summary)
+LEDGER_MAX = 2 * 1024 * 1024                      # a ledger file over this is refused
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS limit_samples (
@@ -74,7 +83,8 @@ CREATE INDEX IF NOT EXISTS limit_samples_ts ON limit_samples(ts);
 CREATE TABLE IF NOT EXISTS tok_files (
   id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, dev INTEGER, ino INTEGER, size INTEGER, mtime_ns INTEGER,
   offset INTEGER NOT NULL DEFAULT 0, skipping INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL CHECK (kind IN ('main','sub')),
-  session_id TEXT, agent_id TEXT, agent_type TEXT, domain TEXT, project TEXT, last_seen REAL);
+  session_id TEXT, agent_id TEXT, agent_type TEXT, domain TEXT, project TEXT, last_seen REAL,
+  source TEXT NOT NULL DEFAULT 'claude' CHECK (source IN ('claude','local_agent','local_lite')));
 CREATE TABLE IF NOT EXISTS tok_models (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, family TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tok_msgs (
   mkey INTEGER PRIMARY KEY,
@@ -83,7 +93,7 @@ CREATE TABLE IF NOT EXISTS tok_msgs (
 CREATE INDEX IF NOT EXISTS tok_msgs_ts ON tok_msgs(ts);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 """
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Fixed, content-free summaries of what went wrong; exception text is never exposed.
 ERR_NONE, ERR_READ, ERR_DB, ERR_OTHER = "none", "reading", "database", "other"
@@ -122,6 +132,10 @@ def connect(readonly: bool = False) -> sqlite3.Connection:
             con.execute("PRAGMA auto_vacuum=INCREMENTAL")  # only effective before the first table exists
         con.execute("PRAGMA journal_mode=WAL")
         con.executescript(SCHEMA)  # CREATE IF NOT EXISTS only: a version 1 file gains the token tables, its samples are untouched
+        if uv < 3 and not any(r[1] == "source" for r in con.execute("PRAGMA table_info(tok_files)")):
+            # v2 -> v3: existing rows are Claude rows (the default). SQLite can't add a CHECK here; the writer validates the value.
+            con.execute("ALTER TABLE tok_files ADD COLUMN source TEXT NOT NULL DEFAULT 'claude'")
+        con.execute("CREATE INDEX IF NOT EXISTS tok_files_source ON tok_files(source)")
         if uv < SCHEMA_VERSION:
             con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     con.row_factory = sqlite3.Row
@@ -335,6 +349,35 @@ def claude_root():
         return None
 
 
+def local_agent_root():
+    """`<NIU_AGENT_CONFIG_DIR or <state>/ollama-claude>/projects` (niu-agent's agent-mode transcripts), with the same checks as
+    claude_root(). None when missing, a symlink, or the same folder as the Claude root (never scanned twice)."""
+    base = Path(os.environ.get("NIU_AGENT_CONFIG_DIR") or _events_db_path().parent / "ollama-claude")
+    try:
+        root = base.resolve() / "projects"
+        if _stat.S_ISLNK(os.lstat(root).st_mode) or not root.is_dir():
+            return None
+        c = claude_root()
+        if c is not None and os.path.samefile(root, c):
+            return None
+        return root
+    except (OSError, RuntimeError):
+        return None
+
+
+def _ledger_path():
+    import niu_local_usage
+    return niu_local_usage.ledger_path()
+
+
+def ledger_exists():
+    try:
+        p = _ledger_path()
+        return os.path.lexists(p) or os.path.lexists(p.with_name(p.name + ".1"))
+    except (OSError, ValueError):
+        return False
+
+
 def _open_confined(path, root, uid=None):
     """Open `path` read-only for scanning, or return None. Refuses symlinks (O_NOFOLLOW), anything that is not a regular file
     (FIFOs and devices are rejected before a read), files owned by another uid, and paths that resolve outside `root`."""
@@ -429,7 +472,7 @@ def _parse_ts(v, fallback):
 CORRUPT = False
 
 
-def _extract(line, fallback_ts=0.0):
+def _extract(line, fallback_ts=0.0, salt=""):
     """Allowlist extraction from one transcript line. Returns a dict, None (not a usage line: ignored) or CORRUPT.
 
     Only ids, the model name, the four usage numbers, the timestamp and the cwd leave this function; everything else is dropped."""
@@ -459,7 +502,7 @@ def _extract(line, fallback_ts=0.0):
     if None in vals:
         return CORRUPT
     cwd = o.get("cwd")
-    return {"mkey": _mkey(mid), "model": model if isinstance(model, str) else None, "vals": vals,
+    return {"mkey": _mkey(salt + mid), "model": model if isinstance(model, str) else None, "vals": vals,
             "ts": _parse_ts(o.get("timestamp"), fallback_ts), "side": o.get("isSidechain") is True,
             "cwd": cwd if isinstance(cwd, str) and 0 < len(cwd) <= 4096 and os.path.isabs(cwd) else None}
 
@@ -520,10 +563,14 @@ def _discover(root, now):
 _scan_lock = threading.Lock()
 
 
-def _file_key(root, path):
+def _file_key(root, path, source=SRC_CLAUDE):
     """The DB key of a transcript: a hash of its path relative to the root. The folder name encodes the session's cwd, so the
-    real path (which may be outside the workspace) is never stored."""
-    return "h:" + hashlib.sha256(os.path.relpath(path, root).encode("utf-8", "surrogateescape")).hexdigest()[:32]
+    real path (which may be outside the workspace) is never stored. Claude keys are unchanged; local roots are salted with the
+    source so the same relative path under two roots can't collide."""
+    rel = os.path.relpath(path, root).encode("utf-8", "surrogateescape")
+    if source == SRC_CLAUDE:
+        return "h:" + hashlib.sha256(rel).hexdigest()[:32]
+    return "l:" + hashlib.sha256(source.encode() + b"\0" + rel).hexdigest()[:32]
 
 
 def _meta_set(con, k, v):
@@ -541,6 +588,7 @@ def _meta_int(con, k):
 def reset_offsets(con):
     """`usage-scan --full`: forget every offset so each file is read again (dedup makes that safe)."""
     con.execute("UPDATE tok_files SET offset=0, size=NULL, mtime_ns=NULL, skipping=0")
+    con.execute("DELETE FROM meta WHERE k LIKE 'lite:%'")
     _meta_set(con, "corrupt_lines", 0)
     _meta_set(con, "skipped_files", 0)
     con.commit()
@@ -549,6 +597,7 @@ def reset_offsets(con):
 class _Pass:
     def __init__(self, root, uid, budget_bytes, budget_secs, clock, now):
         self.root, self.uid, self.now = root, uid, now
+        self.source = SRC_CLAUDE
         self.bytes_left, self.deadline, self.clock = budget_bytes, clock() + budget_secs, clock
         self.messages = self.corrupt = self.skipped = self.bytes = 0
         self.models = {}
@@ -562,13 +611,39 @@ UPSERT = ("INSERT INTO tok_msgs(mkey, ts, file_id, model_id, inp, outp, cw, cr) 
 
 
 def _model_id(con, ps, raw):
-    name, fam = norm_model(raw)
-    mid = ps.models.get(name)
+    local = ps.source != SRC_CLAUDE
+    if local:
+        name, fam = (raw if isinstance(raw, str) and RE_LOCAL_MODEL.fullmatch(raw) else "local-model"), "local"
+    else:
+        name, fam = norm_model(raw)
+    key = (local, name)
+    mid = ps.models.get(key)
     if mid is None:
+        if local:
+            r = con.execute("SELECT family FROM tok_models WHERE name=?", (name,)).fetchone()
+            if r is not None and r[0] != "local":
+                name = "local:" + name[:73]            # a Claude row is never re-labelled
         con.execute("INSERT OR IGNORE INTO tok_models(name, family) VALUES (?, ?)", (name, fam))
         mid = con.execute("SELECT id FROM tok_models WHERE name=?", (name,)).fetchone()[0]
-        ps.models[name] = mid
+        ps.models[key] = mid
     return mid
+
+
+def _local_task(session_id):
+    """Task of an agent-mode run from the events.db SessionStart summary ('search' | 'diff' | 'ask'), else None. Best effort."""
+    if not (isinstance(session_id, str) and RE_UUID.fullmatch(session_id)):
+        return None
+    try:
+        import niu_events
+        ec = niu_events.connect(readonly=True)
+        try:
+            r = ec.execute("SELECT summary FROM events WHERE session_id=? AND event='SessionStart' LIMIT 1", (session_id,)).fetchone()
+        finally:
+            ec.close()
+        t = json.loads(r[0]).get("task") if r and r[0] else None
+    except (OSError, sqlite3.Error, ValueError, AttributeError, RecursionError):
+        return None
+    return t if t in LOCAL_TASKS else None
 
 
 def _scan_file(con, ps, path, kind, session_id, agent_id, est, row):
@@ -582,9 +657,17 @@ def _scan_file(con, ps, path, kind, session_id, agent_id, est, row):
         offset, skipping = (row["offset"], row["skipping"]) if row else (0, 0)
         if row and ((row["dev"], row["ino"]) != (st.st_dev, st.st_ino) or st.st_size < offset):
             offset, skipping = 0, 0   # rotated or rewritten
-        agent_type = row["agent_type"] if row else ("session" if kind == "main" else None)
+        agent = ps.source == SRC_AGENT
+        if row:
+            agent_type = row["agent_type"]
+        elif agent:
+            agent_type = "local:agent" if kind == "main" else "local:subagent"
+        else:
+            agent_type = "session" if kind == "main" else None
+        if agent and kind == "main" and agent_type == "local:agent":
+            agent_type = f"local:{_local_task(session_id) or 'agent'}"
         domain, project = (row["domain"], row["project"]) if row else (None, None)
-        if kind == "sub" and agent_type in (None, "subagent"):
+        if kind == "sub" and not agent and agent_type in (None, "subagent"):
             agent_type = _agent_type(os.path.join(os.path.dirname(path), f"agent-{agent_id}.meta.json"), agent_id, ps.root, ps.uid)
         if kind == "sub" and domain is None:
             r = con.execute("SELECT domain, project FROM tok_files WHERE session_id=? AND kind='main' AND domain IS NOT NULL LIMIT 1", (session_id,)).fetchone()
@@ -593,23 +676,23 @@ def _scan_file(con, ps, path, kind, session_id, agent_id, est, row):
         if row:
             fid = row["id"]
         else:
-            fid = con.execute("INSERT INTO tok_files(path, kind, session_id, agent_id, agent_type, domain, project, last_seen) VALUES (?,?,?,?,?,?,?,?)",
-                              (_file_key(ps.root, path), kind, session_id, agent_id, agent_type, domain, project, ps.now)).lastrowid
+            fid = con.execute("INSERT INTO tok_files(path, kind, session_id, agent_id, agent_type, domain, project, last_seen, source) VALUES (?,?,?,?,?,?,?,?,?)",
+                              (_file_key(ps.root, path, ps.source), kind, session_id, agent_id, agent_type, domain, project, ps.now, ps.source)).lastrowid
         side = {"id": None}
         fallback_ts = est.st_mtime
         batch = []
 
         def side_id():
             if side["id"] is None:
-                sp = _file_key(ps.root, path) + "#side"
-                con.execute("INSERT OR IGNORE INTO tok_files(path, kind, session_id, agent_type, domain, project, last_seen) VALUES (?, 'sub', ?, 'subagent', ?, ?, ?)",
-                            (sp, session_id, domain, project, ps.now))
+                sp = _file_key(ps.root, path, ps.source) + "#side"
+                con.execute("INSERT OR IGNORE INTO tok_files(path, kind, session_id, agent_type, domain, project, last_seen, source) VALUES (?, 'sub', ?, ?, ?, ?, ?, ?)",
+                            (sp, session_id, "local:subagent" if agent else "subagent", domain, project, ps.now, ps.source))
                 side["id"] = con.execute("SELECT id FROM tok_files WHERE path=?", (sp,)).fetchone()[0]
             return side["id"]
 
         def handle(line):
             nonlocal domain, project
-            r = _extract(line, fallback_ts)
+            r = _extract(line, fallback_ts, "local:" if agent else "")
             if r is None:
                 return
             if r is CORRUPT:
@@ -674,15 +757,94 @@ def _scan_file(con, ps, path, kind, session_id, agent_id, est, row):
         os.close(fd)
 
 
-def scan_once(budget_bytes=SCAN_BYTES, budget_secs=SCAN_SECS, now=None, clock=time.monotonic, full=False, uid=None, root=None, con=None):
+def _scan_ledger(con, ps):
+    """Ingest the lite-mode ledger (and its one old generation) as `local_lite` rows. Whole-file re-reads are safe: the message key
+    is the line's own id. Every field is re-validated by niu_local_usage.parse_line. Returns the number of unread bytes."""
+    import niu_local_usage as L
+    lp = L.ledger_path()
+    ldir = lp.parent
+    pending, groups = 0, {}
+    for p in (lp.with_name(lp.name + ".1"), lp):
+        if ps.out_of_budget():
+            try:
+                pending += max(0, os.lstat(p).st_size)
+            except OSError:
+                pass
+            continue
+        fd = _open_confined(p, ldir, ps.uid)
+        if fd is None:
+            continue
+        try:
+            st = os.fstat(fd)
+            mk = "lite:" + p.name
+            sig = json.dumps([st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns])
+            r = con.execute("SELECT v FROM meta WHERE k=?", (mk,)).fetchone()
+            if r and r[0] == sig:
+                continue
+            if st.st_size > LEDGER_MAX:
+                ps.skipped += 1
+                continue
+            buf = b""
+            while len(buf) <= LEDGER_MAX:
+                chunk = os.read(fd, CHUNK)
+                if not chunk:
+                    break
+                buf += chunk
+            ps.bytes += len(buf)
+            ps.bytes_left -= len(buf)
+            lines = buf.split(b"\n")
+            if buf and not buf.endswith(b"\n"):
+                lines.pop()                      # a half-written last line is read next time
+            for ln in lines:
+                if not ln.strip():
+                    continue
+                o = L.parse_line(ln, ps.now)
+                if o is None:
+                    ps.corrupt += 1
+                    continue
+                if o["ts"] < ps.now - TOK_RETENTION_DAYS * 86400:
+                    continue
+                groups.setdefault((o["task"], o["domain"]), []).append(o)
+            _ledger_flush(con, ps, groups)
+            groups = {}
+            _meta_set(con, mk, sig)
+        finally:
+            os.close(fd)
+    return pending
+
+
+def _ledger_flush(con, ps, groups):
+    prev = ps.source
+    ps.source = SRC_LITE
+    try:
+        for (task, dom), rows in groups.items():
+            key = "l:lite:" + hashlib.sha256((task + "\0" + (dom or "")).encode()).hexdigest()[:32]
+            con.execute("INSERT OR IGNORE INTO tok_files(path, kind, session_id, agent_type, domain, project, last_seen, source) "
+                        "VALUES (?, 'main', NULL, ?, ?, NULL, ?, ?)", (key, f"local:{task}", dom, ps.now, SRC_LITE))
+            fid = con.execute("SELECT id FROM tok_files WHERE path=?", (key,)).fetchone()[0]
+            con.execute("UPDATE tok_files SET last_seen=? WHERE id=?", (ps.now, fid))
+            con.executemany(UPSERT, [(_mkey("lite:" + o["id"]), o["ts"], fid, _model_id(con, ps, o["model"]), o["in"], o["out"], 0, 0) for o in rows])
+            ps.messages += len(rows)
+    finally:
+        ps.source = prev
+    con.commit()
+
+
+def scan_once(budget_bytes=SCAN_BYTES, budget_secs=SCAN_SECS, now=None, clock=time.monotonic, full=False, uid=None, root=None, roots=None, con=None):
     """One incremental pass over the transcripts, within a byte and a time budget. Returns counts only.
 
+    `roots` is [(source, path)]; by default the Claude root, then niu-agent's agent-mode root (Claude first, so a big local
+    backlog can't starve it), then the lite-call ledger. `root=` (tests) means just [("claude", root)].
     Raises sqlite3.Error when the database is busy (the caller skips the tick). Never raises for a bad file."""
     now = time.time() if now is None else now
-    root = root or claude_root()
+    explicit = root is not None or roots is not None
+    if roots is None:
+        roots = [(SRC_CLAUDE, root)] if root else [(SRC_CLAUDE, claude_root()), (SRC_AGENT, local_agent_root())]
+    roots = [(src, r) for src, r in roots if r is not None]
+    with_ledger = not explicit and ledger_exists()
     res = {"files": 0, "messages": 0, "corrupt_lines": 0, "skipped_files": 0, "bytes": 0, "files_done": 0, "files_total": 0,
-           "bytes_pending": 0, "scanning": False, "busy": False, "root": root is not None}
-    if root is None:
+           "bytes_pending": 0, "scanning": False, "busy": False, "root": bool(roots)}
+    if not roots and not with_ledger:
         return res
     if not _scan_lock.acquire(blocking=False):
         res["busy"] = True
@@ -693,39 +855,55 @@ def scan_once(budget_bytes=SCAN_BYTES, budget_secs=SCAN_SECS, now=None, clock=ti
             con = connect()
         if full:
             reset_offsets(con)
-        known = {r["path"]: r for r in con.execute("SELECT id, path, dev, ino, size, mtime_ns, offset, skipping, agent_type, domain, project, last_seen FROM tok_files")}
-        ps = _Pass(root, os.getuid() if uid is None else uid, budget_bytes, budget_secs, clock, now)
-        found = _discover(root, now)
-        done, pending_bytes, touch = 0, 0, []
-        for path, kind, sid, aid, est in found:
-            row = known.get(_file_key(root, path))
-            if row and row["size"] == est.st_size and row["mtime_ns"] == est.st_mtime_ns and (row["dev"], row["ino"]) == (est.st_dev, est.st_ino):
-                done += 1
-                if row["last_seen"] is None or now - row["last_seen"] > 3600:
-                    touch.append((now, row["id"]))
-                continue
-            if ps.out_of_budget():
-                pending_bytes += max(0, est.st_size - (row["offset"] if row else 0))
-                continue
-            try:
-                fid, finished, left = _scan_file(con, ps, path, kind, sid, aid, est, row)
-                res["files"] += fid is not None
-                if finished:
+        known = {r["path"]: r for r in con.execute("SELECT id, path, dev, ino, size, mtime_ns, offset, skipping, agent_type, domain, project, last_seen, kind, session_id, source FROM tok_files")}
+        ps = _Pass(None, os.getuid() if uid is None else uid, budget_bytes, budget_secs, clock, now)
+        done, pending_bytes, touch, total = 0, 0, [], 0
+        for source, rt in roots:
+            ps.root, ps.source = rt, source
+            found = _discover(rt, now)
+            total += len(found)
+            for path, kind, sid, aid, est in found:
+                row = known.get(_file_key(rt, path, source))
+                if row and row["size"] == est.st_size and row["mtime_ns"] == est.st_mtime_ns and (row["dev"], row["ino"]) == (est.st_dev, est.st_ino):
                     done += 1
-                else:
-                    pending_bytes += left
+                    if row["last_seen"] is None or now - row["last_seen"] > 3600:
+                        touch.append((now, row["id"]))
+                    if source == SRC_AGENT and row["kind"] == "main" and row["agent_type"] == "local:agent" and now - est.st_mtime < 7 * 86400:
+                        t = _local_task(sid)             # the SessionStart event may have arrived after the first scan
+                        if t:
+                            con.execute("UPDATE tok_files SET agent_type=? WHERE id=?", (f"local:{t}", row["id"]))
+                    continue
+                if ps.out_of_budget():
+                    pending_bytes += max(0, est.st_size - (row["offset"] if row else 0))
+                    continue
+                try:
+                    fid, finished, left = _scan_file(con, ps, path, kind, sid, aid, est, row)
+                    res["files"] += fid is not None
+                    if finished:
+                        done += 1
+                    else:
+                        pending_bytes += left
+                except sqlite3.OperationalError:
+                    con.rollback()
+                    raise
+                except Exception as e:  # noqa: BLE001 - a bad file never stops the pass
+                    con.rollback()
+                    ps.models.clear()
+                    ps.skipped += 1
+                    _debug(e, row["id"] if row else None)
+                    done += 1   # not retried until it changes
+        if with_ledger:
+            try:
+                pending_bytes += _scan_ledger(con, ps)
             except sqlite3.OperationalError:
                 con.rollback()
                 raise
-            except Exception as e:  # noqa: BLE001 - a bad file never stops the pass
+            except Exception as e:  # noqa: BLE001 - a bad ledger never stops the pass
                 con.rollback()
-                ps.models.clear()
                 ps.skipped += 1
-                _debug(e, row["id"] if row else None)
-                done += 1   # not retried until it changes
+                _debug(e)
         if touch:
             con.executemany("UPDATE tok_files SET last_seen=? WHERE id=?", touch)
-        total = len(found)
         _meta_set(con, "corrupt_lines", _meta_int(con, "corrupt_lines") + ps.corrupt)
         _meta_set(con, "skipped_files", _meta_int(con, "skipped_files") + ps.skipped)
         _meta_set(con, "last_scan", int(now))
@@ -941,13 +1119,18 @@ def _starts(now):
     return {"today": m.timestamp(), "7d": (m - timedelta(days=6)).timestamp(), "30d": (m - timedelta(days=29)).timestamp()}
 
 
-def _empty_tokens(state, rng, now, domain=""):
+def clamp_source(v):
+    return v if v in TOKEN_SOURCES else "all"
+
+
+def _empty_tokens(state, rng, now, domain="", source="all"):
     st = _starts(now)
-    return {"state": state, "range": rng, "since": int(st[rng]), "now": int(now), "tz": _tz_name(), "domain": domain,
-            "kpis": {r: {"total": 0, "output": 0} for r in RANGES},
+    return {"state": state, "range": rng, "since": int(st[rng]), "now": int(now), "tz": _tz_name(), "domain": domain, "source": source,
+            "kpis": {r: {"total": 0, "output": 0, "local": 0} for r in RANGES},
             "totals": {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0, "total": 0, "messages": 0, "sessions": 0},
+            "by_source": {s_: {"total": 0, "output": 0, "messages": 0} for s_ in ("claude", "local")},
             "by_agent": [], "by_model": [], "matrix": {"agents": [], "models": [], "total": []}, "daily": [],
-            "coverage": {"oldest": None, "last_scan": None, "scanning": False, "files_done": 0, "files_total": 0, "corrupt_lines": 0, "bytes_pending": 0}}
+            "coverage": {"oldest": None, "last_scan": None, "scanning": False, "files_done": 0, "files_total": 0, "corrupt_lines": 0, "bytes_pending": 0, "local_root": False}}
 
 
 def _kinds(i, o, w, r):
@@ -966,37 +1149,46 @@ def _fold(rows, limit):
     return rows[:limit] + [other]
 
 
-def tokens(range_=None, domain=None, now=None):
+def tokens(range_=None, domain=None, now=None, source="all"):
     """Payload of GET /api/usage/tokens (read-only). Never raises; failures give a fixed `error` state. No paths, no titles, no text."""
     now = time.time() if now is None else now
     rng = clamp_range(range_)
+    source = clamp_source(source)
     domain = domain if isinstance(domain, str) and RE_DOMAIN_Q.fullmatch(domain) else ""
     if tokens_disabled():
-        return _empty_tokens("disabled", rng, now)
+        return _empty_tokens("disabled", rng, now, source=source)
     try:
         con = connect(readonly=True)
     except FileNotFoundError:
-        return _empty_tokens("empty", rng, now)
+        return _empty_tokens("empty", rng, now, source=source)
     except sqlite3.Error:
-        return _empty_tokens("error", rng, now)
+        return _empty_tokens("error", rng, now, source=source)
     try:
         try:
             doms = {r[0] for r in con.execute("SELECT DISTINCT COALESCE(domain, ?) FROM tok_files", (OUTSIDE,))}
         except sqlite3.OperationalError:
-            return _empty_tokens("empty", rng, now)          # a version 1 file: the scanner has not run yet
+            return _empty_tokens("empty", rng, now, source=source)          # a version 1 file: the scanner has not run yet
         if domain not in doms:
             domain = ""
-        out = _empty_tokens("ok", rng, now, domain)
+        out = _empty_tokens("ok", rng, now, domain, source)
+        # a version 2 file the writer has not migrated yet has no `source` column: every row is a Claude row
+        SRC = "f.source" if any(r[1] == "source" for r in con.execute("PRAGMA table_info(tok_files)")) else "'claude'"
         st = _starts(now)
         since, until = st[rng], now + 1
         dom_sql, dom_arg = (" AND COALESCE(f.domain, ?) = ?", [OUTSIDE, domain]) if domain else ("", [])
-        base = "FROM tok_msgs t JOIN tok_files f ON f.id = t.file_id JOIN tok_models m ON m.id = t.model_id WHERE t.ts >= ? AND t.ts < ?" + dom_sql
+        base0 = "FROM tok_msgs t JOIN tok_files f ON f.id = t.file_id JOIN tok_models m ON m.id = t.model_id WHERE t.ts >= ? AND t.ts < ?" + dom_sql
+        base = base0 + {"all": "", "claude": f" AND {SRC} = 'claude'", "local": f" AND {SRC} <> 'claude'"}[source]   # literals from a fixed enum
 
         k = con.execute("SELECT " + ", ".join(f"COALESCE(SUM(CASE WHEN t.ts >= {float(st[r])!r} THEN t.inp+t.outp+t.cw+t.cr END),0),"
-                                              f"COALESCE(SUM(CASE WHEN t.ts >= {float(st[r])!r} THEN t.outp END),0)" for r in RANGES)
+                                              f"COALESCE(SUM(CASE WHEN t.ts >= {float(st[r])!r} THEN t.outp END),0),"
+                                              f"COALESCE(SUM(CASE WHEN t.ts >= {float(st[r])!r} AND {SRC} <> 'claude' THEN t.inp+t.outp+t.cw+t.cr END),0)" for r in RANGES)
                         + " " + base, [st["30d"], until, *dom_arg]).fetchone()
         for i, r in enumerate(RANGES):
-            out["kpis"][r] = {"total": int(k[2 * i]), "output": int(k[2 * i + 1])}
+            out["kpis"][r] = {"total": int(k[3 * i]), "output": int(k[3 * i + 1]), "local": int(k[3 * i + 2])}
+        for sname, tot_, out_, n_ in con.execute(
+                f"SELECT CASE WHEN {SRC} = 'claude' THEN 'claude' ELSE 'local' END, COALESCE(SUM(t.inp+t.outp+t.cw+t.cr),0), COALESCE(SUM(t.outp),0), COUNT(*) "
+                + base0 + " GROUP BY 1", [since, until, *dom_arg]):
+            out["by_source"][sname] = {"total": int(tot_), "output": int(out_), "messages": int(n_)}
 
         agents, models, cells, tot, msgs = {}, {}, {}, [0, 0, 0, 0], 0
         for a, mn, fam, i, o, w, r_, n in con.execute(
@@ -1014,6 +1206,8 @@ def tokens(range_=None, domain=None, now=None):
             msgs += n
         sessions = set()
         for a, mn, sid in con.execute("SELECT DISTINCT COALESCE(f.agent_type, 'subagent'), m.name, f.session_id " + base, [since, until, *dom_arg]):
+            if sid is None:          # lite-mode rows have no session: they count as calls, not sessions
+                continue
             sessions.add(sid)
             if a in agents:
                 agents[a]["sessions"].add(sid)
@@ -1079,14 +1273,15 @@ def tokens(range_=None, domain=None, now=None):
             last_scan = None
         out["coverage"] = {"oldest": None if oldest is None else int(oldest), "last_scan": last_scan, "scanning": scanning,
                            "files_done": _n(prog.get("files_done")), "files_total": _n(prog.get("files_total")),
-                           "bytes_pending": _n(prog.get("bytes_pending")), "corrupt_lines": _n(int(meta["corrupt_lines"])) if str(meta.get("corrupt_lines", "")).isdigit() else 0}
+                           "bytes_pending": _n(prog.get("bytes_pending")), "corrupt_lines": _n(int(meta["corrupt_lines"])) if str(meta.get("corrupt_lines", "")).isdigit() else 0,
+                           "local_root": local_agent_root() is not None}
         if scanning:
             out["state"] = "scanning"
         elif not has_any:
             out["state"] = "empty"
         return out
     except sqlite3.Error:
-        return _empty_tokens("error", rng, now)
+        return _empty_tokens("error", rng, now, source=source)
     finally:
         con.close()
 
@@ -1094,17 +1289,18 @@ def tokens(range_=None, domain=None, now=None):
 _tok_memo = {}
 
 
-def tokens_cached(range_=None, domain=None, now=None):
-    """tokens() memoised per (range, domain) for 60 s; the memo is small and bounded."""
+def tokens_cached(range_=None, domain=None, now=None, source="all"):
+    """tokens() memoised per (range, domain, source) for 60 s; the memo is small and bounded."""
     rng = clamp_range(range_)
+    src = clamp_source(source)
     dom = domain if isinstance(domain, str) and RE_DOMAIN_Q.fullmatch(domain) else ""
     t = time.time() if now is None else now
-    key = (rng, dom)
+    key = (rng, dom, src)
     with _memo_lock:
         hit = _tok_memo.get(key)
         if hit and 0 <= t - hit[0] < MEMO_SECS:
             return hit[1]
-    payload = tokens(rng, dom, t)
+    payload = tokens(rng, dom, t, src)
     with _memo_lock:
         if len(_tok_memo) >= 64:
             _tok_memo.clear()

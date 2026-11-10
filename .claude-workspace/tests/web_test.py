@@ -129,10 +129,13 @@ try:
     # Weekly usage panel (Events tab): markup, route, and the render code never uses innerHTML
     check(b"p-usage" in raw and b'id="usagegraph"' in raw and b'id="usagesum"' in raw and b'aria-live="polite"' in raw, "Weekly usage panel markup")
     check(raw.index(b'id="prs"') < raw.index(b'id="usagebody"') < raw.index(b'id="feed"'), "Weekly usage sits between Pull requests and the Event feed")
-    check(b".p-usage" in css and b'"left usage"' in css and b"tokens" not in css.split(b"grid-template-areas")[1].split(b";")[0] and b".usagegroup" in css and b"max-width: 1199px" in css, "Events grid: one Claude usage area; weekly | tokens side by side inside it, stacked under 1200px")
+    check(b".p-usage" in css and b'"left usage"' in css and b"tokens" not in css.split(b"grid-template-areas")[1].split(b";")[0] and b".usagegroup" in css and b"max-width: 1199px" in css, "Events grid: one LLMs usage area; weekly | tokens side by side inside it, stacked under 1200px")
+    check(b"grid-template-rows: subgrid" in css and b'id="tokupd"' not in raw, "Weekly and Token usage headers share one row; the token status is not in its header")
     usage_html = raw.split(b'id="usagepanel"')[1].split(b"</section>")[0]
     check(b'id="tokpanel"' in usage_html and b'id="usagegraph"' in usage_html and b'id="toktoggle"' not in raw and usage_html.count(b"aria-expanded") == 1, "Weekly and Token usage share one panel and one collapse button")
     check(b'id="tokpanel"' in raw and b'id="tokbody"' in raw and b'id="toksum"' in raw and b'id="tokmetric"' in raw and b'aria-live="polite"' in raw, "Token usage panel markup")
+    tokp = raw.split(b'id="tokpanel"')[1].split(b"</section>")[0]
+    check(all(b'id="tok-s-%s"' % k in tokp for k in (b"all", b"claude", b"local")) and b'aria-label="Token usage source"' in tokp and b".fam-local" in css, "Token usage source switch (All / Claude / Local) in the sub-header and .fam-local in the CSS")
     check(raw.index(b'id="usagebody"') < raw.index(b'id="tokbody"') < raw.index(b'id="feed"'), "Token usage sits after Weekly usage and before the Event feed")
     check(b" onclick=" not in raw and b" style=" not in raw.split(b'id="tokpanel"')[1].split(b"</section>")[0], "no inline handlers or styles in the Token usage markup")
     appjs = req("GET", "/app.js")[3].decode()
@@ -151,6 +154,8 @@ try:
     for q in ("?range=../../x", "?range=%3Cscript%3E&domain=%3Cscript%3E", "?range=30d&domain=" + "a" * 3000, "?domain=bogus"):
         check(req("GET", "/api/usage/tokens" + q)[0] == 200, f"usage tokens {q[:40]} answered normally")
     check(req("GET", "/api/usage/tokens?range=today")[2]["range"] == "today", "range=today accepted")
+    check(req("GET", "/api/usage/tokens?source=local")[0] == 200 and req("GET", "/api/usage/tokens?source=%3Cscript%3E")[0] == 200, "usage tokens: source param answered normally")
+    check("&source=" in appjs and "niu.tokens.source" in appjs, "front end sends source only when set and stores the choice")
     check(req("POST", "/api/usage/tokens", {}, POSTH)[0] == 404, "no POST on /api/usage/tokens")
     check(b"tokens" in appjs.encode() and "/api/usage/tokens?range=" in appjs, "front end uses /api/usage/tokens")
     st, _, js, rawr = req("GET", "/api/research")

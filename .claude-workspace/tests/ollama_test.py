@@ -31,7 +31,7 @@ def check(cond, msg):
 class Fake:
     def __init__(self, models, key=None):
         self.models, self.chats, self.up, self.key = list(models), [], True, key
-        self.redirect_to, self.auth_seen = None, []
+        self.redirect_to, self.auth_seen, self.no_counts = None, [], False
         s = socket.socket(); s.bind(("127.0.0.1", 0)); self.port = s.getsockname()[1]; s.close()
         fake = self
 
@@ -70,7 +70,10 @@ class Fake:
                     return
                 if self.path == "/api/chat":
                     fake.chats.append(body)
-                    return self._send({"message": {"role": "assistant", "content": "LITE ANSWER src/a.py:1"}})
+                    out = {"message": {"role": "assistant", "content": "LITE ANSWER src/a.py:1"}}
+                    if not fake.no_counts:
+                        out.update(prompt_eval_count=123, eval_count=45)
+                    return self._send(out)
                 self._send({"error": "nf"}, 404)
 
         self.srv = ThreadingHTTPServer(("127.0.0.1", self.port), H)
@@ -223,6 +226,100 @@ try:
     sent = json.dumps(local.chats[-1]) if local.chats else ""
     check(res.get("ok") and res.get("mode") == "lite", "local diff review")
     check("return 2" in sent and "CHANGED-SECRET" not in sent and "skipped: protected path" in sent, "diff context honours guard")
+
+    # 6b. lite calls append a counts-only line to the usage ledger
+    led = tmp / "l.jsonl"
+    res = agent("search", "SECRET-QUERY-TEXT LiveThing", extra={"FAKE_CLAUDE_FAIL": "1", "NIU_LOCAL_USAGE_LEDGER": str(led)})
+    check(res.get("mode") == "lite" and res.get("ok"), f"lite fallback ran: {res}")
+    rows = [json.loads(x) for x in led.read_text().splitlines()] if led.exists() else []
+    check(len(rows) == 1, f"exactly one ledger line per lite call: {rows}")
+    if rows:
+        row = rows[0]
+        check(set(row) == {"v", "id", "ts", "ep", "model", "task", "domain", "in", "out"} and row["ep"] == "remote" and row["model"] == "gpt-oss:20b"
+              and row["task"] == "search" and row["domain"] == "PERSONAL" and row["in"] == 123 and row["out"] == 45 and row["v"] == 1,
+              f"ledger line content (run_task passes the domain): {row}")
+    raw_led = led.read_text()
+    for needle in ("LITE ANSWER", "SECRET-QUERY-TEXT", "LiveThing", remote.url, local.url, "gw-test-key-123", str(proj), "src/a.py"):
+        check(needle not in raw_led, f"ledger holds no {needle!r}")
+    check(oct(led.stat().st_mode & 0o777) == "0o600", f"ledger is 0600: {oct(led.stat().st_mode)}")
+    check(oct(led.parent.stat().st_mode & 0o777) in ("0o700", oct(tmp.stat().st_mode & 0o777)), "ledger dir mode")
+    # digest path (git log through run_digest) passes the domain too
+    led2 = tmp / "l2.jsonl"
+    res = agent("git", "--kind", "log", extra={"NIU_LOCAL_USAGE_LEDGER": str(led2)})
+    rows2 = [json.loads(x) for x in led2.read_text().splitlines()] if led2.exists() else []
+    check(res.get("ok") and res.get("mode") == "digest" and len(rows2) == 1 and rows2[0]["task"] == "git" and rows2[0]["domain"] == "PERSONAL",
+          f"digest records task git with the domain: {res.get('notes')} {rows2}")
+
+    def lite_call(env_extra, ep_url=None):
+        """lite_run against the fake endpoint in a subprocess; returns (answer, exception name)."""
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); import niu_ollama as no\n"
+                "try:\n    print(no.lite_run({'name': 'remote', 'url': sys.argv[2]}, 'gpt-oss:20b', 'ask', 'q', 'ctx', 10, domain='PERSONAL'))\n"
+                "except Exception as e:\n    print('EXC', type(e).__name__)\n")
+        r = subprocess.run([sys.executable, "-c", code, str(SH / "lib"), ep_url or remote.url], env=dict(base_env, **env_extra), capture_output=True, text=True, timeout=30)
+        return r.stdout.strip(), r.stderr.strip()
+
+    ref, _ = lite_call({"NIU_LOCAL_USAGE_LEDGER": str(tmp / "ref.jsonl")})
+    check(ref == "LITE ANSWER src/a.py:1", f"reference answer: {ref}")
+    target = tmp / "target.jsonl"
+    target.write_text("keep\n")
+    os.chmod(target, 0o600)
+    cases = {"symlink": lambda p: p.symlink_to(target), "directory": lambda p: p.mkdir()}
+    for name, mk in cases.items():
+        pth = tmp / f"iso-{name}.jsonl"
+        mk(pth)
+        ans, err = lite_call({"NIU_LOCAL_USAGE_LEDGER": str(pth)})
+        check(ans == ref and err == "", f"ledger as a {name}: same answer, no error ({ans!r} {err!r})")
+    check(target.read_text() == "keep\n", "nothing written through the symlink")
+    if os.getuid() != 0:
+        ro = tmp / "ro"
+        ro.mkdir()
+        os.chmod(ro, 0o500)
+        ans, err = lite_call({"NIU_LOCAL_USAGE_LEDGER": str(ro / "sub" / "l.jsonl")})
+        check(ans == ref and err == "" and not (ro / "sub").exists(), "unwritable ledger dir: same answer")
+        os.chmod(ro, 0o700)
+    loose = tmp / "loose.jsonl"
+    loose.write_text("")
+    os.chmod(loose, 0o644)
+    ans, _ = lite_call({"NIU_LOCAL_USAGE_LEDGER": str(loose)})
+    check(ans == ref and loose.read_text() == "", "a file with group/other bits is not written")
+    remote.no_counts = True
+    nc = tmp / "nc.jsonl"
+    ans, _ = lite_call({"NIU_LOCAL_USAGE_LEDGER": str(nc)})
+    check(ans == ref and not nc.exists(), "response without counts: no line")
+    remote.no_counts = False
+    for sw in ("NIU_USAGE_TOKENS", "NIU_USAGE_COLLECT"):
+        off = tmp / f"off-{sw}.jsonl"
+        ans, _ = lite_call({"NIU_LOCAL_USAGE_LEDGER": str(off), sw: "0"})
+        check(ans == ref and not off.exists(), f"{sw}=0: no ledger line")
+    # rotation at 512 KiB
+    rot = tmp / "rot.jsonl"
+    rot.write_text(("x" * 99 + "\n") * 5400)
+    os.chmod(rot, 0o600)
+    ans, _ = lite_call({"NIU_LOCAL_USAGE_LEDGER": str(rot)})
+    old = rot.with_name("rot.jsonl.1")
+    check(ans == ref and old.exists() and old.stat().st_size > 512 * 1024 and len(rot.read_text().splitlines()) == 1 and oct(old.stat().st_mode & 0o777) == "0o600",
+          f"rotation: .1 holds the full file, the new one has one line")
+    # parallel appends do not interleave
+    par = tmp / "par.jsonl"
+    ps_ = [subprocess.Popen([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import niu_local_usage as L\n"
+                             "for _ in range(40): L.record('remote', 'qwen3:14b', 'ask', 'PERSONAL', {'prompt_eval_count': 1, 'eval_count': 2})",
+                             str(SH / "lib")], env=dict(base_env, NIU_LOCAL_USAGE_LEDGER=str(par))) for _ in range(4)]
+    for p_ in ps_:
+        p_.wait(30)
+    lines_ = par.read_text().splitlines()
+    check(len(lines_) == 160 and all(json.loads(x)["out"] == 2 for x in lines_), f"parallel appends: {len(lines_)} whole lines")
+
+    # config dir: niu-agent setup and niu_usage.local_agent_root() agree
+    cfgd = tmp / "cfgdir"
+    r = subprocess.run([sys.executable, str(AGENT), "setup"], env=dict(base_env, NIU_AGENT_CONFIG_DIR=str(cfgd)), capture_output=True, text=True, timeout=30)
+    printed = r.stdout.strip().rsplit(" ", 1)[-1]
+    r2 = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import niu_usage as U; print(U.local_agent_root())", str(SH / "lib")],
+                        env=dict(base_env, NIU_AGENT_CONFIG_DIR=str(cfgd), CLAUDE_CONFIG_DIR=str(tmp / "no-claude")), capture_output=True, text=True, timeout=30)
+    check(printed == str(cfgd) and r2.stdout.strip() == "None", f"setup path {printed!r}; no projects dir yet: {r2.stdout.strip()!r}")
+    (cfgd / "projects").mkdir(exist_ok=True)
+    r2 = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import niu_usage as U; print(U.local_agent_root())", str(SH / "lib")],
+                        env=dict(base_env, NIU_AGENT_CONFIG_DIR=str(cfgd), CLAUDE_CONFIG_DIR=str(tmp / "no-claude")), capture_output=True, text=True, timeout=30)
+    check(r2.stdout.strip() == f"{printed}/projects" or r2.stdout.strip() == str(Path(printed).resolve() / "projects"), f"same dir for the same env: {printed} {r2.stdout.strip()}")
 
     # 7. GPU box down -> local; both down -> clear failure
     remote.stop()

@@ -97,9 +97,9 @@
     <div id="prs" class="pb"></div>
   </section>
 
-  <section id="usagepanel" class="panel p-usage" aria-label="Claude usage">
-    <div class="ph"><h2>Claude usage</h2>
-      <button id="usagetoggle" class="ghost tiny usagetoggle" aria-expanded="true" aria-controls="usagegroup" aria-label="Collapse Claude usage">▾</button></div>
+  <section id="usagepanel" class="panel p-usage" aria-label="LLMs usage">
+    <div class="ph"><h2>LLMs usage</h2>
+      <button id="usagetoggle" class="ghost tiny usagetoggle" aria-expanded="true" aria-controls="usagegroup" aria-label="Collapse LLMs usage">▾</button></div>
     <div id="usagegroup" class="usagegroup">
     <div class="usub" role="region" aria-label="Weekly Claude usage">
     <div class="ph usubh"><h3>Weekly usage</h3>
@@ -120,11 +120,14 @@
       <span class="seg" role="group" aria-label="Token usage range">
         <button id="tok-r-today" class="segbtn" aria-pressed="false">Today</button><button id="tok-r-7d" class="segbtn on" aria-pressed="true">7 days</button><button id="tok-r-30d" class="segbtn" aria-pressed="false">30 days</button>
       </span>
+      <span class="seg" role="group" aria-label="Token usage source">
+        <button id="tok-s-all" class="segbtn on" aria-pressed="true">All</button><button id="tok-s-claude" class="segbtn" aria-pressed="false">Claude</button><button id="tok-s-local" class="segbtn" aria-pressed="false">Local</button>
+      </span>
       <label class="check usage5h" for="tokmetric">metric
         <select id="tokmetric" aria-label="Metric for ranking and shares">
           <option value="total">Total</option><option value="output">Output</option><option value="inout">Input + cache write</option><option value="cache_read">Cache read</option>
         </select></label>
-      <span id="tokupd" class="small muted"></span></div>
+    </div>
     <div id="tokwrap" class="pb tokwrap">
       <div id="tokbody" class="tokbody"></div>
       <p id="toksum" class="usagesum small" aria-live="polite"></p>
