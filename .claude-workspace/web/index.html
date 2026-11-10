@@ -97,9 +97,12 @@
     <div id="prs" class="pb"></div>
   </section>
 
-  <section id="usagepanel" class="panel p-usage" aria-label="Weekly Claude usage">
-    <div class="ph"><h2>Weekly usage</h2>
-      <button id="usagetoggle" class="ghost tiny usagetoggle" aria-expanded="true" aria-controls="usagebody" aria-label="Collapse Weekly usage">▾</button>
+  <section id="usagepanel" class="panel p-usage" aria-label="Claude usage">
+    <div class="ph"><h2>Claude usage</h2>
+      <button id="usagetoggle" class="ghost tiny usagetoggle" aria-expanded="true" aria-controls="usagegroup" aria-label="Collapse Claude usage">▾</button></div>
+    <div id="usagegroup" class="usagegroup">
+    <div class="usub" role="region" aria-label="Weekly Claude usage">
+    <div class="ph usubh"><h3>Weekly usage</h3>
       <span class="seg" role="group" aria-label="Weeks shown">
         <button id="usage-w2" class="segbtn" aria-pressed="false">2w</button><button id="usage-w5" class="segbtn on" aria-pressed="true">5w</button><button id="usage-w10" class="segbtn" aria-pressed="false">10w</button>
       </span>
@@ -110,11 +113,10 @@
       <div id="usagegraph" class="usagegraph"></div>
       <p id="usagesum" class="usagesum small" aria-live="polite"></p>
     </div>
-  </section>
+    </div>
 
-  <section id="tokpanel" class="panel p-tokens" aria-label="Token usage">
-    <div class="ph"><h2>Token usage</h2>
-      <button id="toktoggle" class="ghost tiny usagetoggle" aria-expanded="true" aria-controls="tokwrap" aria-label="Collapse Token usage">▾</button>
+    <div id="tokpanel" class="usub" role="region" aria-label="Token usage">
+    <div class="ph usubh"><h3>Token usage</h3>
       <span class="seg" role="group" aria-label="Token usage range">
         <button id="tok-r-today" class="segbtn" aria-pressed="false">Today</button><button id="tok-r-7d" class="segbtn on" aria-pressed="true">7 days</button><button id="tok-r-30d" class="segbtn" aria-pressed="false">30 days</button>
       </span>
@@ -126,6 +128,8 @@
     <div id="tokwrap" class="pb tokwrap">
       <div id="tokbody" class="tokbody"></div>
       <p id="toksum" class="usagesum small" aria-live="polite"></p>
+    </div>
+    </div>
     </div>
   </section>
 

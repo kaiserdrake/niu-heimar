@@ -331,19 +331,24 @@ body.ctrl .wspill { display: inline-block; }
   grid-template-areas: "left graph" "left time"; }
 .p-sessions { grid-area: sess; } .p-graph { grid-area: graph; } .p-timeline { grid-area: time; } .p-feed { grid-area: feed; } .p-prs { grid-area: prs; }
 .mcgrid .panel.p-feed, .mcgrid .panel.p-prs { display: none; }
-/* Events tab: pull requests, then the two usage panels side by side (Weekly usage | Token usage), over the feed.
-   Under 1200px the panels stack (usage, then tokens); under 900x600 the flex stack below keeps the DOM order PRs, usage, tokens, feed. */
-.p-usage { grid-area: usage; } .p-tokens { grid-area: tokens; }
-.mcgrid .panel.p-usage, .mcgrid .panel.p-tokens { display: none; }
-.mcgrid[data-view="events"] { grid-template-columns: minmax(250px, 24%) minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-rows: auto auto minmax(240px, 1fr); grid-template-areas: "left prs prs" "left usage tokens" "left feed feed"; }
+/* Events tab: pull requests, then the Claude usage panel (Weekly usage | Token usage side by side, one collapse
+   button), over the feed. Under 1200px the two parts stack inside the panel (weekly, then tokens). */
+.p-usage { grid-area: usage; }
+.mcgrid .panel.p-usage { display: none; }
+.mcgrid[data-view="events"] { grid-template-columns: minmax(250px, 24%) minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(240px, 1fr); grid-template-areas: "left prs" "left usage" "left feed"; }
 .mcgrid[data-view="events"] .panel.p-graph, .mcgrid[data-view="events"] .panel.p-timeline { display: none; }
 .mcgrid[data-view="events"] .panel.p-feed { display: flex; }
 .mcgrid[data-view="events"] .panel.p-prs { display: flex; max-height: 30vh; }
-.mcgrid[data-view="events"] .panel.p-usage, .mcgrid[data-view="events"] .panel.p-tokens { display: flex; max-height: 38vh; }
+.mcgrid[data-view="events"] .panel.p-usage { display: flex; max-height: 38vh; }
+.usagegroup { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.usub { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.usub + .usub { border-left: 1px solid var(--border); }
+.ph.usubh h3 { margin: 0; font-size: 11px; white-space: nowrap; }
 @media (max-width: 1199px) {
-  .mcgrid[data-view="events"] { grid-template-columns: minmax(250px, 24%) minmax(0, 1fr);
-    grid-template-rows: auto auto auto minmax(240px, 1fr); grid-template-areas: "left prs" "left usage" "left tokens" "left feed"; }
+  .mcgrid[data-view="events"] .panel.p-usage { max-height: 76vh; }
+  .usagegroup { grid-template-columns: minmax(0, 1fr); overflow: auto; }
+  .usub + .usub { border-left: 0; border-top: 1px solid var(--border); }
 }
 
 /* left column: sessions take what the status panels don't need; empty panels shrink to their header */
@@ -581,8 +586,8 @@ dialog textarea { font-family: var(--mono); resize: vertical; }
 .usage5h { font-size: 11.5px; color: var(--muted); padding: 0; margin-left: 6px; white-space: nowrap; }
 .usage5h input { padding: 0; margin: 0; }
 .ph .usagezoomreset { margin-left: 6px; }
-.p-usage.collapsed, .p-tokens.collapsed { max-height: none; } .p-usage.collapsed .pb, .p-tokens.collapsed .pb { display: none; }
-.p-usage.collapsed .ph, .p-tokens.collapsed .ph { border-bottom: 0; }
+.p-usage.collapsed { max-height: none; } .p-usage.collapsed .usagegroup { display: none; }
+.p-usage.collapsed > .ph { border-bottom: 0; }
 .usagegraph svg { display: block; width: 100%; height: auto; min-width: 320px; }
 .usagenote { padding: 3px 8px; margin-bottom: 4px; border-radius: 6px; background: var(--warn-bg); color: var(--warn); }
 .usagesum { margin: 6px 2px 2px; color: var(--text); }

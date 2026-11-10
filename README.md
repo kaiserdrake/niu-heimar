@@ -173,7 +173,10 @@ not a hard security boundary against processes running as your own user.
   set `NIU_CLAUDE_USAGE_API=0` in the service's environment (`systemctl --user edit niu-dash`, and the same for
   `niu-notify`, adding `Environment=NIU_CLAUDE_USAGE_API=0` under `[Service]`).
 
-**Weekly usage** (Events tab, between *Pull requests* and the event feed; collapsible): a graph of the weekly Claude usage %
+**Claude usage** (Events tab, between *Pull requests* and the event feed): one panel with *Weekly usage* and *Token usage*
+side by side (stacked under 1200 px), collapsed and expanded together with one button.
+
+**Weekly usage** (in *Claude usage*): a graph of the weekly Claude usage %
 over the last 2, 5 or 10 weeks. It shows each weekly reset as a dashed marker, an **"ended N%"** label per finished week
 (the highest value seen before it reset; **"ended ≥N%"** when sampling stopped more than 6 hours before the reset), the
 Opus and Sonnet weekly lines only when Anthropic reports them, an optional 5-hour line (the *5-hour* checkbox, off by
@@ -203,8 +206,7 @@ history covers the chosen range, the graph starts at the first sample instead of
   restart; the panel then says so. To start over, delete `usage.db*` in the state folder. The browser fetches
   `GET /api/usage/history?days=35` (7 to 70, cached for 60 seconds, read-only) only while the Events tab is visible.
 
-**Token usage** (Events tab, next to *Weekly usage* on screens 1200 px wide or more, stacked under it on narrower ones;
-collapsible): how many tokens Claude Code used, by agent type and by model. *Today / 7 days / 30 days* boxes show the totals
+**Token usage** (in *Claude usage*, next to *Weekly usage*): how many tokens Claude Code used, by agent type and by model. *Today / 7 days / 30 days* boxes show the totals
 (with the output share). *By agent type* and *By model* rank horizontal bars split into **input, output, cache write and
 cache read**, each with its share. The *metric* picker (Total, Output, Input + cache write, Cache read) re-ranks the rows and
 recomputes the shares; *Per day* stacks the totals by model family (opus, sonnet, haiku, other; hourly for *Today*), and the
