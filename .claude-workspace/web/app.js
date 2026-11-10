@@ -1250,7 +1250,7 @@ function renderUsage(u) {
   if (rec && rec.errors > 0 && USAGE_REC[rec.last_error]) kids.push(h("div", "usagenote warn small", `Recorder: ${USAGE_REC[rec.last_error]} (${rec.errors} error${rec.errors === 1 ? "" : "s"} since the dashboard started).`));
   box.replaceChildren(...kids, root);
   sum.textContent = usageSummary(u);
-  upd.textContent = [u.collecting_since ? `collecting since ${usageDay(u.collecting_since)}` : "", cur ? `updated ${hm(cur.updated)}${USAGE_SRC[cur.source] ? ` · ${USAGE_SRC[cur.source]}` : ""}` : ""].filter(Boolean).join(" · ");
+  upd.textContent = [cur ? `updated ${hm(cur.updated)}${USAGE_SRC[cur.source] ? ` · ${USAGE_SRC[cur.source]}` : ""}` : ""].filter(Boolean).join(" · ");
 }
 
 function redrawUsage() { if (USAGE.open && USAGE.data) renderUsage(USAGE.data); }
@@ -1262,13 +1262,15 @@ async function loadUsage() {
   if (VIEW !== "events" || days !== USAGE.weeks * 7) return;
   renderUsage(d && typeof d.state === "string" ? d : null);
 }
-function setUsageOpen(open) {
+// One collapse button for the whole Claude usage panel (Weekly usage and Token usage). `init` skips the token load:
+// TOK isn't defined yet on the first call, and the token section loads itself when it is set up.
+function setUsageOpen(open, init) {
   USAGE.open = open; store.set("niu.usage.open", open);
   $("usagepanel").classList.toggle("collapsed", !open);
   $("usagetoggle").setAttribute("aria-expanded", String(open));
-  $("usagetoggle").setAttribute("aria-label", `${open ? "Collapse" : "Expand"} Weekly usage`);
+  $("usagetoggle").setAttribute("aria-label", `${open ? "Collapse" : "Expand"} Claude usage`);
   $("usagetoggle").textContent = open ? "▾" : "▸";
-  if (open) loadUsage();
+  if (open) { loadUsage(); if (!init) loadTokens(); }
 }
 function setUsageWeeks(n) {
   USAGE.weeks = n; store.set("niu.usage.weeks", n);
@@ -1359,7 +1361,7 @@ function usageZoomReset() {
   box.addEventListener("dblclick", () => { if (USAGE.zoom) usageZoomReset(); });
   $("usagezoomreset").onclick = usageZoomReset;
 }
-setUsageOpen(USAGE.open);
+setUsageOpen(USAGE.open, true);
 for (const w of [2, 5, 10]) { $(`usage-w${w}`).classList.toggle("on", w === USAGE.weeks); $(`usage-w${w}`).setAttribute("aria-pressed", String(w === USAGE.weeks)); }
 setInterval(loadUsage, 60000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loadUsage(); });
@@ -1375,7 +1377,7 @@ const TOK_RANGES = { today: "Today", "7d": "7 days", "30d": "30 days" };
 const FAMILY = ["opus", "sonnet", "haiku", "other"];
 const TOK = { range: Object.hasOwn(TOK_RANGES, store.get("niu.tokens.range", "7d")) ? store.get("niu.tokens.range", "7d") : "7d",
   metric: Object.hasOwn(TOK_METRICS, store.get("niu.tokens.metric", "total")) ? store.get("niu.tokens.metric", "total") : "total",
-  open: store.get("niu.tokens.open", true) !== false, data: null, asof: 0, seq: 0, stale: false };
+  get open() { return USAGE.open; }, data: null, asof: 0, seq: 0, stale: false };
 const TOK_MSG = {
   loading: "Loading…",
   empty: "No Claude usage found in the transcripts yet.",
@@ -1573,24 +1575,15 @@ async function loadTokens() {
   if (d && typeof d.state === "string") { TOK.stale = false; TOK.asof = Date.now() / 1000; renderTokens(d); return; }
   if (TOK.data) { TOK.stale = true; renderTokens(TOK.data); } else renderTokens(null);
 }
-function setTokOpen(open) {
-  TOK.open = open; store.set("niu.tokens.open", open);
-  $("tokpanel").classList.toggle("collapsed", !open);
-  $("toktoggle").setAttribute("aria-expanded", String(open));
-  $("toktoggle").setAttribute("aria-label", `${open ? "Collapse" : "Expand"} Token usage`);
-  $("toktoggle").textContent = open ? "▾" : "▸";
-  if (open) loadTokens();
-}
 function setTokRange(r) {
   TOK.range = r; store.set("niu.tokens.range", r);
   for (const k of Object.keys(TOK_RANGES)) { $(`tok-r-${k}`).classList.toggle("on", k === r); $(`tok-r-${k}`).setAttribute("aria-pressed", String(k === r)); }
   TOK.data = null; loadTokens();
 }
-$("toktoggle").onclick = () => setTokOpen(!TOK.open);
 for (const r of Object.keys(TOK_RANGES)) $(`tok-r-${r}`).onclick = () => setTokRange(r);
 $("tokmetric").value = TOK.metric;
 $("tokmetric").onchange = () => { const v = $("tokmetric").value; if (!Object.hasOwn(TOK_METRICS, v)) return; TOK.metric = v; store.set("niu.tokens.metric", v); redrawTokens(); };
-setTokOpen(TOK.open);
+loadTokens();
 for (const r of Object.keys(TOK_RANGES)) { $(`tok-r-${r}`).classList.toggle("on", r === TOK.range); $(`tok-r-${r}`).setAttribute("aria-pressed", String(r === TOK.range)); }
 setInterval(loadTokens, 60000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loadTokens(); });

@@ -659,7 +659,7 @@ async function usageChecks(fx) {
     const svgEl = find(/\busagesvg\b/, "svg")[0];
     if (!svgEl || svgEl.getAttribute("role") !== "img" || svgEl.getAttribute("aria-label") !== sum) fail("svg role/aria-label must equal the summary line");
     if (get("usagesum").getAttribute("aria-live") !== null && get("usagesum").getAttribute("aria-live") !== "polite") fail("aria-live");
-    if (!/collecting since/.test(get("usageupd").textContent) || !/usage API/.test(get("usageupd").textContent)) fail("update line: " + get("usageupd").textContent);
+    if (/collecting since/.test(get("usageupd").textContent) || !/updated \d\d:\d\d · .*usage API/.test(get("usageupd").textContent)) fail("update line: " + get("usageupd").textContent);
     // 5-hour toggle, range
     run("USAGE.h5 = true; renderUsage(USAGE_FX)");
     if (find(/\bul-5h\b/, "path").length < 1) fail("5-hour line missing after the toggle");
@@ -924,11 +924,13 @@ async function tokenChecks(fx) {
   run("setTokRange('30d')"); await new Promise((r) => setImmediate(r));
   if (!calls.some((u) => u === "/api/usage/tokens?range=30d") || get("tok-r-30d").getAttribute("aria-pressed") !== "true" || get("tok-r-7d").getAttribute("aria-pressed") !== "false") fail("range buttons: " + calls);
   run("setTokRange('7d')");
-  run("setTokOpen(false)"); calls.length = 0; await run("loadTokens()");
-  if (calls.length) fail("fetched while collapsed");
-  if (get("toktoggle").getAttribute("aria-expanded") !== "false" || !get("tokpanel").classList.contains("collapsed")) fail("collapse state");
-  run("setTokOpen(true)"); await new Promise((r) => setImmediate(r));
-  if (!calls.length) fail("expanding did not load");
+  run("setUsageOpen(false)"); calls.length = 0; await run("loadTokens()");
+  if (calls.length) fail("tokens fetched while the usage panel is collapsed");
+  if (get("usagetoggle").getAttribute("aria-expanded") !== "false" || !get("usagepanel").classList.contains("collapsed")) fail("collapse state");
+  if (get("usagetoggle").getAttribute("aria-label") !== "Expand Claude usage") fail("toggle label: " + get("usagetoggle").getAttribute("aria-label"));
+  run("setUsageOpen(true)"); await new Promise((r) => setImmediate(r));
+  if (!calls.some((u) => u.startsWith("/api/usage/tokens")) || !calls.some((u) => u.startsWith("/api/usage/history"))) fail("expanding did not load both sections: " + calls);
+  if (typeof ctx.setTokOpen !== "undefined" || els.has("toktoggle")) fail("the Token usage section must not have its own toggle");
   ctx.fetch = () => Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
   await run("loadTokens()");
   if (!/showing the data as of/.test(textOf(get("tokbody"))) || !names().includes("session")) fail("a failed refresh keeps the last data with 'as of'");

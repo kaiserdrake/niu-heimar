@@ -129,8 +129,10 @@ try:
     # Weekly usage panel (Events tab): markup, route, and the render code never uses innerHTML
     check(b"p-usage" in raw and b'id="usagegraph"' in raw and b'id="usagesum"' in raw and b'aria-live="polite"' in raw, "Weekly usage panel markup")
     check(raw.index(b'id="prs"') < raw.index(b'id="usagebody"') < raw.index(b'id="feed"'), "Weekly usage sits between Pull requests and the Event feed")
-    check(b".p-usage" in css and b'"left usage tokens"' in css and b'"left usage" "left tokens" "left feed"' in css and b"max-width: 1199px" in css, "Events grid areas: usage | tokens, stacked under 1200px")
-    check(b"p-tokens" in raw and b'id="tokbody"' in raw and b'id="toksum"' in raw and b'id="tokmetric"' in raw and b'aria-live="polite"' in raw, "Token usage panel markup")
+    check(b".p-usage" in css and b'"left usage"' in css and b"tokens" not in css.split(b"grid-template-areas")[1].split(b";")[0] and b".usagegroup" in css and b"max-width: 1199px" in css, "Events grid: one Claude usage area; weekly | tokens side by side inside it, stacked under 1200px")
+    usage_html = raw.split(b'id="usagepanel"')[1].split(b"</section>")[0]
+    check(b'id="tokpanel"' in usage_html and b'id="usagegraph"' in usage_html and b'id="toktoggle"' not in raw and usage_html.count(b"aria-expanded") == 1, "Weekly and Token usage share one panel and one collapse button")
+    check(b'id="tokpanel"' in raw and b'id="tokbody"' in raw and b'id="toksum"' in raw and b'id="tokmetric"' in raw and b'aria-live="polite"' in raw, "Token usage panel markup")
     check(raw.index(b'id="usagebody"') < raw.index(b'id="tokbody"') < raw.index(b'id="feed"'), "Token usage sits after Weekly usage and before the Event feed")
     check(b" onclick=" not in raw and b" style=" not in raw.split(b'id="tokpanel"')[1].split(b"</section>")[0], "no inline handlers or styles in the Token usage markup")
     appjs = req("GET", "/app.js")[3].decode()
