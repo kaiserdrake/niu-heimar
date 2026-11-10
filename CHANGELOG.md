@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.18.0...niu-heimar-v0.19.0) (2026-11-10)
+
+
+### Features
+
+* **dashboard:** merge Weekly and Token usage into one collapsible panel ([#66](https://github.com/kaiserdrake/niu-heimar/issues/66)) ([bc44766](https://github.com/kaiserdrake/niu-heimar/commit/bc447666c668d70cf6a8cc7742aab21157267e6b))
+
 ## [0.18.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.17.1...niu-heimar-v0.18.0) (2026-11-10)
 
 
