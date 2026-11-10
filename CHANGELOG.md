@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.1](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.23.0...niu-heimar-v0.23.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **niu-dash:** Topics toolbar buttons match the selects and the theme ([#78](https://github.com/kaiserdrake/niu-heimar/issues/78)) ([ba9c7c2](https://github.com/kaiserdrake/niu-heimar/commit/ba9c7c2a258481a6762c9ec1c8160cc5d232c736))
+
 ## [0.23.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.22.0...niu-heimar-v0.23.0) (2026-11-10)
 
 
