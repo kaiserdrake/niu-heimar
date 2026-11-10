@@ -38,7 +38,8 @@ URL_RE = re.compile(r"http://(?:127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})")
 TOKEN_RE = re.compile(r"rd_pat_[A-Za-z0-9_-]{20,128}")
 TS_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 DAY_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
-SLOT_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}\[[A-Za-z0-9_+/-]{1,40}\]|manual:[0-9a-f-]{36}")
+SLOT_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}\[[A-Za-z0-9_+/-]{1,40}\]|manual:[0-9a-f-]{36}"
+                     r"|explore:[0-9]{4}-[0-9]{2}-[0-9]{2}|explore:manual:[0-9a-f-]{36}")
 UUID_RE = re.compile(r"[0-9a-f-]{36}")
 MODEL_RE = re.compile(r"[a-z0-9.-]{1,40}")
 TZ_RE = re.compile(r"[A-Za-z0-9_+/-]{1,40}")
@@ -51,7 +52,8 @@ AGENT_STATUS = frozenset("pending running succeeded failed skipped timed_out abo
 AGENT_TYPES = ("general", "hobby", "fintrend")
 DECISIONS = frozenset(("run", "run_conservative", "retry", "skip"))
 REASONS = frozenset("ok ok_conservative weekly_low low_quota probe_warning no_signal manual_cap grace_expired kill_switch session_cap".split())
-KINDS = frozenset(("standard", "comprehensive", "delta"))
+SLOT_KINDS = frozenset(("standard", "comprehensive", "delta"))   # schedule.next_slot_kind
+KINDS = SLOT_KINDS | {"explore"}                                  # run rows and gate.pending (explore since H5)
 BRIEF_STATES = frozenset(("scheduled", "in_progress", "ready", "empty"))
 STALE_REASONS = frozenset("comprehensive_missed comprehensive_skipped comprehensive_failed comprehensive_deadline".split())
 SOURCES = frozenset(("usage_api", "probe", "none", "rate_limit_event"))
@@ -464,7 +466,7 @@ def shape(raw, now=None):
                     "health": {k: _bool(health.get(k)) for k in ("db", "migrations", "scheduler", "claude_auth")}},
         "schedule": {"enabled": _bool(sch.get("enabled")), "running": _bool(sch.get("running")), "cron": _re(sch.get("cron"), CRON_RE),
                      "timezone": _re(sch.get("timezone"), TZ_RE), "next_slot_key": _re(sch.get("next_slot_key"), SLOT_RE),
-                     "next_slot_kind": _nenum(sch.get("next_slot_kind"), KINDS), "next_slot_at": _ts(sch.get("next_slot_at")),
+                     "next_slot_kind": _nenum(sch.get("next_slot_kind"), SLOT_KINDS), "next_slot_at": _ts(sch.get("next_slot_at")),
                      "brief_at": _re(sch.get("brief_at"), HHMM_RE), "next_brief_at": _ts(sch.get("next_brief_at")), "manual_runs_today": _cnt(sch.get("manual_runs_today")),
                      "manual_runs_per_day": _cnt(sch.get("manual_runs_per_day"))},
         "gate": {"preview": _preview(gate.get("preview")), "pending": _pending(gate.get("pending")),
