@@ -122,9 +122,9 @@ async function gateLogChecks(fx) {
   const run = (c) => vm.runInContext(c, ctx);
   const html = fs.readFileSync(require("path").join(require("path").dirname(process.argv[2]), "index.html"), "utf8");
   // the logs live in the Activities sub-view: gate log, then runs, then errors, and nothing else in #rsact
-  if (!/<div id="rsact"[^>]*>\s*<div id="rsgatelog"[^>]*><\/div>\s*<div id="rslast"[^>]*><\/div>\s*<div id="rserrors"[^>]*><\/div>\s*<\/div>/.test(html)) fail("#rsact must hold #rsgatelog, #rslast, #rserrors in that order");
+  if (!/<div id="rsact"[^>]*>\s*<div id="rssched"[^>]*><\/div>\s*<div id="rslanes"[^>]*><\/div>\s*<div id="rsgatelog"[^>]*><\/div>\s*<div id="rslast"[^>]*><\/div>\s*<div id="rserrors"[^>]*><\/div>\s*<\/div>/.test(html)) fail("#rsact must hold #rssched, #rslanes, #rsgatelog, #rslast, #rserrors in that order");
   const statusHtml = html.slice(html.indexOf('id="rsbody"'), html.indexOf('id="rsact"'));
-  if (/rsgatelog|rslast|rserrors/.test(statusHtml)) fail("a log is still in the Status view");
+  if (/rssched|rslanes|rsgatelog|rslast|rserrors/.test(statusHtml)) fail("a log or graph is still in the Status view");
   if (!/id="rsview-status"[\s\S]*id="rsview-topics"[\s\S]*id="rsview-activity"[^>]*>Activities</.test(html)) fail("sub-view buttons must read Status | Topics | Activities");
   const fire = (id, type, ev) => (els.get(id)._ls[type] || []).forEach((f) => f(ev));
   const lanes = els.get("rslanes"), log = els.get("rsgatelog");
@@ -283,7 +283,8 @@ async function researchStatusChecks(fx, appSrc) {
   for (const bad of ["innerHTML", "esc(", "insertAdjacentHTML", "outerHTML", "document.write", "eval(", "new Function"]) if (statusSrc.includes(bad)) fail(`the Status code uses ${bad}`);
   ctx.TP_TRAP = true;   // any innerHTML write while rendering the Status view throws
   const html = fs.readFileSync(require("path").join(require("path").dirname(process.argv[2]), "index.html"), "utf8");
-  if (!/id="rsquota"[\s\S]*id="rscomp"[\s\S]*id="rsexplore"[\s\S]*<\/div>\s*<div id="rssched"[^>]*><\/div>\s*<div id="rslanes"/.test(html)) fail("index.html: #rscomp / #rsexplore in .rsgrid and #rssched before #rslanes");
+  if (!/<div class="rsgrid">\s*<div id="rsgate"[^>]*><\/div>\s*<div id="rsquota"[^>]*><\/div>\s*<div id="rscomp"[^>]*><\/div>\s*<div id="rsexplore"[^>]*><\/div>\s*<\/div>/.test(html)
+      || !/<div id="rssched"[^>]*><\/div>\s*<div id="rslanes"/.test(html)) fail("index.html: the four cards in .rsgrid and #rssched right before #rslanes");
   await show(fx.m3); run('setView("research")');   // the first load un-hides the tab the earlier checks disabled
   await show(fx.m3);
   const marks = allOf(els.get("rssched")).filter((n) => hasCls(n, "rsmark"));
