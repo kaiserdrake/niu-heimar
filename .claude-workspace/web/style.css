@@ -483,7 +483,7 @@ progress.lim.bad::-webkit-progress-value { background: var(--bad); } progress.li
 .rshead { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 12.5px; }
 .rshead .warnnote { color: var(--warn); font-weight: 600; }
 /* Status cards fill the view: 4 across on a wide panel, 2 x 2 in the middle (no lone card on a row), 1 when narrow;
-   the grid takes the height the logs used to have (they moved to Activities), so cards share it evenly. */
+   the grid takes the rest of the Status view (the schedule, graph and logs are in Activities), so cards share it evenly. */
 #rsbody { container-type: inline-size; }
 .rsgrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: minmax(min-content, 1fr); gap: 10px; flex: 1 0 auto; }
 @container (max-width: 1099px) { .rsgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
