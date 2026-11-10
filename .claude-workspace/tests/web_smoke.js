@@ -121,7 +121,11 @@ async function gateLogChecks(fx) {
   const fail = (m) => { throw new Error("research gate log: " + m); };
   const run = (c) => vm.runInContext(c, ctx);
   const html = fs.readFileSync(require("path").join(require("path").dirname(process.argv[2]), "index.html"), "utf8");
-  if (!/id="rslanes"[^>]*><\/div>\s*<div id="rsgatelog"/.test(html)) fail("#rsgatelog must follow #rslanes directly in index.html");
+  // the logs live in the Activities sub-view: gate log, then runs, then errors, and nothing else in #rsact
+  if (!/<div id="rsact"[^>]*>\s*<div id="rsgatelog"[^>]*><\/div>\s*<div id="rslast"[^>]*><\/div>\s*<div id="rserrors"[^>]*><\/div>\s*<\/div>/.test(html)) fail("#rsact must hold #rsgatelog, #rslast, #rserrors in that order");
+  const statusHtml = html.slice(html.indexOf('id="rsbody"'), html.indexOf('id="rsact"'));
+  if (/rsgatelog|rslast|rserrors/.test(statusHtml)) fail("a log is still in the Status view");
+  if (!/id="rsview-status"[\s\S]*id="rsview-topics"[\s\S]*id="rsview-activity"[^>]*>Activities</.test(html)) fail("sub-view buttons must read Status | Topics | Activities");
   const fire = (id, type, ev) => (els.get(id)._ls[type] || []).forEach((f) => f(ev));
   const lanes = els.get("rslanes"), log = els.get("rsgatelog");
   const dots = allOf(lanes).filter((n) => /\brs-dot\b/.test(n.className || ""));
@@ -429,7 +433,21 @@ async function topicsChecks(fx, appSrc) {
   run('setRsView("topics")');
   await run("loadTopics()");
   if (get("tpbody").hidden || !get("rsbody").hidden) fail("sub-view did not switch");
+  if (!get("rsact").hidden) fail("Activities shown with Topics");
   if (!get("rsview-topics").classList.contains("on")) fail("segmented control state");
+  // Activities: the gate log, runs and errors, with Status and Topics hidden; the choice and the hash persist
+  run('history.replaceState = (a, b, hash) => { location.hash = hash; }');
+  run('setRsView("activity")');
+  if (get("rsact").hidden || !get("rsbody").hidden || !get("tpbody").hidden) fail("Activities sub-view did not switch");
+  if (!get("rsview-activity").classList.contains("on") || get("rsview-topics").classList.contains("on")) fail("Activities button state");
+  const lastView = (globalThis.LS_SET || []).filter(([k]) => k === "niu.rsview").pop();
+  if (!lastView || !/activity/.test(lastView[1])) fail("Activities choice not stored: " + JSON.stringify(lastView));
+  if (run("location.hash") !== "#research/activity") fail("Activities hash: " + run("location.hash"));
+  if (get("rsrefresh").hidden) fail("Refresh hidden on Activities");
+  run('setRsView("bogus")'); if (get("rsbody").hidden || run("RSVIEW") !== "status") fail("unknown sub-view must fall back to Status");
+  // with no data, the error text still shows on Status (the run list that used to carry it is in Activities now)
+  run("renderResearch()"); if (!textOf(get("rsstate")).trim()) fail("state text missing on Status");
+  run('setRsView("topics")');
   ctx.TP_TRAP = true;   // from here on, any innerHTML write while rendering fails the run
   run("renderTopics()");
   if (rowsOf().length !== 4) fail(`expected 3 active + 1 inactive rows (archived hidden), got ${rowsOf().length}`);
