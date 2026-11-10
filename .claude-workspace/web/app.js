@@ -1009,7 +1009,8 @@ setInterval(() => { if (!document.hidden) loadLLM(); }, 30000);
 // History comes from /api/usage/history (samples recorded by niu-dash). Everything is built with h()/svg() (textContent and
 // setAttribute only); the fixed message tables below are the only prose, and no server string is ever shown.
 const USAGE = { weeks: [2, 5, 10].includes(store.get("niu.usage.weeks", 5)) ? store.get("niu.usage.weeks", 5) : 5,
-  open: store.get("niu.usage.open", true) !== false, h5: store.get("niu.usage.5h", false) === true, data: null, state: "loading", timer: 0 };
+  open: store.get("niu.usage.open", true) !== false, h5: store.get("niu.usage.5h", false) === true, data: null, state: "loading", timer: 0,
+  zoom: null, view: null, drag: null };   // zoom: {t0, t1} epoch seconds, memory only; view: geometry of the last render; drag: brush in progress
 const USAGE_MSG = {
   loading: "Loading…",
   empty: "Collecting: the first sample appears within 5 minutes. Earlier weeks can't be recovered.",
@@ -1069,41 +1070,109 @@ function usagePace(u) {
   return Math.round(Math.min(100, (c.used / elapsed) * 7 * USAGE_DAY));
 }
 
+const USAGE_ZOOM_MIN = 2 * 3600, USAGE_HOURLY = 3 * USAGE_DAY;
+// The x range shown by default: the chosen number of weeks ending at the reset (or now), but not earlier than the first sample.
+function usageDomain(u) {
+  const cur = u.current && typeof u.current === "object" ? u.current : null;
+  const dmax = cur && usageNum(cur.resets_at) !== null && cur.resets_at > u.now ? cur.resets_at : u.now;
+  const rmin = dmax - USAGE.weeks * 7 * USAGE_DAY;
+  const firsts = [usageNum(u.collecting_since)];
+  for (const seg of usageSegments(u.series && u.series.seven_day)) firsts.push(seg[0][0]);
+  const ok = firsts.filter((v) => v !== null);
+  if (!ok.length) return { dmin: rmin, dmax };
+  const first = Math.min(...ok), pad = Math.max(6 * 3600, 0.03 * (dmax - first));
+  return { dmin: Math.max(rmin, Math.min(first - pad, dmax - USAGE_DAY)), dmax };
+}
+function usageView(dom) {
+  const z = USAGE.zoom;
+  if (z && usageNum(z.t0) !== null && usageNum(z.t1) !== null) {
+    const t0 = Math.max(dom.dmin, z.t0), t1 = Math.min(dom.dmax, z.t1);
+    if (t1 - t0 >= USAGE_ZOOM_MIN) return { t0, t1 };
+  }
+  USAGE.zoom = null;
+  return { t0: dom.dmin, t1: dom.dmax };
+}
+// Axis ticks: hours when the span is 3 days or less, otherwise local midnights every 1/2/5/10 days.
+function usageTicks(t0, t1) {
+  const out = [], spanD = (t1 - t0) / USAGE_DAY;
+  if (t1 - t0 <= USAGE_HOURLY) {
+    const step = [1, 2, 3, 6, 12].find((s) => spanD * 24 / s <= 8) || 12;
+    const d = new Date(t0 * 1000); d.setMinutes(0, 0, 0);
+    while (d.getTime() / 1000 < t0 || d.getHours() % step) d.setHours(d.getHours() + 1);
+    for (let n = 0; d.getTime() / 1000 <= t1 && n < 40; d.setHours(d.getHours() + step), n++) {
+      const t = d.getTime() / 1000;
+      out.push({ t, label: d.getHours() === 0 ? usageDay(t) : hm(t) });
+    }
+    return out;
+  }
+  const step = [1, 2, 5, 10].find((s) => spanD / s <= 8) || 10;
+  const d0 = new Date(t0 * 1000); d0.setHours(0, 0, 0, 0);
+  for (let d = new Date(d0), n = 0; d.getTime() / 1000 <= t1 && n < 40; d.setDate(d.getDate() + step), n++) {
+    const t = d.getTime() / 1000;
+    if (t >= t0) out.push({ t, label: usageDay(t) });
+  }
+  return out;
+}
+// Estimated text box (no DOM measuring): used to keep the graph labels from overlapping.
+function usageTextBox(x, y, anchor, text, size, bold) {
+  const w = String(text).length * size * (bold ? 0.62 : 0.58), x0 = anchor === "end" ? x - w : anchor === "middle" ? x - w / 2 : x;
+  return { x0, x1: x0 + w, y0: y - 0.8 * size, y1: y + 0.25 * size };
+}
+// First candidate {x, y, anchor, text, size, bold} that lies inside plot {x0, x1, y0, y1} and misses every box in placed; null if none.
+function usagePlace(placed, cands, plot) {
+  for (const c of cands) {
+    const b = usageTextBox(c.x, c.y, c.anchor, c.text, c.size, c.bold);
+    if (b.x0 < plot.x0 || b.x1 > plot.x1 || b.y0 < plot.y0 - 2 || b.y1 > plot.y1) continue;
+    if (placed.some((p) => b.x0 < p.x1 + 2 && b.x1 > p.x0 - 2 && b.y0 < p.y1 + 2 && b.y1 > p.y0 - 2)) continue;
+    placed.push(b);
+    return c;
+  }
+  return null;
+}
+
 function renderUsage(u) {
   USAGE.data = u && u.state === "ok" ? u : null;
+  USAGE.view = null; $("usagezoomreset").hidden = true;
   const box = $("usagegraph"), sum = $("usagesum"), upd = $("usageupd");
   const note = (text, cls) => { box.replaceChildren(h("div", cls || "empty", text)); sum.textContent = ""; };
   if (u && u.state === "loading") { upd.textContent = ""; return note(USAGE_MSG.loading); }
   if (!u || typeof u !== "object" || !["ok", "empty", "disabled"].includes(u.state) || (u.state === "ok" && usageNum(u.now) === null)) { upd.textContent = ""; return note(USAGE_MSG.error, "msg err"); }
   if (u.state !== "ok") { upd.textContent = ""; return note(USAGE_MSG[u.state]); }
   const W = Math.max(320, Math.round(box.clientWidth || 640)), H = 230, L = 40, R = 14, T = 18, B = 28;
-  const days = USAGE.weeks * 7, cur = u.current && typeof u.current === "object" ? u.current : null;
-  const tmax = cur && usageNum(cur.resets_at) !== null && cur.resets_at > u.now ? cur.resets_at : u.now, tmin = tmax - days * USAGE_DAY;
+  const cur = u.current && typeof u.current === "object" ? u.current : null;
+  const dom = usageDomain(u), { t0: tmin, t1: tmax } = usageView(dom);
+  $("usagezoomreset").hidden = !USAGE.zoom;
   const X = (t) => L + ((t - tmin) / (tmax - tmin)) * (W - L - R), Y = (v) => T + (1 - Math.min(100, Math.max(0, v)) / 100) * (H - T - B);
   const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": usageSummary(u), class: "usagesvg", preserveAspectRatio: "xMidYMid meet" });
   const defs = svg("defs");
   const pat = svg("pattern", { id: "usagehatch", width: "6", height: "6", patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" });
   pat.append(svg("line", { x1: "0", y1: "0", x2: "0", y2: "6", class: "hatchln" }));
-  defs.append(pat); root.append(defs);
+  const clip = svg("clipPath", { id: "usageclip" });
+  clip.append(svg("rect", { x: L, y: T - 5, width: W - L - R, height: H - T - B + 10 }));
+  defs.append(pat, clip); root.append(defs);
+  const plot = { x0: L, x1: W - R, y0: T, y1: H - B }, placed = [];
+  const place = (cands, force) => {
+    const c = usagePlace(placed, cands, plot);
+    if (c || !force) return c;
+    placed.push(usageTextBox(cands[0].x, cands[0].y, cands[0].anchor, cands[0].text, cands[0].size, cands[0].bold));
+    return cands[0];
+  };
+  const lbl = (c, cls) => root.append(svg("text", { x: c.x, y: c.y, class: cls, "text-anchor": c.anchor }, c.text));
   // axes: 0, 50, 90 (the 10% weekly floor of the research gate) and 100
   for (const v of [0, 50, 90, 100]) {
     root.append(svg("line", { x1: L, x2: W - R, y1: Y(v), y2: Y(v), class: `axis${v === 90 ? " guide" : ""}` }));
     root.append(svg("text", { x: L - 5, y: Y(v) + 3.5, class: "lbl", "text-anchor": "end" }, `${v}%`));
   }
-  root.append(svg("text", { x: W - R, y: Y(90) - 3, class: "lbl guidelbl", "text-anchor": "end" }, "10% weekly floor"));
-  const step = USAGE.weeks <= 2 ? 2 : USAGE.weeks <= 5 ? 5 : 10;
-  const d0 = new Date(tmin * 1000); d0.setHours(0, 0, 0, 0);
-  for (let d = new Date(d0), n = 0; d.getTime() / 1000 <= tmax && n < 40; d.setDate(d.getDate() + step), n++) {
-    const t = d.getTime() / 1000;
-    if (t < tmin) continue;
-    root.append(svg("line", { x1: X(t), x2: X(t), y1: H - B, y2: H - B + 4, class: "axis" }));
-    root.append(svg("text", { x: X(t), y: H - 10, class: "lbl", "text-anchor": "middle" }, usageDay(t)));
+  for (const k of usageTicks(tmin, tmax)) {
+    root.append(svg("line", { x1: X(k.t), x2: X(k.t), y1: H - B, y2: H - B + 4, class: "axis" }));
+    root.append(svg("text", { x: X(k.t), y: H - 10, class: "lbl", "text-anchor": "middle" }, k.label));
   }
   // reset markers (finished weeks and the current reset)
   const resets = [...(Array.isArray(u.resets) ? u.resets : []), ...(cur && usageNum(cur.resets_at) !== null ? [cur.resets_at] : [])].filter((t) => usageNum(t) !== null && t >= tmin && t <= tmax);
-  for (const t of new Set(resets)) {
+  for (const t of [...new Set(resets)].sort((a, b) => b - a)) {   // newest first: the current reset gets the best spot
     root.append(svg("line", { x1: X(t), x2: X(t), y1: T, y2: H - B, class: "reset" }));
-    root.append(svg("text", { x: X(t) + 3, y: T + 9, class: "lbl resetlbl" }, `↻ ${usageWhen(t)}`));
+    const text = `↻ ${usageWhen(t)}`, c = place([{ x: X(t) + 3, y: T + 9, anchor: "start", text, size: 10 }, { x: X(t) - 3, y: T + 9, anchor: "end", text, size: 10 }]);
+    if (c) lbl(c, "lbl resetlbl");
   }
   // gaps: hatched bands between the segments of the weekly line (and up to now when sampling has stopped)
   const sd = usageSegments(u.series && u.series.seven_day);
@@ -1115,35 +1184,51 @@ function renderUsage(u) {
   for (let i = 1; i < sd.length; i++) band(sd[i - 1][sd[i - 1].length - 1][0], sd[i][0][0]);
   if (sd.length && u.now - sd[sd.length - 1][sd[sd.length - 1].length - 1][0] > (u.gap_secs || 1500)) band(sd[sd.length - 1][sd[sd.length - 1].length - 1][0], u.now);
   // lines: weekly (always), Opus/Sonnet weekly (only when reported), 5-hour (toggle)
+  const g = svg("g", { "clip-path": "url(#usageclip)" }); root.append(g);
   const line = (key, cls) => {
     const segs = usageSegments(u.series && u.series[key]);
     for (const seg of segs) {
-      const pts = seg.filter((p) => p[0] >= tmin && p[0] <= tmax + 1);
+      // the points in view plus one on each side, so the line runs to the edges when zoomed (the clip path trims it)
+      const ins = seg.map((p) => p[0] >= tmin && p[0] <= tmax + 1);
+      const pts = seg.filter((p, i) => ins[i] || ins[i - 1] || ins[i + 1] || (p[0] < tmin && seg[i + 1] && seg[i + 1][0] > tmax) || (p[0] > tmax && seg[i - 1] && seg[i - 1][0] < tmin));
       if (!pts.length) continue;
-      if (pts.length === 1) { root.append(svg("circle", { cx: X(pts[0][0]), cy: Y(pts[0][1]), r: 2.2, class: `udot ${cls}` })); continue; }
-      root.append(svg("path", { d: pts.map((p, i) => `${i ? "L" : "M"}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join(" "), class: `ul ${cls}` }));
+      if (pts.length === 1) { g.append(svg("circle", { cx: X(pts[0][0]), cy: Y(pts[0][1]), r: 2.2, class: `udot ${cls}` })); continue; }
+      g.append(svg("path", { d: pts.map((p, i) => `${i ? "L" : "M"}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join(" "), class: `ul ${cls}` }));
     }
   };
   if (USAGE.h5) line("five_hour", "ul-5h");
   line("seven_day_opus", "ul-opus"); line("seven_day_sonnet", "ul-sonnet"); line("seven_day", "ul-week");
   // weeks that ended: a marker and "ended N%" ("ended ≥N%" when sampling stopped well before the reset)
   for (const w of usageWeeks(u)) {
-    if (w.last_sample < tmin) continue;
+    if (w.last_sample < tmin || w.last_sample > tmax) continue;
     const lvl = usageLevel(w.ended_pct), x = X(w.last_sample), y = Y(w.ended_pct), left = x > L + 90;
     root.append(svg("circle", { cx: x, cy: y, r: 4, class: `wkend ${lvl}`, "data-tip": `Week ended ${usageWhen(w.resets_at)}\nhighest value ${w.partial ? "at least " : ""}${Math.round(w.ended_pct)}%\n${lvl === "ok" ? "below 70%" : lvl === "warn" ? "70 to 89%" : "90% or more"}${w.partial ? "\nsamples stopped early" : ""}` }));
-    root.append(svg("text", { x: left ? x - 7 : x + 7, y: Math.max(T + 22, y - 7), class: `lbl wklbl ${lvl}`, "text-anchor": left ? "end" : "start" },
-      `${USAGE_GLYPH[lvl]} ended ${w.partial ? "≥" : ""}${Math.round(w.ended_pct)}%`));
+    const text = `${USAGE_GLYPH[lvl]} ended ${w.partial ? "≥" : ""}${Math.round(w.ended_pct)}%`, ly = Math.max(T + 22, y - 7);
+    const a = { x: left ? x - 7 : x + 7, y: ly, anchor: left ? "end" : "start", text, size: 11, bold: true };
+    lbl(place([a, { ...a, x: left ? x + 7 : x - 7, anchor: left ? "start" : "end" }, { ...a, y: ly + 12 }], true), `lbl wklbl ${lvl}`);
   }
   // now marker and pace
   if (cur && usageNum(cur.used) !== null && u.now >= tmin) {
     const pace = usagePace(u);
     if (pace !== null) {
-      root.append(svg("line", { x1: X(u.now), y1: Y(cur.used), x2: X(cur.resets_at), y2: Y(pace), class: "pace" }));
-      root.append(svg("text", { x: X(cur.resets_at) - 4, y: Y(pace) + (pace > 85 ? 13 : -5), class: "lbl pacelbl", "text-anchor": "end" }, `pace ≈ ${pace}%`));
+      g.append(svg("line", { x1: X(u.now), y1: Y(cur.used), x2: X(cur.resets_at), y2: Y(pace), class: "pace" }));
     }
     const lvl = usageLevel(cur.used);
-    root.append(svg("circle", { cx: X(u.now), cy: Y(cur.used), r: 4, class: `nowdot ${lvl}` }));
-    root.append(svg("text", { x: X(u.now) - 7, y: Y(cur.used) - 7, class: `lbl nowlbl ${lvl}`, "text-anchor": "end" }, `now ${Math.round(cur.used)}%`));
+    if (u.now <= tmax) {
+      root.append(svg("circle", { cx: X(u.now), cy: Y(cur.used), r: 4, class: `nowdot ${lvl}` }));
+      const text = `now ${Math.round(cur.used)}%`, nx = X(u.now), ny = Y(cur.used), n = { x: nx - 7, y: ny - 7, anchor: "end", text, size: 11, bold: true };
+      lbl(place([n, { ...n, y: ny + 15 }, { ...n, x: nx + 7, anchor: "start" }], true), `lbl nowlbl ${lvl}`);
+    }
+    if (pace !== null && cur.resets_at <= tmax) {
+      const text = `pace ≈ ${pace}%`, py = Y(pace), p = { x: X(cur.resets_at) - 6, anchor: "end", text, size: 10 };
+      const c = place((pace > 85 ? [13, 25, 37] : [-5, 13, -17]).map((dy) => ({ ...p, y: py + dy })));
+      if (c) lbl(c, "lbl pacelbl");
+    }
+  }
+  {
+    const text = "10% weekly floor", fy = Y(90), f = { x: L + 4, anchor: "start", text, size: 10 };
+    const c = place([{ ...f, y: fy - 3 }, { ...f, y: fy + 11 }]);
+    if (c) lbl(c, "lbl guidelbl");
   }
   // tooltips: one transparent rect per x bucket (at most 240)
   const nb = Math.min(240, Math.max(1, Math.floor((W - L - R) / 4))), bw = (tmax - tmin) / nb;
@@ -1156,6 +1241,9 @@ function renderUsage(u) {
     for (const [k, n] of [["seven_day_opus", "Opus"], ["seven_day_sonnet", "Sonnet"]]) { const v = lastIn(k, t0, t1); if (v !== null) lines.push(`${n} weekly ${Math.round(v)}%`); }
     root.append(svg("rect", { x: X(t0), y: T, width: Math.max(1, (W - L - R) / nb), height: H - T - B, class: "hit", "data-tip": `${usageWhen(t0 + bw / 2)}\n${lines.join("\n")}` }));
   }
+  USAGE.view = { t0: tmin, t1: tmax, dmin: dom.dmin, dmax: dom.dmax, W, L, R, T, B, H, root };
+  if (USAGE.drag) USAGE.drag.sel = null;
+  usageSelSync();
   const kids = [];
   if (cur && cur.stale) kids.push(h("div", "usagenote warn small", `No new readings since ${hm(cur.updated)}: ${USAGE_API_ERR[cur.api_error] || USAGE_API_ERR.unknown}`));
   const rec = u.recorder;
@@ -1185,12 +1273,92 @@ function setUsageOpen(open) {
 function setUsageWeeks(n) {
   USAGE.weeks = n; store.set("niu.usage.weeks", n);
   for (const w of [2, 5, 10]) { $(`usage-w${w}`).classList.toggle("on", w === n); $(`usage-w${w}`).setAttribute("aria-pressed", String(w === n)); }
-  USAGE.data = null; loadUsage();
+  USAGE.zoom = null; USAGE.data = null; loadUsage();
 }
 $("usagetoggle").onclick = () => setUsageOpen(!USAGE.open);
 for (const w of [2, 5, 10]) $(`usage-w${w}`).onclick = () => setUsageWeeks(w);
 $("usage5h").checked = USAGE.h5;
 $("usage5h").onchange = () => { USAGE.h5 = $("usage5h").checked; store.set("niu.usage.5h", USAGE.h5); redrawUsage(); };
+// Drag-to-zoom (brush). Listeners are bound once on the box: the SVG is replaced on every render. Hit-testing is geometric.
+function usagePt(e) {
+  const v = USAGE.view;
+  if (!v) return null;
+  const r = v.root.getBoundingClientRect();
+  if (!(r.width > 0) || !(r.height > 0)) return null;
+  const ux = (e.clientX - r.left) * v.W / r.width, uy = (e.clientY - r.top) * v.H / r.height;
+  const cx = Math.min(v.W - v.R, Math.max(v.L, ux));
+  return { t: v.t0 + (cx - v.L) / (v.W - v.L - v.R) * (v.t1 - v.t0), inside: ux >= v.L && ux <= v.W - v.R && uy >= v.T && uy <= v.H - v.B };
+}
+function usageSelSync() {   // draw (or move) the selection rectangle for the drag in progress
+  const d = USAGE.drag, v = USAGE.view;
+  if (!d || !d.active || !v) return;
+  if (!d.sel) { d.sel = svg("rect", { class: "usagesel", y: v.T, height: v.H - v.T - v.B }); v.root.append(d.sel); }
+  const px = (t) => v.L + (Math.min(v.t1, Math.max(v.t0, t)) - v.t0) / (v.t1 - v.t0) * (v.W - v.L - v.R);
+  const x0 = px(Math.min(d.ta, d.tb)), x1 = px(Math.max(d.ta, d.tb));
+  d.sel.setAttribute("x", x0); d.sel.setAttribute("width", Math.max(0, x1 - x0));
+}
+function usageDragEnd() {
+  const d = USAGE.drag, box = $("usagegraph");
+  USAGE.drag = null;
+  if (!d) return;
+  if (d.sel) d.sel.remove();
+  box.classList.remove("usagedrag");
+  if (d.active) { try { box.releasePointerCapture?.(d.id); } catch (_) { /* not captured */ } }
+}
+function usageZoomReset() {
+  const had = document.activeElement === $("usagezoomreset");
+  USAGE.zoom = null; redrawUsage();
+  if (had) $(`usage-w${USAGE.weeks}`).focus();
+}
+{
+  const box = $("usagegraph");
+  box.addEventListener("pointerdown", (e) => {
+    if (!USAGE.view || !e.isPrimary || e.button !== 0) return;
+    const pt = usagePt(e);
+    if (!pt || !pt.inside) return;
+    USAGE.drag = { id: e.pointerId, cx0: e.clientX, ta: pt.t, tb: pt.t, active: false, sel: null };
+  });
+  box.addEventListener("pointermove", (e) => {
+    const d = USAGE.drag;
+    if (!d || e.pointerId !== d.id) return;
+    if (e.buttons === 0) { usageDragEnd(); return; }   // the button was released outside the page
+    if (!d.active) {
+      if (Math.abs(e.clientX - d.cx0) < 6) return;
+      d.active = true;
+      box.setPointerCapture?.(d.id);
+      TIP.hidden = true;
+      box.classList.add("usagedrag");
+    }
+    const pt = usagePt(e);
+    if (!pt) return;
+    d.tb = pt.t; TIP.hidden = true;
+    usageSelSync();
+  });
+  box.addEventListener("pointerup", (e) => {
+    const d = USAGE.drag, v = USAGE.view;
+    if (!d || e.pointerId !== d.id) return;
+    if (!d.active || !v) { usageDragEnd(); return; }
+    const pt = usagePt(e);
+    if (pt) d.tb = pt.t;
+    let a = Math.max(v.t0, Math.min(d.ta, d.tb)), b = Math.min(v.t1, Math.max(d.ta, d.tb));
+    usageDragEnd();
+    if ((b - a) / (v.t1 - v.t0) * (v.W - v.L - v.R) < 8) return;   // too small a selection
+    if (b - a < USAGE_ZOOM_MIN) {
+      const c = (a + b) / 2;
+      a = c - USAGE_ZOOM_MIN / 2; b = c + USAGE_ZOOM_MIN / 2;
+      if (a < v.dmin) { a = v.dmin; b = a + USAGE_ZOOM_MIN; }
+      if (b > v.dmax) { b = v.dmax; a = b - USAGE_ZOOM_MIN; }
+    }
+    USAGE.zoom = { t0: a, t1: b };
+    redrawUsage();
+  });
+  const cancel = (e) => { if (USAGE.drag && e.pointerId === USAGE.drag.id) usageDragEnd(); };
+  box.addEventListener("pointercancel", cancel);
+  box.addEventListener("lostpointercapture", cancel);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && USAGE.drag) usageDragEnd(); });
+  box.addEventListener("dblclick", () => { if (USAGE.zoom) usageZoomReset(); });
+  $("usagezoomreset").onclick = usageZoomReset;
+}
 setUsageOpen(USAGE.open);
 for (const w of [2, 5, 10]) { $(`usage-w${w}`).classList.toggle("on", w === USAGE.weeks); $(`usage-w${w}`).setAttribute("aria-pressed", String(w === USAGE.weeks)); }
 setInterval(loadUsage, 60000);

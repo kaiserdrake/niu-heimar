@@ -136,6 +136,8 @@ try:
     appjs = req("GET", "/app.js")[3].decode()
     ub = appjs[appjs.index("// ---------- Weekly usage panel"):appjs.index("// ---------- Research tab")]
     check("innerHTML" not in ub and "insertAdjacentHTML" not in ub and "title=" not in ub and "setAttribute(\"title\"" not in ub, "usage render code: no innerHTML, no native titles")
+    check(re.search(rb'<button id="usagezoomreset"[^>]*\bhidden\b', raw) is not None, "Reset zoom button is in the page and starts hidden")
+    check(b"touch-action: pan-y" in css, "usage graph keeps vertical touch scrolling (touch-action: pan-y)")
     check('"llmcard", "usagegraph", "tokbody"' in appjs, "usage graph and token panel are bound to the themed tooltip")
     st, _, js, _ = req("GET", "/api/usage/history")
     check(st == 200 and js["state"] == "disabled", f"usage history: disabled when collection is off: {js}")

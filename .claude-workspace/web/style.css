@@ -580,6 +580,7 @@ dialog textarea { font-family: var(--mono); resize: vertical; }
 .ph .usagetoggle { margin-left: 0; }
 .usage5h { font-size: 11.5px; color: var(--muted); padding: 0; margin-left: 6px; white-space: nowrap; }
 .usage5h input { padding: 0; margin: 0; }
+.ph .usagezoomreset { margin-left: 6px; }
 .p-usage.collapsed, .p-tokens.collapsed { max-height: none; } .p-usage.collapsed .pb, .p-tokens.collapsed .pb { display: none; }
 .p-usage.collapsed .ph, .p-tokens.collapsed .ph { border-bottom: 0; }
 .usagegraph svg { display: block; width: 100%; height: auto; min-width: 320px; }
@@ -599,6 +600,10 @@ dialog textarea { font-family: var(--mono); resize: vertical; }
 .usagesvg .gapband { fill: url(#usagehatch); stroke: var(--border); stroke-width: 1; }
 .usagesvg .hatchln { stroke: var(--muted); stroke-width: 1; opacity: .5; }
 .usagesvg .hit { fill: transparent; }
+.usagesvg { touch-action: pan-y pinch-zoom; user-select: none; -webkit-user-select: none; }
+.usagesvg .hit { cursor: crosshair; }
+.usagegraph.usagedrag, .usagegraph.usagedrag .hit { cursor: col-resize; }
+.usagesvg .usagesel { fill: var(--accent); opacity: .12; stroke: var(--accent); stroke-width: 1; pointer-events: none; }
 .usagesvg .wkend, .usagesvg .nowdot { stroke: var(--card); stroke-width: 1.5; }
 .usagesvg .wkend.ok, .usagesvg .nowdot.ok { fill: var(--ok); } .usagesvg .wkend.warn, .usagesvg .nowdot.warn { fill: var(--warn); } .usagesvg .wkend.bad, .usagesvg .nowdot.bad { fill: var(--bad); }
 .usagesvg .wklbl, .usagesvg .nowlbl { font-weight: 600; }
