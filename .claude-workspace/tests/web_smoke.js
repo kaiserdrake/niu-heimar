@@ -125,6 +125,12 @@ async function gateLogChecks(fx) {
   if (!/<div id="rsact"[^>]*>\s*<div id="rssched"[^>]*><\/div>\s*<div id="rslanes"[^>]*><\/div>\s*<div id="rsgatelog"[^>]*><\/div>\s*<div id="rslast"[^>]*><\/div>\s*<div id="rserrors"[^>]*><\/div>\s*<\/div>/.test(html)) fail("#rsact must hold #rssched, #rslanes, #rsgatelog, #rslast, #rserrors in that order");
   const statusHtml = html.slice(html.indexOf('id="rsbody"'), html.indexOf('id="rsact"'));
   if (/rssched|rslanes|rsgatelog|rslast|rserrors/.test(statusHtml)) fail("a log or graph is still in the Status view");
+  // Topics toolbar: row 1 = agent chips, search, count; row 2 = filters, list settings and the icon buttons
+  const tb = html.slice(html.indexOf('<div class="tpbar">'), html.indexOf('id="tpmsg"'));
+  const row1 = tb.slice(0, tb.indexOf('tpbar2')), row2 = tb.slice(tb.indexOf('tpbar2'));
+  if (!/id="tpchips"[\s\S]*id="tpfilter"[\s\S]*id="tpcount"/.test(row1) || /tpstate|tpsort|tpadd/.test(row1)) fail("toolbar row 1 must hold only chips, search and count");
+  for (const id of ["tpstate", "tprun", "tporigin", "tptrial", "tpsort", "tpdensity", "tprefresh", "tpadd"]) if (!row2.includes(`id="${id}"`)) fail(`#${id} must be in toolbar row 2`);
+  for (const id of ["tpdensity", "tprefresh", "tpadd"]) if (!new RegExp(`id="${id}"[^>]*class="[^"]*tpicon[^"]*"[^>]*aria-label="[^"]+"`).test(row2)) fail(`#${id} must be an icon button with an aria-label`);
   if (!/id="rsview-status"[\s\S]*id="rsview-topics"[\s\S]*id="rsview-activity"[^>]*>Activities</.test(html)) fail("sub-view buttons must read Status | Topics | Activities");
   const fire = (id, type, ev) => (els.get(id)._ls[type] || []).forEach((f) => f(ev));
   const lanes = els.get("rslanes"), log = els.get("rsgatelog");
@@ -288,6 +294,7 @@ async function researchStatusChecks(fx, appSrc) {
   await show(fx.m3); run('setView("research")');   // the first load un-hides the tab the earlier checks disabled
   await show(fx.m3);
   const marks = allOf(els.get("rssched")).filter((n) => hasCls(n, "rsmark"));
+  if (marks.some((n) => n.getAttribute && (n.getAttribute("tabindex") != null || n.getAttribute("data-tip") != null))) fail("strip markers must not be focusable or carry a hover tip");
   if (marks.length !== 5) fail(`expected 5 markers within 24 h, got ${marks.length}`);
   if (marks.some((n) => hasCls(n, "off"))) fail("no marker in the strip should be off");
   const letters = allOf(els.get("rssched")).filter((n) => hasCls(n, "rsmarktxt")).map((n) => n.textContent).sort().join("");

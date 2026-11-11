@@ -1950,8 +1950,8 @@ function rsSched(r) {
   }
   root.append(svg("line", { x1: x(t0), x2: x(t0), y1: 2, y2: 30, class: "nowline" }));
   const mark = (t, letter, tip, off) => {
-    const c = svg("circle", { cx: x(t), cy: 15, r: 9, class: `rsmark${off ? " off" : ""}`, tabindex: "0", role: "img", "aria-label": tip.replace(/\n/g, ", ") });
-    c.setAttribute("data-tip", tip);
+    // a plain marker: not focusable and no hover tip (the label is for screen readers only)
+    const c = svg("circle", { cx: x(t), cy: 15, r: 9, class: `rsmark${off ? " off" : ""}`, role: "img", "aria-label": tip.replace(/\n/g, ", ") });
     root.append(c, svg("text", { x: x(t), y: 18.5, class: `rsmarktxt${off ? " off" : ""}`, "text-anchor": "middle", "pointer-events": "none" }, letter));
   };
   const tz = sch.timezone ? ` (${sch.timezone})` : "", notes = [];
@@ -2533,8 +2533,9 @@ function tpToolbar(r, meta, all, sortKey) {
   $("tpsort").value = sortKey;
   $("tpdensity").setAttribute("aria-pressed", String(TP.density === "comfortable"));
   $("tpdensity").classList.toggle("on", TP.density === "comfortable");
+  $("tpdensity").title = TP.density === "comfortable" ? "Row detail: comfortable (click for compact rows)" : "Row detail: compact (click for taller rows with more detail)";
   $("tpadd").disabled = !tpWritable();
-  $("tpadd").setAttribute("title", ME.paired ? (ok ? "" : "Unavailable right now") : "Pair this browser to edit");
+  $("tpadd").setAttribute("title", ME.paired ? (ok ? "Add topic" : "Add topic: unavailable right now") : "Add topic: pair this browser to edit");
 }
 function tpGroupHead(g, meta, T) {
   const c = g.counts, open = !TP.collapsed.has(g.agent);
