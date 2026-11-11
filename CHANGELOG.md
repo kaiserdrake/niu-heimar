@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.2](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.23.1...niu-heimar-v0.23.2) (2026-11-11)
+
+
+### Bug Fixes
+
+* **niu-dash:** two-row Topics toolbar with icon buttons; inert Next 24 h markers ([#80](https://github.com/kaiserdrake/niu-heimar/issues/80)) ([98225b0](https://github.com/kaiserdrake/niu-heimar/commit/98225b09ffe173d68384b46c8e11f86d682da839))
+
 ## [0.23.1](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.23.0...niu-heimar-v0.23.1) (2026-11-10)
 
 
