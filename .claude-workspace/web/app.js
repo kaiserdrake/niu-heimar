@@ -1056,9 +1056,14 @@ function amNode(n) {
     g = svg("g", { class: "amnode", tabindex: "0", role: "button", "data-node": n.id });
     if (n.kind === "gate") g.append(svg("polygon", { class: "ambox amgate", points: `${n.w / 2},2 ${n.w - 2},${n.h / 2} ${n.w / 2},${n.h - 2} 2,${n.h / 2}` }));
     else g.append(svg("rect", { class: "amhalo", width: n.w, height: n.h, rx: 9 }), svg("rect", { class: "ambox", width: n.w, height: n.h, rx: 9 }));
-    for (const [c, x, y, extra] of [["badge", 8, 13], ["lbl mdl", n.w - 8, 13, { "text-anchor": "end" }], ["name", 8, 28], ["lbl sub", 8, 41]])
-      g.append(svg("text", { class: `am${c.split(" ")[0]} ${c}`, x, y, ...(extra || {}) }));
-    if (n.kind === "gate") { for (const t of g.children.filter((k) => k.tagName === "text")) t.setAttribute("x", n.w / 2), t.setAttribute("text-anchor", "middle"); }
+    // Keep the four text elements in a list: an SVG element's `children` is an HTMLCollection (no filter/find).
+    const texts = [];
+    for (const [c, x, y, extra] of [["badge", 8, 13], ["lbl mdl", n.w - 8, 13, { "text-anchor": "end" }], ["name", 8, 28], ["lbl sub", 8, 41]]) {
+      const t = svg("text", { class: `am${c.split(" ")[0]} ${c}`, x, y, ...(extra || {}) });
+      texts.push(t); g.append(t);
+    }
+    if (n.kind === "gate") for (const t of texts) { t.setAttribute("x", n.w / 2); t.setAttribute("text-anchor", "middle"); }
+    g.amText = texts;
     g.addEventListener("click", () => amFocus(n.id));
     g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); amFocus(n.id); } });
     AM.layers.nodes.append(g);
@@ -1069,8 +1074,7 @@ function amNode(n) {
   g.setAttribute("class", `amnode ${st}${n.kind === "gate" ? " gate" : ""}${n.small ? " small" : ""}${n.kind === "local" ? " alocal" : ""}`);
   g.setAttribute("data-tip", n.tip);
   g.setAttribute("aria-label", `${n.label}, ${n.sub}`);
-  const q = (c) => g.children.find((k) => k.tagName === "text" && (k.getAttribute("class") || "").split(" ")[0] === `am${c}`);
-  const [badge, mdl, name, sub] = [q("badge"), q("lbl") && g.children.filter((k) => k.tagName === "text")[1], q("name"), g.children.filter((k) => k.tagName === "text")[3]];
+  const [badge, mdl, name, sub] = g.amText;
   badge.textContent = n.kind === "gate" ? "" : n.source === "session" || n.source === "builtin" ? n.source : n.source;
   badge.setAttribute("class", `ambadge badge src-${n.source}`);
   mdl.textContent = trunc(n.model ? (n.model.length ? shortModel(n.model) : "") : "", 18);
