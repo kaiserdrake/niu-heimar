@@ -1517,6 +1517,10 @@ async function amChecks(catFile) {
     if (a0 < 0 || a1 < a0) fail("section markers not found");
     const sect = app.slice(a0, a1);
     for (const bad of ["innerHTML", "insertAdjacentHTML", "outerHTML", "document.write", "eval(", "new Function"]) if (sect.includes(bad)) fail("agent map section uses " + bad);
+    // The fake DOM here uses arrays for children; real browsers return an HTMLCollection (no filter/find/map/some...).
+    const arr = sect.match(/\.(children|childNodes)\.(filter|find|findIndex|map|some|every|reduce|slice|indexOf|includes|forEach\b(?!\s*\())/g);
+    if (arr) fail("agent map section calls an array method on a DOM collection: " + arr.join(", "));
+    if (/\.(children|childNodes)\.(filter|find|findIndex|map|some|every|reduce|slice|indexOf|includes)\(/.test(sect)) fail("DOM collection used as an array in the agent map");
   } finally {
     ctx.TP_TRAP = false; ctx.packet = realPacket; ctx.fetch = realFetch;
     run(`(() => { const s0 = STATE.sessions[0], v = globalThis.AM_SAVED; if (v) { s0.subagents = v.subagents; s0.tools = v.tools; s0.ended = v.ended; s0.state = v.state; s0.pipeline = v.pipeline; } $("details").hidden = true; SELECTED = null; })()`);
