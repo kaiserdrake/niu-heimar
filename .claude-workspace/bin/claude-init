@@ -82,5 +82,17 @@ if gitdir="$(git -C "$dir" rev-parse --git-dir 2>/dev/null)"; then
     line="/$sub$l"
     grep -qxF "$line" "$ex" || echo "$line" >>"$ex"
   done
+  # Agent instruction and memory files stay local too, at any depth in the project.
+  private=(CLAUDE.md CLAUDE.local.md MEMORY.md AGENT.md AGENTS.md)
+  for n in "${private[@]}"; do
+    line="/$sub**/$n"
+    grep -qxF "$line" "$ex" || echo "$line" >>"$ex"
+  done
+  # Ignore rules don't apply to files git already tracks: point those out, don't untrack them.
+  mapfile -t tracked < <(cd "$dir" && git ls-files -- "${private[@]/#/:(glob)**/}" 2>/dev/null || true)
+  if ((${#tracked[@]})); then
+    echo "claude-init: these are already committed, so they stay visible (untrack with: git rm --cached <file>):" >&2
+    printf '  %s\n' "${tracked[@]}" >&2
+  fi
 fi
 say "done: $rel is linked to the $domain domain. Restart any open Claude session there."
