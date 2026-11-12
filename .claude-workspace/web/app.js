@@ -236,7 +236,7 @@ function placeTip(e) {
   if (y + r.height > innerHeight - 8) y = Math.max(8, e.clientY - r.height - gap);
   TIP.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
 }
-for (const id of ["graph", "timeline", "llmcard", "usagegraph", "tokbody", "rshead", "rsgate", "rsquota", "rslanes", "rslast", "tplist"]) {
+for (const id of ["graph", "timeline", "llmcard", "usagegraph", "tokbody", "rshead", "rsgate", "rsquota", "rslanes", "rslast", "tplist", "amap", "amfeed"]) {
   const box = $(id);
   box.addEventListener("pointerover", (e) => {
     const t = e.target.closest?.("[data-tip]");
@@ -490,7 +490,7 @@ function graphEdge(e) {
   return rec;
 }
 
-function packet(pathId, cls, { reverse = false, delay = 0, dur = 0.95 } = {}) {
+function packet(pathId, cls, { reverse = false, delay = 0, dur = 0.95, layer = G.layers.packets } = {}) {
   if (reducedMotion()) return;
   for (const [r, extra] of [[7, " pk-trail"], [4, ""]]) {
     const c = svg("circle", { r, class: `pk pk-${cls}${extra}`, cx: 0, cy: 0, opacity: 0 });
@@ -498,20 +498,20 @@ function packet(pathId, cls, { reverse = false, delay = 0, dur = 0.95 } = {}) {
       keyPoints: reverse ? "1;0" : "0;1", keyTimes: "0;1", keySplines: ".4 0 .2 1" });
     m.append(svg("mpath", { href: `#${pathId}` }));
     c.append(m);
-    G.layers.packets.append(c);
+    layer.append(c);
     setTimeout(() => { c.setAttribute("opacity", 1); try { m.beginElement(); } catch { /* SMIL unsupported */ } }, delay);
     setTimeout(() => c.remove(), delay + dur * 1000 + 80);
   }
 }
 
-function burst(n, cls, text) {
+function burst(n, cls, text, { layer = G.layers.fx, w = NW, h = NH } = {}) {
   if (reducedMotion() || !n) return;
-  const ring = svg("rect", { class: `ripple rp-${cls}`, x: n.x, y: n.y, width: NW, height: NH, rx: 10 });
-  G.layers.fx.append(ring);
+  const ring = svg("rect", { class: `ripple rp-${cls}`, x: n.x, y: n.y, width: w, height: h, rx: 10 });
+  layer.append(ring);
   setTimeout(() => ring.remove(), 950);
   if (text) {
-    const t = svg("text", { class: `toolpop pk-${cls}`, x: n.x + NW - 8, y: n.y - 4, "text-anchor": "end" }, text);
-    G.layers.fx.append(t);
+    const t = svg("text", { class: `toolpop pk-${cls}`, x: n.x + w - 8, y: n.y - 4, "text-anchor": "end" }, text);
+    layer.append(t);
     setTimeout(() => t.remove(), 1450);
   }
 }
@@ -867,21 +867,436 @@ function renderFeed() {
   LAST_FEED_TS = newest;
 }
 
+// ---------- session agent map ----------
+// All agents a session could use (from /api/agents), drawn as dashed boxes; the ones that ran are solid and the running
+// ones pulse. The recent-activity list below maps each row to nodes and edges. Everything is built with h() / svg().
+const AW = 120, AH = 48, AGX = 10, ALW = 104, ALH = 38, AMW = 760, APAD = 14;
+const AM = { sid: null, cache: new Map(), failed: null, loading: null, nodes: new Map(), edges: new Map(), seen: null, first: true,
+  sel: null, focus: null, rows: [], ids: 0, root: null, pk: null, fx: null, note: null, model: null, selObj: null };
+const AM_FLOW = { designer: "develop", implementer: "develop", "security-reviewer": "dual-review", "test-reviewer": "dual-review" };
+const AM_BUILTIN = ["general-purpose", "Explore", "Plan"];
+const AM_LOCAL_TASK = { search: "local_search", diff: "local_diff_review", ask: "local_ask" };
+const amCluster = (type) => AM_FLOW[type] || "agent";
+const amLocalTool = (l) => AM_LOCAL_TASK[l.task] || (l.parent_tool && l.parent_tool.startsWith("local_") ? l.parent_tool : AM_LOCAL_TASK[l.parent_tool]) || "local_ask";
+const amHm = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+
+function amReset(sid) {
+  Object.assign(AM, { sid, failed: null, loading: null, seen: null, first: true, sel: null, focus: null, rows: [], model: null, selObj: null });
+  AM.nodes.clear(); AM.edges.clear();
+  const root = svg("svg", { role: "img", "aria-label": "Agent architecture map", class: "amsvg" });
+  const defs = svg("defs");
+  for (const [id, cls] of [["am-ar", "arrow"], ["am-ar-active", "arrow active"], ["am-ar-local", "arrow local"], ["am-ar-handoff", "arrow handoff"]]) {
+    const m = svg("marker", { id, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse" });
+    m.append(svg("path", { d: "M0,0 L10,5 L0,10 z", class: cls }));
+    defs.append(m);
+  }
+  root.append(defs);
+  AM.layers = {};
+  for (const k of ["edges", "packets", "nodes", "fx"]) { AM.layers[k] = svg("g", { class: `layer-${k}` }); root.append(AM.layers[k]); }
+  AM.pk = AM.layers.packets; AM.fx = AM.layers.fx; AM.root = root;
+  AM.note = h("div", "small muted amnote");
+  $("amap").replaceChildren(root, AM.note);
+}
+
+// The catalog is fetched when the panel opens and cached for 60 s; a failure is not retried until the panel is opened again.
+function amCatalog(s) {
+  const c = AM.cache.get(s.id);
+  if (c && Date.now() - c.at < 60000) return c.data;
+  if (AM.failed !== s.id && AM.loading !== s.id) {
+    AM.loading = s.id;
+    fetch(`/api/agents?sid=${encodeURIComponent(s.id)}`, { credentials: "same-origin" })
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error("status")))
+      .then((j) => {
+        if (!j || !Array.isArray(j.agents)) throw new Error("shape");
+        AM.cache.set(s.id, { at: Date.now(), data: j });
+      })
+      .catch(() => { if (!AM.cache.has(s.id)) AM.failed = s.id; })
+      .finally(() => { if (AM.loading === s.id) AM.loading = null; if (SELECTED?.sid === s.id && !$("details").hidden) showDetails(SELECTED, true); });
+  }
+  return c ? c.data : null;
+}
+
+// Nodes, edges and their states (running / used / avail) for one session.
+function amModel(s, cat) {
+  const live = !gone(s), now = STATE.now;
+  const types = new Map();
+  for (const a of s.subagents) {
+    const t = types.get(a.type) || { n: 0, last: 0, running: 0, since: 0, source: a.source, model: null, src: null };
+    t.n++; t.last = Math.max(t.last, a.stop || a.start);
+    if (!a.stop && live) { t.running++; t.since = t.since ? Math.min(t.since, a.start) : a.start; }
+    if (a.model) { t.model = a.model; t.src = a.model_src; }
+    types.set(a.type, t);
+  }
+  const ltools = new Map();
+  const lbump = (name, ts, running) => { const t = ltools.get(name) || { n: 0, last: 0, running: 0 }; t.n++; t.last = Math.max(t.last, ts); if (running) t.running++; ltools.set(name, t); };
+  for (const [ts, tool] of s.tools) if (String(tool).startsWith("mcp__niu-local__")) lbump(String(tool).split("__").pop(), ts, false);
+  for (const l of localKids()[s.id] || []) lbump(amLocalTool(l), l.first, !l.ended && l.state !== "stale");
+  const feedHas = (re) => STATE.feed.some((e) => e.session_id === s.id && e.tool === "Skill" && re.test(e.summary || ""));
+  const stage = (n) => (s.pipeline || []).find((p) => p.stage === n)?.status;
+  const catAgents = new Map((cat?.agents || []).map((a) => [a.name, a]));
+  const skill = (n) => (cat?.skills || []).find((k) => k.name === n);
+  const nodes = [], byId = new Map();
+  const add = (n) => { nodes.push(n); byId.set(n.id, n); return n; };
+  add({ id: "user", kind: "user", label: "You", source: "session", sub: s.state === "waiting" && live ? "waiting for you" : "prompts", used: true, running: s.state === "waiting" && live, tip: "You\nPrompts and approvals" });
+  add({ id: "main", kind: "main", label: "Main session", source: "session", model: s.model, modelSrc: "actual", sub: live ? (STATE_LABEL[s.state] || s.state) : "ended", used: true, running: live && s.state === "working", tip: `Main session\n${s.model ? shortModel(s.model) : "model unknown"}` });
+  const agentNode = (name) => {
+    const d = catAgents.get(name), t = types.get(name), c = amCluster(name);
+    const used = !!t, running = !!t?.running;
+    const model = t?.model || (d && d.model && d.model !== "inherit" ? d.model : "");
+    const modelLbl = model ? shortModel(model) : "inherits";
+    const label = d?.effort ? `${modelLbl} · ${d.effort}` : modelLbl;
+    const sub = running ? `running ${dur(now - t.since)}` : used ? `ran ${t.n}× · last ${amHm(t.last)}` : "available";
+    const hint = AM_FLOW[name] ? `usually started by /${c}` : "";
+    return { id: `a:${name}`, kind: "agent", cluster: c, label: name, source: d?.source || t?.source || "session", model: label, guess: !(t?.model && t.src === "actual"), sub, used, running, count: t?.n || 0,
+      tip: [name, d ? d.description : "definition not found", `${d?.source || t?.source || "?"} · ${label}`, hint].join("\n") };
+  };
+  const clusters = [];
+  const dispatcher = (c, kids, used) => {
+    const sk = skill(c);
+    const run = kids.some((k) => k.running);
+    const isSkill = c === "develop" || c === "dual-review";
+    const d = add({ id: `d:${c}`, kind: "disp", label: isSkill ? `/${c}` : c === "agent" ? "Agent tool" : "niu-local", source: isSkill ? "skill" : c === "local" ? "local" : "session",
+      sub: run ? "running" : used ? "used" : "available", used, running: run,
+      tip: [isSkill ? `/${c}` : c === "agent" ? "Agent tool" : "niu-local MCP", sk?.description || (c === "agent" ? "Starts a subagent" : c === "local" ? "Ollama-backed tools" : ""), "dispatcher"].join("\n") });
+    clusters.push({ id: c, disp: d, kids });
+  };
+  // /develop: designer -> approval -> implementer
+  const dev = ["designer", "implementer"].filter((n) => catAgents.has(n) || types.has(n)).map(agentNode);
+  if (dev.length || s.pipeline) {
+    const gUsed = stage("approve") === "done" || stage("approve") === "active";
+    const gate = { id: "gate:approve", kind: "gate", label: "approval", source: "session", sub: gUsed ? "you approve" : "available", used: gUsed, running: stage("approve") === "active" && live, tip: "Approval\nYou approve the design before implementation" };
+    const kids = [];
+    for (const k of dev) { if (k.id === "a:implementer" && !kids.some((x) => x.id === "gate:approve")) kids.push(gate); kids.push(k); }
+    if (!kids.includes(gate)) kids.push(gate);
+    kids.forEach((k) => add(k));
+    dispatcher("develop", kids, !!s.pipeline || dev.some((k) => k.used) || feedHas(/develop/));
+  }
+  const rev = ["security-reviewer", "test-reviewer"].filter((n) => catAgents.has(n) || types.has(n)).map(agentNode);
+  if (rev.length) { rev.forEach(add); dispatcher("dual-review", rev, rev.some((k) => k.used) || feedHas(/dual-review/)); }
+  const other = [...AM_BUILTIN.filter((n) => catAgents.has(n)), ...[...catAgents.keys()].filter((n) => !AM_FLOW[n] && !AM_BUILTIN.includes(n)),
+    ...[...types.keys()].filter((n) => !AM_FLOW[n] && !catAgents.has(n))].filter((n, i, a) => a.indexOf(n) === i).map(agentNode);
+  if (other.length) { other.forEach(add); dispatcher("agent", other, other.some((k) => k.used) || s.tools.some(([, t]) => t === "Agent" || t === "Task")); }
+  const lnames = [...(cat?.local_tools || []).map((t) => t.name), ...ltools.keys()].filter((n, i, a) => a.indexOf(n) === i);
+  const lnodes = lnames.map((n) => {
+    const d = (cat?.local_tools || []).find((t) => t.name === n), t = ltools.get(n), unavail = d && d.available === false;
+    return { id: `l:${n}`, kind: "local", label: n, source: "local", sub: t?.running ? "running" : t ? `used ${t.n}×` : unavail ? "not in this domain" : "available", used: !!t, running: !!t?.running, small: n === "local_status",
+      tip: [n, d?.description || "", unavail ? "not available in this domain" : "niu-local tool"].join("\n") };
+  });
+  if (lnodes.length) { lnodes.forEach(add); dispatcher("local", lnodes, lnodes.some((k) => k.used)); }
+  const usedKid = nodes.some((n) => (n.kind === "agent" || n.kind === "local") && n.used);
+  add({ id: "out", kind: "out", label: "Integrate & report", source: "session", sub: "main session", used: usedKid, running: false, tip: "Main session\nIntegrates the results and reports" });
+  // edges
+  const edges = [], eadd = (a, b, kind) => {
+    const A = byId.get(a), B = byId.get(b);
+    if (!A || !B) return;
+    edges.push({ id: `${a}>${b}`, a, b, kind: kind || (A.kind === "local" || B.kind === "local" || a === "d:local" ? "local" : ""),
+      state: A.used && B.used ? "used" : "avail", active: !!B.running && A.id !== "user" && b !== "out" });
+  };
+  eadd("user", "main");
+  for (const c of clusters) {
+    eadd("main", c.disp.id);
+    if (c.id === "develop") {
+      const ids = c.kids.map((k) => k.id);
+      eadd(c.disp.id, ids[0]);
+      for (let i = 0; i + 1 < ids.length; i++) eadd(ids[i], ids[i + 1]);
+      eadd(ids[ids.length - 1], "out");
+      if (byId.has("gate:approve")) { eadd("gate:approve", "user", "approval"); }
+    } else for (const k of c.kids) { eadd(c.disp.id, k.id); eadd(k.id, "out"); }
+  }
+  return { nodes, byId, edges, clusters };
+}
+
+function amLayout(m) {
+  const place = (n, x, y, w, h) => Object.assign(n, { x, y, w, h });
+  let y = APAD;
+  place(m.byId.get("user"), AMW / 2 - AW - 20, y, AW, AH);
+  place(m.byId.get("main"), AMW / 2 + 20, y, AW, AH);
+  y += AH + 40;
+  for (const c of m.clusters) {
+    const loc = c.id === "local";
+    c.cw = loc ? ALW : AW; c.ch = loc ? ALH : AH;
+    c.cols = c.id === "develop" ? c.kids.length : loc ? 2 : Math.min(3, c.kids.length);
+    c.w = Math.max(AW, c.cols * c.cw + (c.cols - 1) * AGX);
+  }
+  const bands = []; let cur = { cs: [], w: 0 };
+  for (const c of m.clusters) {
+    if (cur.cs.length && cur.w + 24 + c.w > AMW - 2 * APAD) { bands.push(cur); cur = { cs: [], w: 0 }; }
+    cur.w += (cur.cs.length ? 24 : 0) + c.w; cur.cs.push(c);
+  }
+  if (cur.cs.length) bands.push(cur);
+  for (const b of bands) {
+    let x = (AMW - b.w) / 2, bottom = y;
+    for (const c of b.cs) {
+      place(c.disp, x + (c.w - AW) / 2, y, AW, AH);
+      const ky = y + AH + 34, rows = Math.ceil(c.kids.length / c.cols), rowW = c.cols * c.cw + (c.cols - 1) * AGX, kx = x + (c.w - rowW) / 2;
+      c.kids.forEach((k, i) => place(k, kx + (i % c.cols) * (c.cw + AGX), ky + Math.floor(i / c.cols) * (c.ch + 10), c.cw, c.ch));
+      bottom = Math.max(bottom, ky + rows * c.ch + (rows - 1) * 10);
+      x += c.w + 24;
+    }
+    y = bottom + 40;
+  }
+  place(m.byId.get("out"), AMW / 2 - AW / 2, y, AW, AH);
+  m.W = AMW; m.H = y + AH + APAD;
+}
+
+// Vertical cubic from the bottom-centre of a to the top-centre of b; a straight line inside a row.
+function amPath(a, b) {
+  const cx = (n) => n.x + n.w / 2;
+  if (Math.abs(a.y - b.y) < 4) {
+    const r = a.x < b.x, y = a.y + a.h / 2;
+    return `M${r ? a.x + a.w : a.x},${y} L${r ? b.x : b.x + b.w},${b.y + b.h / 2}`;
+  }
+  const down = b.y > a.y, y1 = down ? a.y + a.h : a.y, y2 = down ? b.y : b.y + b.h, my = (y1 + y2) / 2;
+  return `M${cx(a)},${y1} C${cx(a)},${my} ${cx(b)},${my} ${cx(b)},${y2}`;
+}
+
+function amNode(n) {
+  let g = AM.nodes.get(n.id);
+  if (!g) {
+    g = svg("g", { class: "amnode", tabindex: "0", role: "button", "data-node": n.id });
+    if (n.kind === "gate") g.append(svg("polygon", { class: "ambox amgate", points: `${n.w / 2},2 ${n.w - 2},${n.h / 2} ${n.w / 2},${n.h - 2} 2,${n.h / 2}` }));
+    else g.append(svg("rect", { class: "amhalo", width: n.w, height: n.h, rx: 9 }), svg("rect", { class: "ambox", width: n.w, height: n.h, rx: 9 }));
+    for (const [c, x, y, extra] of [["badge", 8, 13], ["lbl mdl", n.w - 8, 13, { "text-anchor": "end" }], ["name", 8, 28], ["lbl sub", 8, 41]])
+      g.append(svg("text", { class: `am${c.split(" ")[0]} ${c}`, x, y, ...(extra || {}) }));
+    if (n.kind === "gate") { for (const t of g.children.filter((k) => k.tagName === "text")) t.setAttribute("x", n.w / 2), t.setAttribute("text-anchor", "middle"); }
+    g.addEventListener("click", () => amFocus(n.id));
+    g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); amFocus(n.id); } });
+    AM.layers.nodes.append(g);
+    AM.nodes.set(n.id, g);
+  }
+  g.setAttribute("transform", `translate(${n.x},${n.y})`);
+  const st = n.running ? "running" : n.used ? "used" : "avail";
+  g.setAttribute("class", `amnode ${st}${n.kind === "gate" ? " gate" : ""}${n.small ? " small" : ""}${n.kind === "local" ? " alocal" : ""}`);
+  g.setAttribute("data-tip", n.tip);
+  g.setAttribute("aria-label", `${n.label}, ${n.sub}`);
+  const q = (c) => g.children.find((k) => k.tagName === "text" && (k.getAttribute("class") || "").split(" ")[0] === `am${c}`);
+  const [badge, mdl, name, sub] = [q("badge"), q("lbl") && g.children.filter((k) => k.tagName === "text")[1], q("name"), g.children.filter((k) => k.tagName === "text")[3]];
+  badge.textContent = n.kind === "gate" ? "" : n.source === "session" || n.source === "builtin" ? n.source : n.source;
+  badge.setAttribute("class", `ambadge badge src-${n.source}`);
+  mdl.textContent = trunc(n.model ? (n.model.length ? shortModel(n.model) : "") : "", 18);
+  mdl.setAttribute("class", `amlbl lbl mdl${n.guess ? " guess" : ""}`);
+  name.textContent = trunc(n.label, n.small ? 12 : 17);
+  sub.textContent = trunc(n.sub, 21);
+  n.el = g;
+}
+
+function amEdge(e, m) {
+  let rec = AM.edges.get(e.id);
+  if (!rec) {
+    const pid = `am${++AM.ids}`;
+    rec = { pid, base: svg("path", { id: pid, class: "amedge" }), flow: svg("path", { class: "gflow" }) };
+    AM.layers.edges.append(rec.base, rec.flow);
+    AM.edges.set(e.id, rec);
+  }
+  const d = amPath(m.byId.get(e.a), m.byId.get(e.b));
+  rec.base.setAttribute("d", d); rec.flow.setAttribute("d", d);
+  rec.kind = e.kind; rec.state = e.state; rec.active = e.active;
+  rec.base.setAttribute("marker-end", `url(#${e.active ? "am-ar-active" : e.kind === "local" ? "am-ar-local" : "am-ar"})`);
+  rec.alive = true;
+  return rec;
+}
+
+// Rows of the activity list: newest 40, each with the nodes and edges it highlights.
+function amActivity(s) {
+  const rows = [], byId = new Map(s.subagents.map((a) => [a.id, a]));
+  const sess = new Map(STATE.sessions.map((x) => [x.id, x]));
+  const feed = STATE.feed.filter((e) => e.session_id === s.id);
+  const sumFor = (ts, tool, aid) => feed.find((e) => Math.abs(e.ts - ts) <= 1.5 && e.tool === tool && (aid ? e.agent_id === aid : !e.agent_id))?.summary || "";
+  const spawn = (t) => { const c = amCluster(t); return { nodes: ["main", `d:${c}`, `a:${t}`], edges: [`main>d:${c}`, `d:${c}>a:${t}`] }; };
+  const row = (key, ts, text, r) => rows.push({ key, ts, text, nodes: r.nodes || [], edges: r.edges || [] });
+  const claimed = new Set();
+  s.tools.slice(-120).forEach(([ts, tool], i) => {
+    const key = `t:main:${ts}:${i}`, sum = sumFor(ts, tool);
+    if (tool === "Agent" || tool === "Task") {
+      let best = null;
+      for (const a of s.subagents) if (!claimed.has(a.id) && Math.abs(a.start - ts) <= 5 && (!best || Math.abs(a.start - ts) < Math.abs(best.start - ts))) best = a;
+      if (best) claimed.add(best.id);
+      const t = best?.type || /^([\w.:-]+):/.exec(sum)?.[1];
+      return t ? row(key, ts, `spawn ${t}`, spawn(t)) : row(key, ts, "spawn agent", { nodes: ["main", "d:agent"], edges: ["main>d:agent"] });
+    }
+    if (tool === "Skill") {
+      const c = /dual-review/.test(sum) ? "dual-review" : /develop/.test(sum) ? "develop" : null;
+      return c ? row(key, ts, `/${c}`, { nodes: ["main", `d:${c}`], edges: [`main>d:${c}`] }) : row(key, ts, `Skill ${sum}`.trim(), { nodes: ["main"] });
+    }
+    if (String(tool).startsWith("mcp__niu-local__")) {
+      const t = tool.split("__").pop();
+      return row(key, ts, `${t}${sum ? ` ${trunc(sum, 60)}` : ""}`, { nodes: ["main", "d:local", `l:${t}`], edges: ["main>d:local", `d:local>l:${t}`] });
+    }
+    if (tool === "AskUserQuestion") {
+      const done = s.subagents.some((a) => a.type === "designer" && a.stop && a.stop <= ts + 1);
+      return done ? row(key, ts, "asked for approval", { nodes: ["main", "gate:approve", "user", "a:designer"], edges: ["a:designer>gate:approve", "gate:approve>user"] })
+        : row(key, ts, "asked you a question", { nodes: ["main", "user"], edges: ["user>main"] });
+    }
+    row(key, ts, `${tool}${sum ? ` ${trunc(sum, 60)}` : ""}`, { nodes: ["main"] });
+  });
+  for (const a of s.subagents) {
+    const t = a.type, c = amCluster(t);
+    a.tools.slice(-30).forEach(([ts, tool], i) => row(`t:${a.id}:${ts}:${i}`, ts, `${t} · ${tool}${sumFor(ts, tool, a.id) ? ` ${trunc(sumFor(ts, tool, a.id), 60)}` : ""}`, { nodes: [`a:${t}`], edges: [`d:${c}>a:${t}`] }));
+    row(`s:${a.id}`, a.start, `${t} started`, { nodes: [`a:${t}`], edges: [`d:${c}>a:${t}`] });
+    if (a.stop) row(`e:${a.id}`, a.stop, `${t} done in ${dur(a.stop - a.start)}`, { nodes: [`a:${t}`, "out"], edges: [`a:${t}>out`] });
+  }
+  for (const l of localKids()[s.id] || []) {
+    const t = amLocalTool(l), what = `${TASK_NAME[t] || "local agent"}${l.query ? `: “${trunc(l.query, 50)}”` : ""}`;
+    row(`l:${l.id}:s`, l.first, what, { nodes: [`l:${t}`], edges: [`d:local>l:${t}`] });
+    if (l.ended) row(`l:${l.id}:e`, l.last, `${TASK_NAME[t] || "local agent"} done`, { nodes: [`l:${t}`, "out"], edges: [`l:${t}>out`] });
+  }
+  s.waits.slice(-10).forEach((ts) => row(`w:${ts}`, ts, "waiting for you", { nodes: ["user", "main"], edges: ["user>main"] }));
+  for (const hf of s.chain?.handoffs || []) row(`h:${hf.from}:${hf.to}`, hf.at, `hand-off: ${amNodeOf(hf.from, byId, sess).label} → ${amNodeOf(hf.to, byId, sess).label}`, amHand(hf, byId, sess));
+  return rows.sort((a, b) => b.ts - a.ts).slice(0, 40);
+}
+function amNodeOf(id, byId, sess) {
+  const a = byId.get(id);
+  if (a) return { id: `a:${a.type}`, label: a.type, type: a.type };
+  const l = sess.get(id);
+  if (l && l.local) { const t = amLocalTool(l); return { id: `l:${t}`, label: t, local: true }; }
+  return { id: "main", label: "main" };
+}
+function amHand(hf, byId, sess) {
+  const f = amNodeOf(hf.from, byId, sess), t = amNodeOf(hf.to, byId, sess);
+  if (f.type === "designer" && t.type === "implementer") return { nodes: [f.id, "gate:approve", t.id], edges: [`${f.id}>gate:approve`, `gate:approve>${t.id}`] };
+  const nodes = [f.id, t.id], edges = [];
+  if (f.id !== "main") edges.push(`${f.id}>out`);
+  if (t.type) edges.push(`d:${amCluster(t.type)}>${t.id}`); else if (t.local) edges.push(`d:local>${t.id}`);
+  return { nodes, edges };
+}
+
+// Highlight: a selected row lights its nodes and edges and fades the rest; a focused node only lights itself.
+function amApply() {
+  const row = AM.rows.find((r) => r.key === AM.sel);
+  const nodes = row ? new Set(row.nodes) : AM.focus ? new Set([AM.focus]) : null, edges = row ? new Set(row.edges) : null;
+  for (const [id, g] of AM.nodes) {
+    const base = (g.getAttribute("class") || "").split(" ").filter((c) => !["hl", "fade", "focus"].includes(c));
+    if (nodes) base.push(nodes.has(id) ? (row ? "hl" : "focus") : (row ? "fade" : ""));
+    g.setAttribute("class", base.filter(Boolean).join(" "));
+    g.setAttribute("aria-pressed", String(AM.focus === id));
+  }
+  for (const [id, r] of AM.edges) {
+    const on = !!edges?.has(id);
+    r.base.setAttribute("class", `amedge ${r.state}${r.kind ? ` ${r.kind}` : ""}${r.active ? " active" : ""}${on ? " hl" : edges ? " fade" : ""}`);
+    r.flow.setAttribute("class", `gflow${r.active ? " active" : ""}${r.kind === "local" ? " local" : ""}`);
+  }
+  const box = $("amfeed");
+  for (const el of box.children || []) {
+    if (!el || !el.getAttribute) continue;
+    const r = AM.rows.find((x) => x.key === el.getAttribute("data-key")), touch = AM.focus && r?.nodes.includes(AM.focus);
+    el.setAttribute("class", `amrow${r && r.key === AM.sel ? " sel" : ""}${touch ? " on" : AM.focus ? " mute" : ""}`);
+    el.setAttribute("aria-selected", String(!!r && r.key === AM.sel));
+  }
+}
+function amSelect(key) {
+  AM.sel = AM.sel === key ? null : key;
+  amApply();
+  const row = AM.rows.find((r) => r.key === AM.sel);
+  if (row && !reducedMotion() && AM.model) for (const id of row.edges) { const e = AM.edges.get(id); if (e) packet(e.pid, "spawn", { layer: AM.pk }); }
+}
+function amFocus(id) {
+  AM.focus = AM.focus === id ? null : id;
+  amApply();
+  if (AM.focus) for (const el of $("amfeed").children || []) {
+    const r = AM.rows.find((x) => x.key === el?.getAttribute?.("data-key"));
+    if (r?.nodes.includes(id)) { el.scrollIntoView({ block: "nearest" }); break; }
+  }
+}
+// Keyboard on the activity list: arrows move and select, Home / End jump, Enter / Space toggles, Backspace clears.
+function amKey(e) {
+  const keys = AM.rows.map((r) => r.key), i = Math.max(0, keys.indexOf(AM.rows.find((r) => r.key === AM.cur)?.key));
+  let j = null;
+  if (e.key === "ArrowDown") j = Math.min(keys.length - 1, i + 1);
+  else if (e.key === "ArrowUp") j = Math.max(0, i - 1);
+  else if (e.key === "Home") j = 0;
+  else if (e.key === "End") j = keys.length - 1;
+  else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (keys.length) amSelect(keys[i]); return; }
+  else if (e.key === "Backspace") { e.preventDefault(); AM.sel = null; amApply(); return; }
+  if (j === null || !keys.length) return;
+  e.preventDefault();
+  AM.cur = keys[j]; AM.sel = keys[j];
+  amApply(); amRoving();
+  const el = [...$("amfeed").children].find((c) => c?.getAttribute?.("data-key") === keys[j]);
+  if (el) { el.focus(); el.scrollIntoView({ block: "nearest" }); }
+}
+function amRoving() {
+  for (const el of $("amfeed").children || []) if (el?.setAttribute) el.setAttribute("tabindex", el.getAttribute("data-key") === (AM.cur || AM.rows[0]?.key) ? "0" : "-1");
+}
+function amFeed() {
+  const box = $("amfeed");
+  box.setAttribute("role", "listbox"); box.setAttribute("aria-label", "Recent activity (select a row to highlight its agents)");
+  if (!AM.keyed) { box.addEventListener("keydown", amKey); AM.keyed = true; }
+  box.replaceChildren(...AM.rows.map((r) => {
+    const el = h("div", "amrow", "", { role: "option", "data-key": r.key, "data-tip": `${r.text}\n${hhmmss(r.ts)}` });
+    el.append(h("span", "muted", hhmmss(r.ts)), h("span", "amtxt", r.text));
+    el.addEventListener("click", () => { AM.cur = r.key; amSelect(r.key); amRoving(); });
+    return el;
+  }));
+  if (!AM.rows.length) box.append(h("div", "empty", "No activity yet."));
+  amRoving(); amApply();
+}
+
+// Live sessions only, and never on the first paint: spawn packets go main -> dispatcher -> agent, tool calls burst on the agent,
+// results go agent -> end node.
+function amAnimate(s, m) {
+  const subs = new Map(s.subagents.map((a) => [a.id, { stop: !!a.stop, n: a.tools.length }]));
+  const lk = localKids()[s.id] || [];
+  const cur = { subs, loc: new Map(lk.map((l) => [l.id, !!l.ended])), hand: new Set((s.chain?.handoffs || []).map((x) => `${x.from}>${x.to}`)), tools: s.tools.length };
+  const prev = AM.seen; AM.seen = cur;
+  if (!prev || AM.first || gone(s) || reducedMotion()) { AM.first = false; return; }
+  const pk = (id, cls, delay) => { const e = AM.edges.get(id); if (e) packet(e.pid, cls, { layer: AM.pk, delay }); };
+  const fx = (id, tool) => { const n = m.byId.get(id); if (n) burst(n, TOOL_CLASS(tool), tool, { layer: AM.fx, w: n.w, h: n.h }); };
+  for (const a of s.subagents) {
+    const p = prev.subs.get(a.id), c = amCluster(a.type);
+    if (!p) { pk(`main>d:${c}`, "spawn", 0); pk(`d:${c}>a:${a.type}`, "spawn", 450); }
+    else {
+      const k = Math.min(3, a.tools.length - p.n);
+      for (const [, tool] of k > 0 ? a.tools.slice(-k) : []) fx(`a:${a.type}`, tool);
+    }
+    if (a.stop && !(p ? p.stop : false)) pk(`a:${a.type}>out`, "result", 0);
+  }
+  for (const l of lk) {
+    const t = amLocalTool(l);
+    if (!prev.loc.has(l.id)) pk(`d:local>l:${t}`, "local", 0);
+    if (l.ended && prev.loc.get(l.id) === false) pk(`l:${t}>out`, "result", 0);
+  }
+  const sess = new Map(STATE.sessions.map((x) => [x.id, x])), byId = new Map(s.subagents.map((a) => [a.id, a]));
+  for (const hf of s.chain?.handoffs || []) if (!prev.hand.has(`${hf.from}>${hf.to}`)) { const e = amHand(hf, byId, sess).edges.find((x) => AM.edges.has(x)); if (e) pk(e, "handoff", 0); }
+  const k = Math.min(3, s.tools.length - prev.tools);
+  for (const [, tool] of k > 0 ? s.tools.slice(-k) : []) fx("main", tool);
+}
+
+function amRender(s) {
+  const cat = amCatalog(s);
+  const m = amModel(s, cat);
+  amLayout(m);
+  AM.model = m;
+  AM.root.setAttribute("viewBox", `0 0 ${m.W} ${m.H}`);
+  for (const r of AM.edges.values()) r.alive = false;
+  const ids = new Set(m.nodes.map((n) => n.id));
+  for (const n of m.nodes) amNode(n);
+  for (const e of m.edges) amEdge(e, m);
+  for (const [id, g] of [...AM.nodes]) if (!ids.has(id)) { g.remove(); AM.nodes.delete(id); }
+  const live = new Set(m.edges.map((e) => e.id));
+  for (const [id, r] of [...AM.edges]) if (!live.has(id)) { r.base.remove(); r.flow.remove(); AM.edges.delete(id); }
+  AM.note.textContent = cat ? (cat.skills || []).filter((k) => !k.flow).length ? `Other skills: ${(cat.skills || []).filter((k) => !k.flow).map((k) => k.name).join(", ")}` : ""
+    : AM.failed === s.id ? "Available agents could not be loaded." : "Loading available agents…";
+  AM.rows = amActivity(s);
+  if (AM.sel && !AM.rows.some((r) => r.key === AM.sel)) AM.sel = null;
+  amFeed();
+  amAnimate(s, m);
+}
+
 function showDetails(sel, refresh) {
   SELECTED = sel;
   const s = STATE.sessions.find((x) => x.id === sel.sid);
   if (!s) { if (!refresh) $("details").hidden = true; return; }
+  if (AM.sid !== s.id || $("details").hidden) amReset(s.id);
   const a = sel.aid && s.subagents.find((x) => x.id === sel.aid);
-  const title = a ? `${esc(a.type)} <span class="src src-${esc(a.source)}">${esc(a.source)}</span>` : esc(projLabel(s));
-  const tools = (a ? a.tools : s.tools).slice(-15).reverse();
-  const feed = STATE.feed.filter((e) => e.session_id === s.id && (!a || e.agent_id === a.id)).slice(0, 15);
-  $("details").innerHTML = `<button class="ghost x" id="dclose">Close</button><h2>${title}</h2>
-    <div class="small muted">session ${esc(s.id)} · ${esc(dl(s.domain))}${a && a.task ? ` · task: ${esc(a.task)}` : ""}</div>
-    <h2 class="mt">Recent activity</h2><div class="feed">${feed.map((e) =>
-      `<div><span class="muted">${hhmmss(e.ts)}</span> ${esc(e.event)} ${esc([e.tool, e.summary].filter(Boolean).join(" "))}</div>`).join("") ||
-      tools.map(([ts, t]) => `<div><span class="muted">${hhmmss(ts)}</span> ${esc(t)}</div>`).join("") || `<div class="empty">No tool calls yet.</div>`}</div>`;
+  if (sel !== AM.selObj) { AM.selObj = sel; if (a) AM.focus = `a:${a.type}`; }
+  const close = h("button", "ghost x", "Close", { id: "dclose" });
+  close.onclick = () => { SELECTED = null; AM.sid = null; $("details").hidden = true; };
+  const title = h("h2", "", a ? `${a.type} ` : projLabel(s));
+  if (a) title.append(h("span", `src src-${a.source}`, a.source));
+  $("amhead").replaceChildren(close, title, h("div", "small muted", `session ${s.id} · ${dl(s.domain)}${a && a.task ? ` · task: ${a.task}` : ""}`));
+  $("details").classList.add("wide");
   $("details").hidden = false;
-  $("dclose").onclick = () => { SELECTED = null; $("details").hidden = true; };
+  amRender(s);
 }
 
 // ---------- actions ----------

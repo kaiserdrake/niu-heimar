@@ -687,3 +687,55 @@ dialog textarea { font-family: var(--mono); resize: vertical; }
 .tokmatrix, .tokcounted { margin-top: 8px; font-size: 11.5px; } .tokmatrix summary, .tokcounted summary { cursor: pointer; color: var(--muted); }
 .tokmatrix .rstable td.r { text-align: right; }
 .tokcounted p { margin: 4px 0; color: var(--muted); }
+
+/* session agent map (details panel) */
+.mc .details.wide, .details.wide { width: min(780px, calc(100vw - 24px)); }
+.amap { overflow: auto; max-height: 58vh; border-radius: 10px; background-color: var(--bg2); }
+.amap svg { display: block; width: 100%; height: auto; }
+.amnote { padding: 4px 8px; }
+.amlegend { margin: 6px 0 0; }
+.amnode { cursor: pointer; transition: opacity .3s; outline: none; }
+.amnode .ambox { fill: var(--card); stroke: var(--border); stroke-width: 1.3; stroke-dasharray: 5 3; transition: stroke .3s; }
+.amnode.used .ambox { stroke-dasharray: none; stroke: var(--muted); }
+.amnode.running .ambox { stroke-dasharray: none; stroke: var(--ok); stroke-width: 2; }
+.amnode .amhalo { fill: none; stroke: var(--ok); stroke-width: 2; opacity: 0; }
+.amnode.running .amhalo { animation: halo 1.8s ease-out infinite; }
+.amnode.avail { opacity: .45; }
+.amnode.alocal .ambox { stroke: color-mix(in srgb, var(--t-local) 60%, var(--border)); }
+.amnode.hl .ambox { stroke: var(--accent); stroke-width: 2.2; stroke-dasharray: none; }
+.amnode.hl { opacity: 1; }
+.amnode.focus .ambox { stroke: var(--accent); stroke-width: 2; }
+.amnode.fade { opacity: .25; }
+.amnode:focus-visible .ambox { stroke: var(--accent); stroke-width: 2.4; }
+.amnode .badge { font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.amnode .badge.src-project { fill: var(--project); } .amnode .badge.src-domain { fill: var(--domain); } .amnode .badge.src-shared { fill: var(--shared); }
+.amnode .badge.src-builtin, .amnode .badge.src-user, .amnode .badge.src-session, .amnode .badge.src-skill { fill: var(--muted); }
+.amnode .badge.src-local { fill: var(--t-local); }
+.amnode .mdl { font-size: 9.5px; fill: var(--muted); font-family: var(--mono); }
+.amnode .mdl.guess { font-style: italic; opacity: .85; }
+.amnode .name { font-size: 12px; font-weight: 600; }
+.amnode .sub { font-size: 10px; }
+.amnode.small .name { font-size: 10.5px; }
+.amnode .amgate { stroke-linejoin: round; }
+.amedge { fill: none; stroke: var(--border); stroke-width: 1.5; transition: stroke .3s, opacity .3s; }
+.amedge.used { stroke: color-mix(in srgb, var(--spawn) 45%, var(--border)); }
+.amedge.avail { stroke-dasharray: 4 4; opacity: .45; }
+.amedge.local.used { stroke: color-mix(in srgb, var(--t-local) 50%, var(--border)); }
+.amedge.approval { stroke-dasharray: 2 4; }
+.amedge.active { stroke: color-mix(in srgb, var(--spawn) 55%, var(--border)); opacity: 1; }
+.amedge.hl { stroke: var(--accent); stroke-width: 2.4; stroke-dasharray: none; opacity: 1; }
+.amedge.fade { opacity: .15; }
+.amfeed { font-family: var(--mono); font-size: 12px; max-height: 30vh; overflow-y: auto; }
+.amrow { display: flex; gap: 10px; padding: 3px 6px; border-radius: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; border: 1px solid transparent; }
+.amrow .amtxt { overflow: hidden; text-overflow: ellipsis; }
+.amrow:hover { background: var(--accent-bg); }
+.amrow:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.amrow.on { background: var(--accent-bg); }
+.amrow.mute { opacity: .45; }
+.amrow[aria-selected="true"] { background: var(--accent-bg); border-color: var(--accent); }
+.calm .amnode, .calm .amedge { transition: none; }
+.calm .amnode .amhalo, .calm .amedge.active { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .amnode, .amedge { transition: none; }
+  .amnode .amhalo, .amedge.active { animation: none; }
+}

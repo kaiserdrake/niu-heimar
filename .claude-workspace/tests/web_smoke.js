@@ -1411,6 +1411,118 @@ async function tokenChecks(fx) {
   ctx.fetch = realFetch; run('VIEW = "agents"; TOK.stale = false; TOK.data = null');
   return "tokens ok";
 }
+// Session agent map: the details panel shows every catalog agent (dashed = available) above a recent-activity list.
+// The catalog is the real /api/agents response when the last argv entry is an agents.json file, else a small fixture.
+async function amChecks(catFile) {
+  const fail = (m) => { throw new Error("agent map: " + m); };
+  const run = (c) => vm.runInContext(c, ctx);
+  const tick = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
+  const cls = (e) => (e && e.getAttribute("class")) || "";
+  const fixture = { sid: "x", agents: [
+    { name: "designer", source: "shared", model: "claude-opus-5-5", effort: null, description: "Designs." },
+    { name: "implementer", source: "shared", model: "claude-sonnet-5-5", effort: null, description: "Builds." },
+    { name: "security-reviewer", source: "shared", model: "claude-sonnet-5-5", effort: null, description: "Reviews security." },
+    { name: "test-reviewer", source: "shared", model: "claude-sonnet-5-5", effort: "high", description: "Reviews tests." },
+    { name: "general-purpose", source: "builtin", model: "inherit", effort: null, description: "General." },
+    { name: "Explore", source: "builtin", model: "inherit", effort: null, description: "Search." },
+    { name: "Plan", source: "builtin", model: "inherit", effort: null, description: "Plan." }],
+    skills: [{ name: "develop", source: "shared", flow: true, description: "d" }, { name: "dual-review", source: "shared", flow: true, description: "r" }, { name: "other", source: "shared", flow: false, description: "o" }],
+    local_tools: ["local_search", "local_diff_review", "local_ask", "local_logs", "local_ci", "local_git", "local_status"].map((n) => ({ name: n, description: n, available: true })), generated_at: 1 };
+  const last = process.argv[process.argv.length - 1];
+  const cat = /agents\.json$/.test(last) ? JSON.parse(fs.readFileSync(last, "utf8")) : fixture;
+  const realFetch = ctx.fetch;
+  const calls = [];
+  ctx.fetch = (url) => { calls.push(String(url)); return Promise.resolve({ ok: true, json: () => Promise.resolve(cat) }); };
+  ctx.TP_TRAP = true;   // the whole agent map is built with h() / svg(): any innerHTML write throws
+  const packets = [], realPacket = ctx.packet;
+  try {
+    run(`(() => {
+      const s0 = STATE.sessions[0], t = STATE.now;
+      globalThis.AM_SAVED = { subagents: s0.subagents, tools: s0.tools, ended: s0.ended, state: s0.state, pipeline: s0.pipeline, handoffs: s0.chain && s0.chain.handoffs };
+      s0.ended = false; s0.state = "working"; s0.pipeline = null; s0.waits = [t - 400];
+      s0.subagents = [
+        { id: "am-t", type: "test-reviewer", source: "shared", start: t - 300, stop: t - 100, tools: [[t - 200, "Bash"]], parent: s0.id, model: null, model_src: null, task: "" },
+        { id: "am-s", type: "security-reviewer", source: "shared", start: t - 60, stop: null, tools: [], parent: s0.id, model: null, model_src: null, task: "" }];
+      s0.tools = [[t - 30, "mcp__niu-local__local_search"], [t - 20, "Edit"]];
+      renderGraph();
+      globalThis.AM_G0 = JSON.stringify([[...G.nodes.keys()], [...G.edges.keys()]]);
+    })()`);
+    const sid = run("STATE.sessions[0].id");
+    run(`showDetails({ sid: ${JSON.stringify(sid)} })`); await tick();
+    if (!calls.some((u) => u === "/api/agents?sid=" + encodeURIComponent(sid))) fail("catalog not fetched: " + calls);
+    if (!els.get("details").classList.contains("wide") || els.get("details").hidden) fail("panel not wide / visible");
+    const nodes = run("AM.nodes");
+    for (const a of cat.agents) if (!nodes.has("a:" + a.name)) fail("no node for catalog agent " + a.name);
+    for (const t of cat.local_tools) if (!nodes.has("l:" + t.name)) fail("no node for local tool " + t.name);
+    if (!/\bused\b/.test(cls(nodes.get("a:test-reviewer"))) || !/\brunning\b/.test(cls(nodes.get("a:security-reviewer")))) fail("reviewer states: " + cls(nodes.get("a:test-reviewer")) + " / " + cls(nodes.get("a:security-reviewer")));
+    if (nodes.has("a:designer") && !/\bavail\b/.test(cls(nodes.get("a:designer")))) fail("designer should be available");
+    if (!/\bused\b/.test(cls(run('AM.edges.get("d:dual-review>a:test-reviewer").base')))) fail("dual-review edge not used");
+    if (!/\bavail\b/.test(cls(run('AM.edges.get("d:agent>a:Explore").base')))) fail("unused edge should be avail");
+    if (!/\bavail\b/.test(cls(nodes.get("a:Explore"))) || !/available/.test(textOf(nodes.get("a:Explore")))) fail("Explore should be dimmed 'available'");
+    // activity
+    const rows = run("AM.rows");
+    const rt = rows.find((r) => r.text === "test-reviewer · Bash"), rl = rows.find((r) => /^local_search/.test(r.text));
+    if (!rt || !rl) fail("rows missing: " + rows.map((r) => r.text));
+    if (rows.length > 40 || rows.some((r, i) => i && rows[i - 1].ts < r.ts)) fail("rows not newest first / capped");
+    run(`amSelect(${JSON.stringify(rt.key)})`);
+    if (!/\bhl\b/.test(cls(nodes.get("a:test-reviewer"))) || !/\bhl\b/.test(cls(run('AM.edges.get("d:dual-review>a:test-reviewer").base')))) fail("selected row did not highlight its agent and edge");
+    if (nodes.has("a:designer") && !/\bfade\b/.test(cls(nodes.get("a:designer")))) fail("other agents not faded");
+    const rowEls = kidsOf(els.get("amfeed")), rowEl = rowEls.find((e) => e.getAttribute("data-key") === rt.key);
+    if (!rowEl || rowEl.getAttribute("aria-selected") !== "true" || els.get("amfeed").getAttribute("role") !== "listbox" || rowEl.getAttribute("role") !== "option") fail("row aria state");
+    run(`showDetails(SELECTED, true)`);
+    if (run("AM.sel") !== rt.key) fail("selection lost on refresh");
+    run(`amSelect(${JSON.stringify(rl.key)})`);
+    if (!/\bhl\b/.test(cls(nodes.get("l:local_search")))) fail("local_search row did not highlight l:local_search");
+    // keyboard
+    const ev = (key) => ({ key, preventDefault() {} });
+    const keys = run("AM.rows.map((r) => r.key)");
+    run(`AM.cur = ${JSON.stringify(keys[0])}; AM.sel = null`);
+    els.get("amfeed")._ls.keydown.forEach((f) => f(ev("ArrowDown")));
+    if (run("AM.sel") !== keys[1]) fail("ArrowDown did not select the next row");
+    els.get("amfeed")._ls.keydown.forEach((f) => f(ev("End")));
+    if (run("AM.sel") !== keys[keys.length - 1]) fail("End did not select the last row");
+    els.get("amfeed")._ls.keydown.forEach((f) => f(ev("Backspace")));
+    if (run("AM.sel") !== null || /\b(hl|fade)\b/.test(cls(nodes.get("a:test-reviewer")))) fail("Backspace did not clear the highlight");
+    // clicking a node highlights its rows
+    run('amFocus("a:test-reviewer")');
+    if (!kidsOf(els.get("amfeed")).some((e) => /\bon\b/.test(cls(e))) || !/\bfocus\b/.test(cls(nodes.get("a:test-reviewer")))) fail("node click did not mark rows");
+    run('amFocus("a:test-reviewer")');
+    // isolation: the Agent interactions graph is untouched
+    if (run("JSON.stringify([[...G.nodes.keys()], [...G.edges.keys()]])") !== run("AM_G0")) fail("opening the map changed the interactions graph");
+    // live animation
+    ctx.packet = (pid, c, o) => { packets.push([pid, c, o && o.layer]); };
+    const addSub = (type, id) => run(`STATE.sessions[0].subagents.push({ id: ${JSON.stringify(id)}, type: ${JSON.stringify(type)}, source: "builtin", start: STATE.now, stop: null, tools: [], parent: STATE.sessions[0].id, model: null, model_src: null, task: "" }); showDetails(SELECTED, true)`);
+    addSub("Explore", "am-x");
+    const pid = (id) => run(`AM.edges.get(${JSON.stringify(id)}).pid`);
+    if (packets.length < 2 || packets[0][0] !== pid("main>d:agent") || packets[0][1] !== "spawn" || packets[1][0] !== pid("d:agent>a:Explore")) fail("spawn packets: " + JSON.stringify(packets));
+    if (packets[0][2] !== run("AM.pk")) fail("packets not drawn into the map's own layer");
+    packets.length = 0;
+    run('$("calm").checked = true'); addSub("Plan", "am-y");
+    if (packets.length) fail("packets drawn with Reduce motion on");
+    run('$("calm").checked = false; STATE.sessions[0].ended = true'); addSub("general-purpose", "am-z");
+    if (packets.length) fail("packets drawn for an ended session");
+    ctx.packet = realPacket;
+    // catalog failure: used agents plus a note
+    ctx.fetch = () => Promise.reject(new Error("down"));
+    run('AM.cache.clear(); STATE.sessions[0].ended = false; $("details").hidden = true; showDetails({ sid: STATE.sessions[0].id })'); await tick();
+    if (!/could not be loaded/.test(textOf(els.get("amap")))) fail("failure note missing: " + textOf(els.get("amap")));
+    if (!run("AM.nodes").has("a:test-reviewer") || run("AM.nodes").has("a:Plan") && !/used|running/.test(cls(run("AM.nodes").get("a:Plan")))) fail("used agents must stay drawn when the catalog fails");
+    if (run("AM.nodes").has("l:local_status")) fail("available-only nodes drawn without a catalog");
+    // close button and Esc semantics
+    kidsOf(els.get("amhead")).find((e) => e.getAttribute("id") === "dclose").onclick();
+    if (!els.get("details").hidden || run("SELECTED") !== null) fail("close button");
+    // source scan: no HTML sinks in the agent map code
+    const app = fs.readFileSync(process.argv[2], "utf8");
+    const a0 = app.indexOf("// ---------- session agent map"), a1 = app.indexOf("// ---------- actions ----------");
+    if (a0 < 0 || a1 < a0) fail("section markers not found");
+    const sect = app.slice(a0, a1);
+    for (const bad of ["innerHTML", "insertAdjacentHTML", "outerHTML", "document.write", "eval(", "new Function"]) if (sect.includes(bad)) fail("agent map section uses " + bad);
+  } finally {
+    ctx.TP_TRAP = false; ctx.packet = realPacket; ctx.fetch = realFetch;
+    run(`(() => { const s0 = STATE.sessions[0], v = globalThis.AM_SAVED; if (v) { s0.subagents = v.subagents; s0.tools = v.tools; s0.ended = v.ended; s0.state = v.state; s0.pipeline = v.pipeline; } $("details").hidden = true; SELECTED = null; })()`);
+  }
+  return "agent map ok";
+}
 (async () => {
   try {
     console.log(vm.runInContext(src, ctx, { filename: "app.js" }));
@@ -1422,6 +1534,7 @@ async function tokenChecks(fx) {
     if (process.argv[6]) console.log(await usageChecks(JSON.parse(fs.readFileSync(process.argv[6], "utf8"))));
     if (process.argv[7]) console.log(await tokenChecks(JSON.parse(fs.readFileSync(process.argv[7], "utf8"))));
     if (process.argv[5]) console.log(await topicsChecks(JSON.parse(fs.readFileSync(process.argv[5], "utf8")), fs.readFileSync(process.argv[2], "utf8")));
+    console.log(await amChecks());
     if (process.argv[5]) console.log(await topicsViewChecks(JSON.parse(fs.readFileSync(process.argv[5], "utf8")), fs.readFileSync(process.argv[2], "utf8")));
   } catch (e) { console.log("ERROR:", e.message, (e.stack || "").split("\n").slice(1,5).join(" ; ")); process.exit(1); }
 })();
