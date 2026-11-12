@@ -194,6 +194,20 @@ try:
     check(req("GET", "/api/state?feed=abc")[0] == 200, "bad feed parameter falls back")
     check(js.get("host") == "Testhost", f"host label in state: {js.get('host')}")
 
+    # Agent catalog: unpaired GET, no absolute paths, small
+    st, _, ag, raw = req("GET", "/api/agents?sid=sess-web1")
+    names = {a["name"] for a in (ag or {}).get("agents", [])}
+    check(st == 200 and {"designer", "implementer", "security-reviewer", "test-reviewer", "Explore", "Plan", "general-purpose"} <= names,
+          f"/api/agents lists the agents: {st} {sorted(names)}")
+    check("local_search" in {t["name"] for t in (ag or {}).get("local_tools", [])} and (ag or {}).get("sid") == "sess-web1", "/api/agents lists the local tools")
+    check(str(WS).encode() not in raw and b"/home/" not in raw and len(raw) < 16384, f"/api/agents has no paths and is small ({len(raw)} bytes)")
+    check(req("GET", "/api/agents?sid=../x")[0] == 400 and req("GET", "/api/agents")[0] == 400, "/api/agents bad sid -> 400")
+    check(req("GET", "/api/agents?sid=" + "a" * 81)[0] == 400, "/api/agents long sid -> 400")
+    check(req("GET", "/api/agents?sid=nope-unknown")[0] == 404, "/api/agents unknown sid -> 404")
+    check(req("POST", "/api/agents", {}, POSTH)[0] in (404, 405, 501), "/api/agents is GET only")
+    agents_path = tmp / "agents.json"
+    agents_path.write_text(json.dumps(ag))
+
     # SSE emits a snapshot
     c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     c.request("GET", "/api/stream", headers={"Host": f"127.0.0.1:{port}"})
@@ -370,9 +384,10 @@ try:
                                        "many_legacy": tp_env("many_legacy", topics_fixtures.many_topics(300, 7, False), False),
                                        "not_paired": {"state": "not_paired", "message": niu_topics.MESSAGES["not_paired"], "topics": []}}))
         r = subprocess.run([node, str(SH / "tests" / "web_smoke.js"), str(SH / "web" / "app.js"), str(st_path), str(rs_path), str(tp_path),
-                            str(SH / "tests" / "fixtures" / "usage" / "history.json"), str(SH / "tests" / "fixtures" / "usage" / "tokens.json")],
+                            str(SH / "tests" / "fixtures" / "usage" / "history.json"), str(SH / "tests" / "fixtures" / "usage" / "tokens.json"),
+                            str(agents_path)],  # LAST argument: the real /api/agents body for sess-web1
                            capture_output=True, text=True, timeout=60)
-        check(r.returncode == 0 and "rendered" in r.stdout and "llm ok" in r.stdout and "research ok" in r.stdout and "research status ok" in r.stdout and "topics ok" in r.stdout and "topics view ok" in r.stdout and "timeline ok" in r.stdout and "flag ok" in r.stdout and "usage ok" in r.stdout and "tokens ok" in r.stdout,
+        check(r.returncode == 0 and "rendered" in r.stdout and "llm ok" in r.stdout and "research ok" in r.stdout and "research status ok" in r.stdout and "topics ok" in r.stdout and "topics view ok" in r.stdout and "timeline ok" in r.stdout and "flag ok" in r.stdout and "usage ok" in r.stdout and "tokens ok" in r.stdout and "agent map ok" in r.stdout,
               f"app.js renders without errors (Agents, Timeline, Research and Topics views): {r.stdout.strip()} {r.stderr.strip()[:300]}")
     else:
         print("web: node not found, front-end smoke run skipped")

@@ -11,6 +11,8 @@ Usage:
                                     in the foreground until done; prints counts only
                                     (files, messages, corrupt lines). --full forgets all offsets and reads everything again.
                                     (the server does the same in small steps every minute; NIU_USAGE_TOKENS=0 turns that off)
+  GET /api/agents?sid=ID            (read-only, unpaired) the agents, skills and niu-local tools a session can use: names, models,
+                                    one-sentence descriptions; 400 for a bad sid, 404 for a session outside the window
   niu-dash pair [--name laptop]     show a one-time code to pair a browser (interactive terminal only)
   niu-dash devices                  list paired browsers
   niu-dash revoke ID|all            remove paired browsers
@@ -40,7 +42,7 @@ import niu_prs  # noqa: E402
 import niu_research  # noqa: E402
 import niu_topics  # noqa: E402
 import niu_usage  # noqa: E402
-from niu_events import connect, db_path, host_label  # noqa: E402
+from niu_events import agent_catalog, connect, db_path, host_label  # noqa: E402
 from niu_state import SYSTEM_SESSIONS, live, mark_dirty, parse_since  # noqa: E402
 
 RE_SID = re.compile(r"[A-Za-z0-9_-]{1,80}")
@@ -261,6 +263,17 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif path == "/api/state":
             self._json(self._state())
+        elif path == "/api/agents":
+            # Read-only agent catalog of one session (names, models, one-sentence descriptions; no paths). Unpaired like /api/state.
+            sid = parse_qs(urlparse(self.path).query).get("sid", [""])[0]
+            if not RE_SID.fullmatch(sid):
+                return self._err(400, "bad sid")
+            lv = live(self._args()[0])
+            lv.refresh()
+            s = lv.sessions.get(sid)
+            if not s:
+                return self._err(404, "unknown session")
+            self._json({"sid": sid, **agent_catalog(s["project_dir"], s["domain"])})
         elif path == "/api/prs":
             self._json(prs_json())
         elif path == "/api/research":
