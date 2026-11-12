@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.24.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.23.2...niu-heimar-v0.24.0) (2026-11-12)
+
+
+### Features
+
+* **claude-init:** keep agent instruction and memory files out of project git ([#82](https://github.com/kaiserdrake/niu-heimar/issues/82)) ([1426e0e](https://github.com/kaiserdrake/niu-heimar/commit/1426e0ed57e65948c4942d77285a6d3160abefb7))
+* **niu-dash:** session details show an agent architecture map above recent activity ([#84](https://github.com/kaiserdrake/niu-heimar/issues/84)) ([46cbefd](https://github.com/kaiserdrake/niu-heimar/commit/46cbefdcc91ac750648a99ce6ab85662cdb86562))
+
+
+### Bug Fixes
+
+* **niu-dash:** agent map rendered an empty box in real browsers ([#85](https://github.com/kaiserdrake/niu-heimar/issues/85)) ([ae7ccb0](https://github.com/kaiserdrake/niu-heimar/commit/ae7ccb004681009deadb8879e6915e5a1f28370b))
+
 ## [0.23.2](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.23.1...niu-heimar-v0.23.2) (2026-11-11)
 
 
