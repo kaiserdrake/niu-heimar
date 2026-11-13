@@ -114,6 +114,8 @@ real = ne.agent_catalog(str(ne.WS), "WORK")
 rj = json.dumps(real)
 check(len(rj) < 16384 and str(ne.WS) not in rj, "real catalog small and without paths")
 check({"designer", "implementer", "doc-writer", "security-reviewer", "test-reviewer", "Explore", "Plan", "general-purpose"} <= set(by(real)), "real catalog has the shared agents")
+rs = by(real, "skills")
+check(all(rs.get(n, {}).get("flow") is True for n in ("develop", "dual-review", "document")), f"real catalog flow skills: {sorted(rs)}")
 
 # skills
 sk = shr.parent / "skills" / "develop"

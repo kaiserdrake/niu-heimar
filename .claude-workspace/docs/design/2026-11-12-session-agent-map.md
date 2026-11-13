@@ -81,10 +81,11 @@ def agent_catalog(project_dir, domain, roots=None) -> dict
   No pairing (the same exposure as `/api/state`).
 
 ### B. Map model and layout (`web/app.js`, new section `// ---------- session agent map ----------` placed before `showDetails`)
-- **Node ids:** `user`, `main`, `out` (L3), `d:develop`, `d:dual-review`, `d:agent`, `d:local`, `gate:approve`, `a:<name>`, `l:<tool>`.
+- **Node ids:** `user`, `main`, `out` (L3), `d:develop`, `d:dual-review`, `d:document`, `d:agent`, `d:local`, `gate:approve`, `a:<name>`, `l:<tool>`.
 - **Clusters:**
   - `d:develop` → `[a:designer, gate:approve, a:implementer]`, in one row joined left to right.
   - `d:dual-review` → `[a:security-reviewer, a:test-reviewer]`.
+  - `d:document` → `[a:doc-writer]` (Haiku). Added 2026-11-13 with the `/document` skill.
   - `d:agent` → the built-ins and every other catalog agent, plus any agent type that ran but isn't in the catalog (source from `subagents[].source`).
   - `d:local` → `LOCAL_TOOLS`.
   
@@ -96,6 +97,7 @@ def agent_catalog(project_dir, domain, roots=None) -> dict
   | Main | `user→main` (prompt) |
   | /develop | `main→d:develop`, `d:develop→a:designer`, `a:designer→gate:approve`, `gate:approve→a:implementer`, `a:implementer→out` |
   | /dual-review | `main→d:dual-review`, `d:dual-review→a:<each reviewer>`, `a:<each reviewer>→out` |
+  | /document | `main→d:document`, `d:document→a:doc-writer`, `a:doc-writer→out` |
   | Agent tool | `main→d:agent`, `d:agent→a:<x>`, `a:<x>→out` |
   | niu-local | `main→d:local`, `d:local→l:<t>`, `l:<t>→out` |
   | Approval | `gate:approve↔user`, a dotted side edge for the approval |

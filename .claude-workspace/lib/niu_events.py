@@ -144,7 +144,7 @@ BUILTIN = [("general-purpose", "All tools; complex multi-step work and code chan
            ("Explore", "Read-only search of the codebase."), ("Plan", "Read-only research for plan mode.")]
 LOCAL_TOOLS = [("local_search", "search"), ("local_diff_review", "diff review"), ("local_ask", "Q&A"),
                ("local_logs", "logs"), ("local_ci", "CI"), ("local_git", "git"), ("local_status", "status")]
-FLOW_SKILLS = ("develop", "dual-review")
+FLOW_SKILLS = ("develop", "dual-review", "document")
 _READ_CAP = 4000
 _MODEL_RE = re.compile(r"[A-Za-z0-9._:\[\]-]{1,60}")
 _FM_CACHE = {}
