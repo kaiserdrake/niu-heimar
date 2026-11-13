@@ -873,7 +873,8 @@ function renderFeed() {
 const AW = 120, AH = 48, AGX = 10, ALW = 104, ALH = 38, AMW = 760, APAD = 14;
 const AM = { sid: null, cache: new Map(), failed: null, loading: null, nodes: new Map(), edges: new Map(), seen: null, first: true,
   sel: null, focus: null, rows: [], ids: 0, root: null, pk: null, fx: null, note: null, model: null, selObj: null };
-const AM_FLOW = { designer: "develop", implementer: "develop", "security-reviewer": "dual-review", "test-reviewer": "dual-review" };
+const AM_FLOW = { designer: "develop", implementer: "develop", "security-reviewer": "dual-review", "test-reviewer": "dual-review", "doc-writer": "document" };
+const AM_SKILLS = ["develop", "dual-review", "document"];
 const AM_BUILTIN = ["general-purpose", "Explore", "Plan"];
 const AM_LOCAL_TASK = { search: "local_search", diff: "local_diff_review", ask: "local_ask" };
 const amCluster = (type) => AM_FLOW[type] || "agent";
@@ -954,7 +955,7 @@ function amModel(s, cat) {
   const dispatcher = (c, kids, used) => {
     const sk = skill(c);
     const run = kids.some((k) => k.running);
-    const isSkill = c === "develop" || c === "dual-review";
+    const isSkill = AM_SKILLS.includes(c);
     const d = add({ id: `d:${c}`, kind: "disp", label: isSkill ? `/${c}` : c === "agent" ? "Agent tool" : "niu-local", source: isSkill ? "skill" : c === "local" ? "local" : "session",
       sub: run ? "running" : used ? "used" : "available", used, running: run,
       tip: [isSkill ? `/${c}` : c === "agent" ? "Agent tool" : "niu-local MCP", sk?.description || (c === "agent" ? "Starts a subagent" : c === "local" ? "Ollama-backed tools" : ""), "dispatcher"].join("\n") });
@@ -973,6 +974,9 @@ function amModel(s, cat) {
   }
   const rev = ["security-reviewer", "test-reviewer"].filter((n) => catAgents.has(n) || types.has(n)).map(agentNode);
   if (rev.length) { rev.forEach(add); dispatcher("dual-review", rev, rev.some((k) => k.used) || feedHas(/dual-review/)); }
+  // /document: doc-writer (Haiku) writes docs, the main session checks and reports
+  const docs = ["doc-writer"].filter((n) => catAgents.has(n) || types.has(n)).map(agentNode);
+  if (docs.length) { docs.forEach(add); dispatcher("document", docs, docs.some((k) => k.used) || feedHas(/\bdocument\b/)); }
   const other = [...AM_BUILTIN.filter((n) => catAgents.has(n)), ...[...catAgents.keys()].filter((n) => !AM_FLOW[n] && !AM_BUILTIN.includes(n)),
     ...[...types.keys()].filter((n) => !AM_FLOW[n] && !catAgents.has(n))].filter((n, i, a) => a.indexOf(n) === i).map(agentNode);
   if (other.length) { other.forEach(add); dispatcher("agent", other, other.some((k) => k.used) || s.tools.some(([, t]) => t === "Agent" || t === "Task")); }
@@ -1119,7 +1123,7 @@ function amActivity(s) {
       return t ? row(key, ts, `spawn ${t}`, spawn(t)) : row(key, ts, "spawn agent", { nodes: ["main", "d:agent"], edges: ["main>d:agent"] });
     }
     if (tool === "Skill") {
-      const c = /dual-review/.test(sum) ? "dual-review" : /develop/.test(sum) ? "develop" : null;
+      const c = /dual-review/.test(sum) ? "dual-review" : /develop/.test(sum) ? "develop" : /\bdocument\b/.test(sum) ? "document" : null;
       return c ? row(key, ts, `/${c}`, { nodes: ["main", `d:${c}`], edges: [`main>d:${c}`] }) : row(key, ts, `Skill ${sum}`.trim(), { nodes: ["main"] });
     }
     if (String(tool).startsWith("mcp__niu-local__")) {

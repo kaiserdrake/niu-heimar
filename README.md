@@ -41,7 +41,7 @@ config are only read from the folder the session starts in**.
 CLAUDE.md                     common rules (inherited by every project)
 .claude-workspace/
   agents/                     shared agents (designer, implementer, doc-writer, security-reviewer, test-reviewer)
-  skills/                     dual-review, workspace-sync
+  skills/                     develop, document, dual-review, workspace-sync
   hooks/block-env.sh          .env guard
   bin/                        install, claude-init, workspace-status/update/lint
   tests/                      hook tests (run in CI)
@@ -86,12 +86,16 @@ CLAUDE.md                     common rules (inherited by every project)
   designer (Opus) → docs/design/<date>-<slug>.md → you approve → implementer agents (Sonnet, parallel) → tests
   (→ optional local_diff_review, Ollama) → report "done, not yet reviewed"
 
+/document <task>                                     # docs-only work
+  scope → doc-writer agents (Haiku, parallel) → you check claims and the diff → report "done, not yet reviewed"
+
 /workspace-sync  (or the domain's PR/MR flow)          # once per batch of features
   lint → branch, commit, PR (reviews are deferred to the feature release; `/dual-review` runs them on the whole feature)
 ```
 - **designer** (`agents/designer.md`, Opus): researches, compares options, and writes the design document. It never edits code.
 - **doc-writer** (`agents/doc-writer.md`, Haiku): documentation-only pieces (README/docs, guides, docstrings, comments). It
-  checks every claim against the code and never changes behaviour, so docs work costs Haiku rather than Sonnet tokens.
+  checks every claim against the code and never changes behaviour, so docs work costs Haiku rather than Sonnet tokens. `/document` runs it,
+  and the session agent map draws it as its own `/document` cluster.
 - **Local agents** (`bin/niu-agent`, exposed to sessions by the `niu-local` MCP server): `local_search`, `local_diff_review`,
   `local_ask` and `local_status`. They run as real, read-only Claude Code agents on Ollama.
 - **Digest tools** `local_logs` (compose service logs), `local_ci` (failed GitHub runs, PR checks, PR diff; not in WORK) and

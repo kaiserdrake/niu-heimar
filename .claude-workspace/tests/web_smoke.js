@@ -1423,10 +1423,11 @@ async function amChecks(catFile) {
     { name: "implementer", source: "shared", model: "claude-sonnet-5-5", effort: null, description: "Builds." },
     { name: "security-reviewer", source: "shared", model: "claude-sonnet-5-5", effort: null, description: "Reviews security." },
     { name: "test-reviewer", source: "shared", model: "claude-sonnet-5-5", effort: "high", description: "Reviews tests." },
+    { name: "doc-writer", source: "shared", model: "claude-haiku-5-5", effort: null, description: "Writes docs." },
     { name: "general-purpose", source: "builtin", model: "inherit", effort: null, description: "General." },
     { name: "Explore", source: "builtin", model: "inherit", effort: null, description: "Search." },
     { name: "Plan", source: "builtin", model: "inherit", effort: null, description: "Plan." }],
-    skills: [{ name: "develop", source: "shared", flow: true, description: "d" }, { name: "dual-review", source: "shared", flow: true, description: "r" }, { name: "other", source: "shared", flow: false, description: "o" }],
+    skills: [{ name: "develop", source: "shared", flow: true, description: "d" }, { name: "dual-review", source: "shared", flow: true, description: "r" }, { name: "document", source: "shared", flow: true, description: "w" }, { name: "other", source: "shared", flow: false, description: "o" }],
     local_tools: ["local_search", "local_diff_review", "local_ask", "local_logs", "local_ci", "local_git", "local_status"].map((n) => ({ name: n, description: n, available: true })), generated_at: 1 };
   const last = process.argv[process.argv.length - 1];
   const cat = /agents\.json$/.test(last) ? JSON.parse(fs.readFileSync(last, "utf8")) : fixture;
@@ -1458,6 +1459,12 @@ async function amChecks(catFile) {
     if (nodes.has("a:designer") && !/\bavail\b/.test(cls(nodes.get("a:designer")))) fail("designer should be available");
     if (!/\bused\b/.test(cls(run('AM.edges.get("d:dual-review>a:test-reviewer").base')))) fail("dual-review edge not used");
     if (!/\bavail\b/.test(cls(run('AM.edges.get("d:agent>a:Explore").base')))) fail("unused edge should be avail");
+    // /document: doc-writer sits under its own dispatcher, not under the Agent tool
+    if (cat.agents.some((a) => a.name === "doc-writer")) {
+      if (!run('AM.edges.has("main>d:document") && AM.edges.has("d:document>a:doc-writer") && AM.edges.has("a:doc-writer>out")')) fail("document flow edges missing");
+      if (run('AM.edges.has("d:agent>a:doc-writer")')) fail("doc-writer drawn under the Agent tool");
+      if (!/\/document/.test(textOf(nodes.get("d:document"))) || !/haiku/.test(textOf(nodes.get("a:doc-writer")))) fail("document dispatcher / doc-writer labels: " + textOf(nodes.get("a:doc-writer")));
+    }
     if (!/\bavail\b/.test(cls(nodes.get("a:Explore"))) || !/available/.test(textOf(nodes.get("a:Explore")))) fail("Explore should be dimmed 'available'");
     // activity
     const rows = run("AM.rows");
