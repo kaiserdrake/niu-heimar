@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.25.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.24.0...niu-heimar-v0.25.0) (2026-11-13)
+
+
+### Features
+
+* **agents:** add doc-writer agent pinned to Haiku for documentation work ([#88](https://github.com/kaiserdrake/niu-heimar/issues/88)) ([2de6559](https://github.com/kaiserdrake/niu-heimar/commit/2de6559657d044c3df561a119fc34742d7fdae7f))
+
+
+### Bug Fixes
+
+* **niu-dash:** usage chart weekly-floor guide follows the gate's configured floor ([#86](https://github.com/kaiserdrake/niu-heimar/issues/86)) ([b936bcc](https://github.com/kaiserdrake/niu-heimar/commit/b936bcc5c308355fe620333d3e99311067f1cc4e))
+
 ## [0.24.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.23.2...niu-heimar-v0.24.0) (2026-11-12)
 
 
