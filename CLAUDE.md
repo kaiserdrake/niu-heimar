@@ -40,6 +40,8 @@ For non-trivial work, plan first (plan mode). Whatever the main session runs on,
 planning, deciding, integrating and talking to the user, and hand the bulk work to cheaper agents:
 - **Building:** give each well-scoped piece of an approved plan to the `implementer` agent (Sonnet). Run several in
   parallel when their files don't overlap. Do small edits (a few lines in one or two files) yourself.
+- **Documentation:** give documentation-only work (README/docs pages, guides, docstrings and comments, syncing docs with
+  changed code) to the `doc-writer` agent (Haiku), not `implementer`. Anything that changes behaviour stays with `implementer`.
 - **Searching and reading widely:** the built-in `Explore` agent or the `niu-local` tools (`local_search`, `local_ask`),
   not reading many files in the main session.
 - **Opus agents** only where judgment pays: `designer` (design docs). Both reviewers always run on Sonnet. `security-reviewer`

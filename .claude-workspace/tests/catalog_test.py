@@ -113,7 +113,7 @@ check(str(tmp) not in json.dumps(cat()) and "/home/" not in json.dumps(cat()), "
 real = ne.agent_catalog(str(ne.WS), "WORK")
 rj = json.dumps(real)
 check(len(rj) < 16384 and str(ne.WS) not in rj, "real catalog small and without paths")
-check({"designer", "implementer", "security-reviewer", "test-reviewer", "Explore", "Plan", "general-purpose"} <= set(by(real)), "real catalog has the shared agents")
+check({"designer", "implementer", "doc-writer", "security-reviewer", "test-reviewer", "Explore", "Plan", "general-purpose"} <= set(by(real)), "real catalog has the shared agents")
 
 # skills
 sk = shr.parent / "skills" / "develop"
@@ -144,7 +144,7 @@ check(ci("WORK")["available"] is False and ci("PERSONAL")["available"] is True, 
 check(next(x for x in cat()["local_tools"] if x["name"] == "local_status"), "local_status listed")
 
 # agent_model compatibility on the shared agents
-for name, want in (("designer", "opus"), ("implementer", "sonnet"), ("security-reviewer", None), ("test-reviewer", None)):
+for name, want in (("designer", "opus"), ("implementer", "sonnet"), ("doc-writer", "haiku"), ("security-reviewer", None), ("test-reviewer", None)):
     got = ne.agent_model("", name)
     txt = (SH / "agents" / f"{name}.md").read_text()
     m = re.search(r"(?m)^model:\s*[\"']?([A-Za-z0-9._:\[\]-]{1,60})", txt.split("\n---", 1)[0])

@@ -24,6 +24,8 @@ Never commit, push, or open a merge request without asking.
 - Split the design's "Changes" table into pieces that each own a set of files. Give each piece to an `implementer`
   agent (Sonnet) with a brief: the design doc path, the files it owns, what to change, the tests to add or run, and what
   done looks like. Launch pieces whose files don't overlap **in parallel, in one message**; run dependent pieces in order.
+- Give documentation-only pieces (README/docs, guides, docstrings, comments) to the `doc-writer` agent (Haiku) instead,
+  with the same kind of brief. Docs that describe new code usually run after the code pieces are done.
 - You (the orchestrator) don't write the bulk of the code. Do only small glue edits yourself, then integrate: check each
   report, run the combined tests, and fix the seams.
 - If a piece has to deviate from the design, say so and why, and update the design document's "Changes" table.
