@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.25.0...niu-heimar-v0.26.0) (2026-11-13)
+
+
+### Features
+
+* **skills:** add /document skill and its flow on the session agent map ([#89](https://github.com/kaiserdrake/niu-heimar/issues/89)) ([27d0b70](https://github.com/kaiserdrake/niu-heimar/commit/27d0b70a1bcc2745b530912f7acf542b4275e5fa))
+
 ## [0.25.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.24.0...niu-heimar-v0.25.0) (2026-11-13)
 
 
