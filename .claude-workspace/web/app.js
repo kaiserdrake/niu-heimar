@@ -1549,6 +1549,12 @@ function usagePlace(placed, cands, plot) {
   return null;
 }
 
+// weekly floor of the research gate (% remaining), from the gate preview; 10 until the gate reports one
+function usageWeeklyFloor() {
+  const v = RESEARCH?.data?.gate?.preview?.floors?.weekly_min_remaining_pct;
+  return typeof v === "number" && v >= 0 && v <= 100 ? v : 10;
+}
+
 function renderUsage(u) {
   USAGE.data = u && u.state === "ok" ? u : null;
   USAGE.view = null; $("usagezoomreset").hidden = true;
@@ -1577,9 +1583,10 @@ function renderUsage(u) {
     return cands[0];
   };
   const lbl = (c, cls) => root.append(svg("text", { x: c.x, y: c.y, class: cls, "text-anchor": c.anchor }, c.text));
-  // axes: 0, 50, 90 (the 10% weekly floor of the research gate) and 100
-  for (const v of [0, 50, 90, 100]) {
-    root.append(svg("line", { x1: L, x2: W - R, y1: Y(v), y2: Y(v), class: `axis${v === 90 ? " guide" : ""}` }));
+  // axes: 0, 50, the weekly floor of the research gate (100 - remaining floor) and 100
+  const wkFloor = usageWeeklyFloor(), floorV = 100 - wkFloor;
+  for (const v of [...new Set([0, 50, floorV, 100])]) {
+    root.append(svg("line", { x1: L, x2: W - R, y1: Y(v), y2: Y(v), class: `axis${v === floorV ? " guide" : ""}` }));
     root.append(svg("text", { x: L - 5, y: Y(v) + 3.5, class: "lbl", "text-anchor": "end" }, `${v}%`));
   }
   for (const k of usageTicks(tmin, tmax)) {
@@ -1645,7 +1652,7 @@ function renderUsage(u) {
     }
   }
   {
-    const text = "10% weekly floor", fy = Y(90), f = { x: L + 4, anchor: "start", text, size: 10 };
+    const text = `${wkFloor}% weekly floor`, fy = Y(floorV), f = { x: L + 4, anchor: "start", text, size: 10 };
     const c = place([{ ...f, y: fy - 3 }, { ...f, y: fy + 11 }]);
     if (c) lbl(c, "lbl guidelbl");
   }
@@ -2094,6 +2101,7 @@ async function loadResearch(force) {
   RESEARCH = r;
   if (typeof r.server_now === "number") RS_OFFSET = r.server_now - Date.now() / 1000;
   renderResearch();
+  redrawUsage();   // the usage chart's weekly-floor guide follows the gate preview
   clearTimeout(RS_TIMER);
   if (r.state === "loading") RS_TIMER = setTimeout(() => loadResearch(), 3000);
 }
