@@ -1,6 +1,6 @@
 ---
 name: test-reviewer
-description: Mandatory static and dynamic test reviewer. Use once per PR on the whole PR diff (via /dual-review, before a PR/MR is opened), or when the user asks; not after every edit. Runs linters/type-checkers/SAST and the test suite, and reports coverage gaps; does not fix code.
+description: Mandatory static and dynamic test reviewer. Use when a complete feature is released, on the whole feature diff (via /dual-review), or when the user asks; not per PR and not after every edit. Runs linters/type-checkers/SAST and the test suite, and reports coverage gaps; does not fix code.
 tools: Read, Grep, Glob, Bash
 model: sonnet
 ---

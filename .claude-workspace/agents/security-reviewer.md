@@ -1,6 +1,6 @@
 ---
 name: security-reviewer
-description: Mandatory security reviewer. Use once per PR on the whole PR diff (via /dual-review, before a PR/MR is opened), or when the user asks; not after every edit. Covers code, config, Dockerfile, compose and CI changes; reviews for vulnerabilities and secret leaks; read-only.
+description: Mandatory security reviewer. Use when a complete feature is released, on the whole feature diff (via /dual-review), or when the user asks; not per PR and not after every edit. Covers code, config, Dockerfile, compose and CI changes; reviews for vulnerabilities and secret leaks; read-only.
 tools: Read, Grep, Glob, Bash
 model: sonnet
 ---
