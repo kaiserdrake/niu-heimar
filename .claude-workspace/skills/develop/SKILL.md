@@ -37,8 +37,16 @@ Never commit, push, or open a merge request without asking.
   risks. Fix the real findings, note the ignored ones. If both endpoints are down, skip it.
 - Do **not** run `security-reviewer` / `test-reviewer` here or at PR time. They run once, when the complete feature is released (workspace CLAUDE.md §2).
 
+## 4b. Remove the design document (approved + implemented)
+- Design documents are not kept once their plan is implemented. When every piece of the design is built and its tests
+  pass, delete the design document in the same change (`git rm`, or plain delete if it was never committed), so it
+  leaves with the PR that implements it. If the design is built over several batches, delete it after the last one.
+- Before deleting, move anything durable that the code doesn't show (a convention, a pitfall, an operating note) into
+  the project's CLAUDE.md or README, and drop any pointers to the document (`See docs/design/...`, `Design: ...`).
+- Keep a design that was stopped or not yet fully implemented; delete it only when it is implemented or the user says so.
+
 ## 5. Report
-- Summarise: what changed (files), the design document path, test results, local review findings fixed or ignored,
+- Summarise: what changed (files), that the design document was removed (and its path), test results, local review findings fixed or ignored,
   and that the change is **not yet reviewed** (the reviewers run when the complete feature is released).
 - Offer the next step and wait: build the next piece of the feature, or open the PR (`/workspace-sync` for the workspace
   repo, the domain's PR/MR flow elsewhere) with `Reviews: deferred to the feature release` in the description. If this
