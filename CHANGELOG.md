@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.26.0...niu-heimar-v0.27.0) (2026-11-17)
+
+
+### Features
+
+* **dashboard:** Designs tab with rendered design docs, revisions and diff ([#92](https://github.com/kaiserdrake/niu-heimar/issues/92)) ([b8ef2e3](https://github.com/kaiserdrake/niu-heimar/commit/b8ef2e3dad2b531cbc1b7760bdf7f845c54e0ca5))
+
 ## [0.26.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.25.0...niu-heimar-v0.26.0) (2026-11-13)
 
 
