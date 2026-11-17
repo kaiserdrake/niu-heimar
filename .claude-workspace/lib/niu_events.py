@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS design_snapshots (
 CREATE INDEX IF NOT EXISTS design_snapshots_rel ON design_snapshots(rel, ts);
 """
 
+PROPOSALS_DIR = ".claude-proposals"  # <project>/.claude-proposals/*.md; web/app.js and hooks/agent-events.py keep a literal
 DESIGN_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.md")
 DESIGN_MAX_BYTES = 512 * 1024
 SNAPSHOT_KEEP = 40
@@ -345,8 +346,13 @@ def read_regular(path, max_bytes=DESIGN_MAX_BYTES):
     return "".join(c for c in text if c in "\n\t" or not unicodedata.category(c).startswith("C"))
 
 
+def _in_proposals(file_path):
+    fp = file_path.replace("\\", "/")
+    return ("/" + PROPOSALS_DIR + "/") in fp or fp.startswith(PROPOSALS_DIR + "/")
+
+
 def snapshot_design(con, file_path, project_dir, sid, agent_type, tool):
-    """Store the current text of a docs/design/*.md file written by an agent. True if a row was inserted.
+    """Store the current text of a .claude-proposals/*.md file written by an agent. True if a row was inserted.
 
     Skips anything else (other paths, outside the workspace, subfolders), identical repeats, and
     does nothing when NIU_DESIGN_SNAPSHOT_DAYS=0. Keeps the newest 40 per doc and prunes by age.
@@ -356,7 +362,7 @@ def snapshot_design(con, file_path, project_dir, sid, agent_type, tool):
         days = float(os.environ.get("NIU_DESIGN_SNAPSHOT_DAYS", "30"))
     except ValueError:
         days = 30.0
-    if days <= 0 or not isinstance(file_path, str) or "docs/design/" not in file_path.replace("\\", "/"):
+    if days <= 0 or not isinstance(file_path, str) or not _in_proposals(file_path):
         return False
     p = Path(file_path)
     if not p.is_absolute():
@@ -365,7 +371,7 @@ def snapshot_design(con, file_path, project_dir, sid, agent_type, tool):
         p = p.resolve()
     except (OSError, RuntimeError):
         return False
-    if (p.parent.name != "design" or p.parent.parent.name != "docs" or not DESIGN_NAME_RE.fullmatch(p.name)
+    if (p.parent.name != PROPOSALS_DIR or not DESIGN_NAME_RE.fullmatch(p.name)
             or p.name.startswith("." + "env") or WS not in p.parents):
         return False
     text = read_regular(p)

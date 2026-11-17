@@ -61,10 +61,12 @@ skills and MCP config). If the SessionStart notice says a project isn't linked,
 tell the user to run `claude-init` in it and restart the session.
 
 ## 5b. Design first, and local agents for cheap work
-- For any non-trivial feature or change, use `/develop <task>`. The `designer` agent (Opus) writes a design under
-  `docs/design/`, the user approves it, you implement and run the tests. The two mandatory reviewers run later, when the complete feature is released (§2).
-- Design documents are temporary: once a design is approved and fully implemented, delete it in the change that
-  implements it (move anything durable into CLAUDE.md/README first). Don't keep implemented designs or link to them.
+- For any non-trivial feature or change, use `/develop <task>`. The `designer` agent (Opus) writes a proposal to
+  `.claude-proposals/` at the project root, the user approves it, you implement and run the tests. The two mandatory reviewers run later, when the complete feature is released (§2).
+- Proposals are local to the project and never committed in project repos. In the workspace repo they are tracked.
+  Never write Claude proposals to `docs/design/`; that folder belongs to the project's humans.
+- Proposals are temporary: once a proposal is approved and fully implemented, delete it (move anything durable into
+  CLAUDE.md/README first). In the workspace repo, delete it in the change that implements it. In a linked project, delete it at feature release, after `/dual-review` has read it. Don't keep implemented proposals or link to them.
 - For broad codebase lookups ("where/how is X done", "what uses Y"), prefer the `niu-local` MCP tools
   (`local_search`, `local_diff_review`, `local_ask`). They run read-only agents on the user's Ollama machines (GPU box
   first, local CPU as fallback) and save Claude tokens. Treat their answers as leads, and confirm with Read before you rely on them.

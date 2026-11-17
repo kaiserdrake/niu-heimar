@@ -13,7 +13,7 @@ Usage:
                                     (the server does the same in small steps every minute; NIU_USAGE_TOKENS=0 turns that off)
   GET /api/agents?sid=ID            (read-only, unpaired) the agents, skills and niu-local tools a session can use: names, models,
                                     one-sentence descriptions; 400 for a bad sid, 404 for a session outside the window
-  GET /api/designs[?sid=ID]         (paired only) design docs (docs/design/*.md) of the workspace and linked projects: id, title, status, relative path, revision count;
+  GET /api/designs[?sid=ID]         (paired only) Claude design proposals (.claude-proposals/*.md) of the workspace and linked projects: id, title, status, relative path, revision count;
                                     with sid, also the ids of the docs that session wrote
   GET /api/designs/doc?id=&rev=     (paired only) one doc as a JSON block tree + outline + its revision list (rev: work | git:<sha> | snap:<n>)
   GET /api/designs/diff?id=&a=&b=   (paired only) rendered (block) and line diff between two revisions of a doc

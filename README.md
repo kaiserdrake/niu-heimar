@@ -83,7 +83,7 @@ CLAUDE.md                     common rules (inherited by every project)
 ## Design-first development and local Ollama agents
 ```
 /develop <task>
-  designer (Opus) → docs/design/<date>-<slug>.md → you approve → implementer agents (Sonnet, parallel) → tests
+  designer (Opus) → .claude-proposals/<date>-<slug>.md → you approve → implementer agents (Sonnet, parallel) → tests
   (→ optional local_diff_review, Ollama) → report "done, not yet reviewed"
 
 /document <task>                                     # docs-only work
@@ -92,7 +92,7 @@ CLAUDE.md                     common rules (inherited by every project)
 /workspace-sync  (or the domain's PR/MR flow)          # once per batch of features
   lint → branch, commit, PR (reviews are deferred to the feature release; `/dual-review` runs them on the whole feature)
 ```
-- **designer** (`agents/designer.md`, Opus): researches, compares options, and writes the design document. It never edits code.
+- **designer** (`agents/designer.md`, Opus): researches, compares options, and writes the design proposal. It never edits code.
 - **doc-writer** (`agents/doc-writer.md`, Haiku): documentation-only pieces (README/docs, guides, docstrings, comments). It
   checks every claim against the code and never changes behaviour, so docs work costs Haiku rather than Sonnet tokens. `/document` runs it,
   and the session agent map draws it as its own `/document` cluster.
@@ -319,13 +319,14 @@ To revoke at once, remove the `niu-dash-topics` entry from `API_TOKENS` and rest
 
 Service: `systemctl --user status|restart|stop niu-dash`. Logs: `journalctl --user -u niu-dash`.
 
-### Designs tab
-The **Designs** tab lists the `docs/design/*.md` files of `.claude-workspace/` and of linked projects, and renders the
-selected doc as markdown with a heading outline and a **Rendered | Source** toggle. Only a paired browser can read docs.
-Each doc's revisions are its git commits, the uncommitted working copy, and draft snapshots that the `agent-events` hook
-saves on every Write or Edit of a design doc (kept 30 days, newest 40 per doc; `NIU_DESIGN_SNAPSHOT_DAYS=0` turns capture
+### Proposals tab
+The **Proposals** tab lists the `.claude-proposals/*.md` files of the workspace root and of linked projects, and renders the
+selected proposal as markdown with a heading outline and a **Rendered | Source** toggle. Only a paired browser can read them.
+`docs/design/` is left to the project and isn't shown.
+Each proposal's revisions are its git commits (workspace proposals only; project proposals are git-excluded), the working copy, and draft snapshots that the `agent-events` hook
+saves on every Write or Edit of a proposal (kept 30 days, newest 40 per proposal; `NIU_DESIGN_SNAPSHOT_DAYS=0` turns capture
 off). Edits made through Bash are not captured. **Compare** shows two revisions as a rendered or line diff. A session's
-details list "Design: \<title\>" links to the docs it wrote, and clicking the designer node opens its newest doc.
+details list "Proposal: \<title\>" links to the proposals it wrote, and clicking the designer node opens its newest proposal.
 
 ## Discord notifications
 `niu-notify` is a small background service that posts to your own Discord server when something changes, so you hear about

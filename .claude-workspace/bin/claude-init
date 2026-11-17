@@ -76,7 +76,9 @@ fi
 if gitdir="$(git -C "$dir" rev-parse --git-dir 2>/dev/null)"; then
   [[ "$gitdir" == /* ]] || gitdir="$dir/$gitdir"
   top="$(git -C "$dir" rev-parse --show-toplevel)"
-  ex="$gitdir/info/exclude"; mkdir -p "$(dirname "$ex")"; touch "$ex"
+  ex="$(git -C "$dir" rev-parse --git-path info/exclude)"   # shared exclude file, also for worktrees
+  [[ "$ex" == /* ]] || ex="$dir/$ex"
+  mkdir -p "$(dirname "$ex")"; touch "$ex"
   sub="${dir#"$top"}"; sub="${sub#/}"; [[ -n "$sub" ]] && sub="$sub/"
   for l in "${made[@]}"; do
     line="/$sub$l"
@@ -88,6 +90,14 @@ if gitdir="$(git -C "$dir" rev-parse --git-dir 2>/dev/null)"; then
     line="/$sub**/$n"
     grep -qxF "$line" "$ex" || echo "$line" >>"$ex"
   done
+  # Claude design proposals stay local too.
+  line="/$sub.claude-proposals/"
+  grep -qxF "$line" "$ex" || echo "$line" >>"$ex"
+  mapfile -t tracked_prop < <(cd "$dir" && git ls-files -- ".claude-proposals" 2>/dev/null || true)
+  if ((${#tracked_prop[@]})); then
+    echo "claude-init: these proposals are already committed, so they stay visible (untrack with: git rm --cached <file>):" >&2
+    printf '  %s\n' "${tracked_prop[@]}" >&2
+  fi
   # Ignore rules don't apply to files git already tracks: point those out, don't untrack them.
   mapfile -t tracked < <(cd "$dir" && git ls-files -- "${private[@]/#/:(glob)**/}" 2>/dev/null || true)
   if ((${#tracked[@]})); then

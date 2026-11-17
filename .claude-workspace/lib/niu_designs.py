@@ -1,6 +1,6 @@
-"""Design docs for the dashboard's Designs tab (stdlib only).
+"""Claude design proposals for the dashboard's Proposals tab (stdlib only).
 
-Lists docs/design/*.md of the workspace config and of linked projects, reads them safely, keeps their
+Lists .claude-proposals/*.md of the workspace root and of linked projects (never docs/design/, which belongs to humans), reads them safely, keeps their
 revision history (git commits, working copy, draft snapshots from hooks/agent-events.py), turns markdown
 into a JSON block tree (no HTML is ever produced) and diffs two revisions.
 
@@ -84,8 +84,12 @@ def _under(p: Path, base: Path):
 def roots(extra_dirs=(), base=None):
     """[(domain, project, project_dir)]: the workspace config, linked projects, then extra (session) dirs under the workspace."""
     base = _base(base)
-    out = [("(workspace)", "", str(base / ".claude-workspace"))]
+    out = [("(workspace)", "", str(base))]
     seen = {out[0][2]}
+    try:
+        seen.add(str(base.resolve()))
+    except (OSError, RuntimeError):
+        pass
     for dom, rel, proj in linked_projects(base):
         if str(proj) not in seen:
             seen.add(str(proj))
@@ -111,21 +115,21 @@ def roots(extra_dirs=(), base=None):
     return out
 
 
-def _design_dir(project_dir, base):
-    """Resolved docs/design of a project, or None unless it sits exactly under the resolved project, inside the workspace."""
+def _proposal_dir(project_dir, base):
+    """Resolved .claude-proposals of a project, or None unless it sits exactly under the resolved project, inside the workspace."""
     try:
         b = base.resolve()
         pd = Path(project_dir).resolve()
-        dd = (pd / "docs" / "design").resolve()
+        dd = (pd / ne.PROPOSALS_DIR).resolve()
     except (OSError, RuntimeError, ValueError):
         return None
-    if not _under(pd, b) or dd != pd / "docs" / "design":
+    if not _under(pd, b) or dd != pd / ne.PROPOSALS_DIR:
         return None
     return dd
 
 
 def _doc_path(dd: Path, name: str):
-    """Resolved regular-file path for docs/design/<name>, or None if it escapes, is odd, or is not a plain .md name."""
+    """Resolved regular-file path for .claude-proposals/<name>, or None if it escapes, is odd, or is not a plain .md name."""
     if not NAME_RE.fullmatch(name) or name.lower().startswith(".env"):
         return None
     try:
@@ -182,7 +186,7 @@ def _title_status(head):
 
 
 def _scan(domain, project, project_dir, base, out):
-    dd = _design_dir(project_dir, base)
+    dd = _proposal_dir(project_dir, base)
     if dd is None or not dd.is_dir():
         return
     try:
@@ -253,7 +257,7 @@ def read_doc(entry, base=None):
     """Current text of a doc after re-validating everything, or None."""
     base = _base(base)
     try:
-        dd = _design_dir(entry["project_dir"], base)
+        dd = _proposal_dir(entry["project_dir"], base)
         if dd is None:
             return None
         p = _doc_path(dd, entry["name"])
@@ -308,7 +312,7 @@ def _git_revs(entry, dd, base):
         elif line.strip() and cur is not None and cur[3] is None:
             cur[3] = line.strip()
     for sha, ts, subj, path in commits:
-        if (not path or not path.endswith(".md") or "docs/design/" not in path or "\n" in path
+        if (not path or not path.endswith(".md") or not (path.startswith((ne.PROPOSALS_DIR + "/", "docs/design/")) or "/" + ne.PROPOSALS_DIR + "/" in path or "/docs/design/" in path) or "\n" in path
                 or ".." in path.split("/") or path.startswith("/")):
             continue
         bk = (sha, path, str(dd))
@@ -354,7 +358,7 @@ def _snap_label(ts, agent):
 def _collect(entry, con, base):
     """All known revisions, before dedup: [{rev, ts, kind, label, text}]."""
     items = []
-    dd = _design_dir(entry["project_dir"], base)
+    dd = _proposal_dir(entry["project_dir"], base)
     gits = _git_revs(entry, dd, base) if dd is not None else []
     for sha, ts, subj, text in gits:
         items.append({"rev": f"git:{sha}", "ts": ts, "kind": "git", "label": f"{sha[:7]} · {time.strftime('%Y-%m-%d', time.localtime(ts))} · {subj}", "text": text})
@@ -405,7 +409,7 @@ def revision_text(entry, rev, con=None, base=None):
             if f"snap:{sid_}" == rev:
                 return content
         return None
-    dd = _design_dir(entry["project_dir"], base)
+    dd = _proposal_dir(entry["project_dir"], base)
     if dd is None:
         return None
     for sha, _ts, _subj, text in _git_revs(entry, dd, base):
@@ -416,7 +420,7 @@ def revision_text(entry, rev, con=None, base=None):
 
 # ---------- sessions ----------
 
-_RE_SUMMARY = re.compile(r"(^|/)docs/design/[^/]+\.md$")
+_RE_SUMMARY = re.compile(r"(^|/)\.claude-proposals/[^/]+\.md$")
 
 
 def session_docs(con, sid, project_dir, idx):

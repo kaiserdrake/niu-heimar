@@ -1552,15 +1552,15 @@ async function designsChecks() {
     { t: "ul", items: [[{ t: "p", c: ["one"] }, { t: "ol", start: 3, items: [[{ t: "p", c: ["deep"] }]] }]] },
     { t: "table", align: ["l", "r"], head: ["A", "B"], rows: [["1", "2"], [["x ", { t: "code", text: "a|b" }], "4"]] },
     { t: "code", lang: "py", text: "print(1)\nprint(2)" }, { t: "quote", c: [{ t: "p", c: ["quoted"] }] }, { t: "hr" }, { t: "h", l: 2, id: "sec", c: ["Sec"] }];
-  const docBody = (rev) => ({ id: ID, title: "Design title", status: "proposed", rel: "x/docs/design/t.md", rev, revisions: revs, blocks, outline: [{ l: 1, id: "title", text: "Title" }, { l: 2, id: "sec", text: "Sec" }] });
+  const docBody = (rev) => ({ id: ID, title: "Design title", status: "proposed", rel: "x/.claude-proposals/t.md", rev, revisions: revs, blocks, outline: [{ l: 1, id: "title", text: "Title" }, { l: 2, id: "sec", text: "Sec" }] });
   const diffBody = { id: ID, a: "snap:7", b: "work", stats: { added: 2, removed: 1, sections: ["Design", "Changes"] },
     lines: [{ op: "eq", a: 1, b: 1, text: "same" }, { op: "del", a: 2, b: null, text: "old" }, { op: "ins", a: null, b: 2, text: "new" }, { op: "skip", n: 40 }],
     blocks: [{ op: "eq", block: { t: "p", c: ["same"] } }, { op: "ins", block: { t: "p", c: ["added"] } }, { op: "del", block: { t: "code", lang: "", text: "1\n2\n3\n4\n5\n6\n7\n8" } },
       { op: "chg", block: { t: "p", c: ["new word"] }, words: [["eq", "a "], ["del", "old"], ["ins", "new"]] },
       { op: "chg", block: { t: "table", align: ["", ""], head: ["A", "B"], rows: [["1", "2"], ["3", "9"]] }, rows: ["eq", "ins"], old_rows: [["3", "4"]] }] };
   const view0 = run("VIEW");   // later checks (topics view) expect the view they left
-  const calls = []; let mode = "ok", docs = [{ id: ID, domain: "(workspace)", project: "(workspace)", name: "t.md", title: "Design title", status: "proposed", mtime: 1000, rel: "x/docs/design/t.md", revisions: 3 },
-    { id: ID2, domain: "PERSONAL", project: "app", name: "u.md", title: "Other", status: "approved", mtime: 900, rel: "PERSONAL/app/docs/design/u.md", revisions: 1 }];
+  const calls = []; let mode = "ok", docs = [{ id: ID, domain: "(workspace)", project: "(workspace)", name: "t.md", title: "Design title", status: "proposed", mtime: 1000, rel: "x/.claude-proposals/t.md", revisions: 3 },
+    { id: ID2, domain: "PERSONAL", project: "app", name: "u.md", title: "Other", status: "approved", mtime: 900, rel: "PERSONAL/app/.claude-proposals/u.md", revisions: 1 }];
   const realFetch = ctx.fetch, saved = run("JSON.stringify([STATE.sessions[0].ended, STATE.sessions[0].state, STATE.feed])");
   ctx.fetch = (url) => {
     url = String(url); calls.push(url);
@@ -1629,24 +1629,29 @@ async function designsChecks() {
     run(`DS.mode = "doc"; DS.doc.text = "# raw"; DS.source = true; dsRenderDoc()`);
     if (!withCls(els.get("dsdoc"), "dssrc").length) fail("source view");
     run("DS.source = false; delete DS.doc.text");
+    // a legacy docs/design write does not trigger a refresh
+    run(`DS.mode = "doc"; DS.rev = "work"; DS.lastLive = 0; DS.fetched = 100; STATE.feed = [{ ts: 150, tool: "Edit", summary: "docs/design/t.md", session_id: "s" }]`);
+    await tick(); const nl0 = calls.length; run("dsLive()"); await tick();
+    if (calls.length !== nl0) fail("docs/design write triggered a refresh: " + calls.slice(nl0));
     // working copy refresh: a newer Write on the open doc refetches, at most every 5 s
-    run(`DS.mode = "doc"; DS.rev = "work"; DS.lastLive = 0; DS.fetched = 100; STATE.feed = [{ ts: 200, tool: "Edit", summary: "docs/design/t.md", session_id: "s" }, ...STATE.feed]`);
+    run(`DS.mode = "doc"; DS.rev = "work"; DS.lastLive = 0; DS.fetched = 100; STATE.feed = [{ ts: 200, tool: "Edit", summary: ".claude-proposals/t.md", session_id: "s" }, ...STATE.feed]`);
     const n0 = calls.length; run("dsLive()"); await tick();
     if (calls.length !== n0 + 1 || !/updated/.test(textOf(els.get("dsupd")))) fail("working copy not refreshed");
     run("dsLive()"); await tick();
     if (calls.length !== n0 + 1) fail("refresh not rate limited");
+    if (!/id="tab-designs"[^>]*>Proposals</.test(require("fs").readFileSync(require("path").join(__dirname, "..", "web", "index.html"), "utf8"))) fail("tab label is not Proposals");
     // session tie-in: a link in the panel header, and a tip on the designer node
     run(`ME = { paired: true }; const s0 = STATE.sessions[0]; s0.ended = false; $("details").hidden = true; AM.cache.clear(); DS.sess.clear(); showDetails({ sid: s0.id })`); await tick();
     const head = els.get("amhead");
     const dl = withCls(head, "dslink");
-    if (dl.length !== 1 || dl[0].getAttribute("href") !== `#designs/${ID}` || !/Design: Design title/.test(textOf(dl[0]))) fail("session design link: " + textOf(head));
+    if (dl.length !== 1 || dl[0].getAttribute("href") !== `#designs/${ID}` || !/Proposal: Design title/.test(textOf(dl[0]))) fail("session design link: " + textOf(head));
     run("showDetails(SELECTED, true)");
     if (withCls(els.get("amhead"), "dslink").length !== 1) fail("link duplicated or lost on refresh");
     run("dsOpenSession()"); await tick();
     if (run("VIEW") !== "designs" || !els.get("details").hidden) fail("designer click did not open the design");
     // not paired
     mode = "401"; run("DS.id = null; DS.doc = null"); run("loadDesigns()"); await tick();
-    if (!/Pair this browser to read design docs/.test(textOf(els.get("dslist"))) || !/Pair this browser/.test(textOf(els.get("dsdoc")))) fail("401 hint");
+    if (!/Pair this browser to read proposals/.test(textOf(els.get("dslist"))) || !/Pair this browser/.test(textOf(els.get("dsdoc")))) fail("401 hint");
     mode = "ok";
     // source scan: no HTML sinks in this section
     const app = fs.readFileSync(process.argv[2], "utf8");
