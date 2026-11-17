@@ -26,7 +26,7 @@ function el(tag = "div") {
 }
 const document = {
   getElementById: (id) => { if (!els.has(id)) els.set(id, el()); return els.get(id); },
-  createElement: (t) => el(t), createElementNS: (_, t) => el(t), querySelector: () => null, querySelectorAll: () => [],
+  createElement: (t) => el(t), createTextNode: (t) => ({ nodeType: 3, textContent: String(t), children: [] }), createElementNS: (_, t) => el(t), querySelector: () => null, querySelectorAll: () => [],
   _ls: {}, addEventListener(t, f) { (document._ls[t] = document._ls[t] || []).push(f); }, body: el("body"), documentElement: el("html"), hidden: false, title: "",
 };
 const ctx = {
@@ -1534,6 +1534,132 @@ async function amChecks(catFile) {
   }
   return "agent map ok";
 }
+// Designs tab: block tree -> DOM with h() only (innerHTML trapped), link allowlist, revision compare, session link, working copy refresh.
+async function designsChecks() {
+  const fail = (m) => { throw new Error("designs: " + m); };
+  const run = (c) => vm.runInContext(c, ctx);
+  const tick = async () => { for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r)); };
+  const cls = (n) => (n && n.className) || "";
+  const withCls = (root, c) => allOf(root).filter((n) => new RegExp(`(^|\\s)${c}(\\s|$)`).test(cls(n)));
+  const ID = "d0123456789abcdef", ID2 = "dfedcba9876543210", SHA1 = "a".repeat(40), SHA2 = "b".repeat(40);
+  const revs = [{ rev: "work", ts: 300, label: "Working copy · uncommitted", kind: "work", also: [] }, { rev: "snap:7", ts: 200, label: "Draft 14:02 · designer", kind: "snap", also: [] }, { rev: `git:${SHA1}`, ts: 100, label: "a1b2c3d · 2026-11-12 · first", kind: "git", also: [] }];
+  const blocks = [
+    { t: "h", l: 1, id: "title", c: ["Title ", { t: "code", text: "x" }] },
+    { t: "p", c: ["see ", { t: "a", href: "javascript:alert(1)", c: ["bad"] }, " ", { t: "a", href: "data:text/html,x", c: ["bad2"] }, " ", { t: "a", href: "https://example.com/x", c: ["ok"] },
+      " ", { t: "a", doc: ID2, frag: "sec", c: ["sibling"] }, " ", { t: "a", href: "#title", c: ["top"] }, " ", { t: "a", href: "//evil.example", c: ["proto"] }, " ", { t: "img", alt: "pic" },
+      " ", { t: "b", c: ["bold"] }, { t: "i", c: ["it"] }, { t: "s", c: ["st"] }, { t: "br" }] },
+    { t: "p", c: ["<script>alert(1)</script>"] },
+    { t: "ul", items: [[{ t: "p", c: ["one"] }, { t: "ol", start: 3, items: [[{ t: "p", c: ["deep"] }]] }]] },
+    { t: "table", align: ["l", "r"], head: ["A", "B"], rows: [["1", "2"], [["x ", { t: "code", text: "a|b" }], "4"]] },
+    { t: "code", lang: "py", text: "print(1)\nprint(2)" }, { t: "quote", c: [{ t: "p", c: ["quoted"] }] }, { t: "hr" }, { t: "h", l: 2, id: "sec", c: ["Sec"] }];
+  const docBody = (rev) => ({ id: ID, title: "Design title", status: "proposed", rel: "x/docs/design/t.md", rev, revisions: revs, blocks, outline: [{ l: 1, id: "title", text: "Title" }, { l: 2, id: "sec", text: "Sec" }] });
+  const diffBody = { id: ID, a: "snap:7", b: "work", stats: { added: 2, removed: 1, sections: ["Design", "Changes"] },
+    lines: [{ op: "eq", a: 1, b: 1, text: "same" }, { op: "del", a: 2, b: null, text: "old" }, { op: "ins", a: null, b: 2, text: "new" }, { op: "skip", n: 40 }],
+    blocks: [{ op: "eq", block: { t: "p", c: ["same"] } }, { op: "ins", block: { t: "p", c: ["added"] } }, { op: "del", block: { t: "code", lang: "", text: "1\n2\n3\n4\n5\n6\n7\n8" } },
+      { op: "chg", block: { t: "p", c: ["new word"] }, words: [["eq", "a "], ["del", "old"], ["ins", "new"]] },
+      { op: "chg", block: { t: "table", align: ["", ""], head: ["A", "B"], rows: [["1", "2"], ["3", "9"]] }, rows: ["eq", "ins"], old_rows: [["3", "4"]] }] };
+  const view0 = run("VIEW");   // later checks (topics view) expect the view they left
+  const calls = []; let mode = "ok", docs = [{ id: ID, domain: "(workspace)", project: "(workspace)", name: "t.md", title: "Design title", status: "proposed", mtime: 1000, rel: "x/docs/design/t.md", revisions: 3 },
+    { id: ID2, domain: "PERSONAL", project: "app", name: "u.md", title: "Other", status: "approved", mtime: 900, rel: "PERSONAL/app/docs/design/u.md", revisions: 1 }];
+  const realFetch = ctx.fetch, saved = run("JSON.stringify([STATE.sessions[0].ended, STATE.sessions[0].state, STATE.feed])");
+  ctx.fetch = (url) => {
+    url = String(url); calls.push(url);
+    if (mode === "401") return Promise.resolve({ ok: false, status: 401, json: () => Promise.resolve({ state: "not_paired" }) });
+    const ok = (d) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(d) });
+    if (url.startsWith("/api/designs/diff")) return ok(diffBody);
+    if (url.startsWith("/api/designs/doc")) return ok(docBody(decodeURIComponent((url.match(/rev=([^&]+)/) || [])[1] || "work")));
+    if (url.startsWith("/api/designs?sid=")) return ok({ docs, session_docs: [ID] });
+    if (url.startsWith("/api/designs")) return ok({ docs, session_docs: [] });
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
+  };
+  ctx.TP_TRAP = true;
+  try {
+    // hash routing
+    if (!run(`dsRoute("#designs/${ID}/diff/work/git:${SHA1}")`) || run("DS.mode") !== "diff" || run("DS.a") !== "work" || run("DS.b") !== `git:${SHA1}`) fail("diff hash not parsed");
+    if (run("dsHash()") !== `#designs/${ID}/diff/work/git:${SHA1}`) fail("diff hash not rebuilt: " + run("dsHash()"));
+    run(`dsRoute("#designs/${ID}/snap:7")`);
+    if (run("DS.mode") !== "doc" || run("DS.rev") !== "snap:7") fail("rev hash not parsed");
+    run(`dsRoute("#designs/../etc/passwd")`);
+    if (run("DS.id") !== null) fail("bad doc id accepted from the hash");
+    run(`dsRoute("#designs/${ID}/git:zzz")`);
+    if (run("DS.rev") !== "work") fail("bad rev accepted from the hash");
+    run("DS.id = null; DS.doc = null; DS.mode = 'doc'; DS.rev = 'work'");
+    // the tab
+    run('setView("designs")'); await tick();
+    if (els.get("mcgrid").dataset.view !== "designs" || !els.get("tab-designs").classList.contains("on")) fail("setView('designs') did not switch the view");
+    const lt = textOf(els.get("dslist"));
+    if (!/Design title/.test(lt) || !/Other/.test(lt) || !/proposed/.test(lt) || !/PERSONAL \/ app/.test(lt)) fail("list: " + lt);
+    // open the first doc
+    run(`dsOpen("${ID}", "work")`); await tick();
+    const d = els.get("dsdoc");
+    if (!/Design title/.test(textOf(d)) || !calls.some((c) => c.startsWith(`/api/designs/doc?id=${ID}&rev=work`))) fail("doc not fetched or drawn: " + textOf(d).slice(0, 120));
+    if (withCls(d, "dsmd").length !== 1 || !allOf(d).some((n) => n.tagName === "table") || !allOf(d).some((n) => n.tagName === "pre") || !allOf(d).some((n) => n.tagName === "blockquote") || !allOf(d).some((n) => n.tagName === "hr")) fail("blocks not drawn");
+    if (!allOf(d).some((n) => n.tagName === "ol" && n.getAttribute("start") === "3")) fail("ol start missing");
+    if (!/<script>alert\(1\)<\/script>/.test(textOf(d))) fail("raw html must show as literal text");
+    if (!/\[image: pic\]/.test(textOf(d))) fail("image alt");
+    const links = allOf(d).filter((n) => n.tagName === "a");
+    const byText = (t) => links.find((n) => textOf(n).trim().startsWith(t));
+    for (const t of ["bad", "bad2"]) if (links.some((n) => textOf(n).trim() === t) || /javascript:|data:/.test(links.map((n) => n.getAttribute("href") || "").join(" "))) fail("unsafe link kept: " + t);
+    if (links.some((n) => textOf(n).trim() === "proto") || !/proto/.test(textOf(d))) fail("protocol-relative link must be plain text");
+    const ext = byText("ok");
+    if (!ext || ext.getAttribute("href") !== "https://example.com/x" || ext.getAttribute("rel") !== "noopener noreferrer" || ext.getAttribute("target") !== "_blank") fail("https link attributes " + JSON.stringify(links.map((n) => [textOf(n), n.getAttribute("href"), n.getAttribute("rel")])));
+    const sib = byText("sibling");
+    if (!sib || sib.getAttribute("href") !== `#designs/${ID2}`) fail("sibling doc link");
+    if (!byText("top") || byText("top").getAttribute("href") !== "#title") fail("anchor link");
+    if (withCls(els.get("dsoutline"), "dso").length !== 2) fail("outline");
+    // Compare: a = previous distinct revision, b = newest
+    const cmp = allOf(d).find((n) => n.getAttribute && n.getAttribute("id") === "dscompare");
+    if (!cmp || cmp.disabled) fail("compare button");
+    cmp.onclick(); await tick();
+    if (!calls.some((c) => c.includes(`/api/designs/diff?id=${ID}&a=snap%3A7&b=work`))) fail("compare did not request the diff: " + calls.slice(-3));
+    if (run("dsHash()") !== `#designs/${ID}/diff/snap:7/work`) fail("compare hash: " + run("dsHash()"));
+    const dd = els.get("dsdoc");
+    if (!/\+2 −1 · Design, Changes/.test(textOf(dd))) fail("summary chip: " + textOf(dd).slice(0, 200));
+    for (const c of ["dsins", "dsdel", "dschg", "dseq"]) if (!withCls(dd, c).length) fail("rendered diff lacks ." + c);
+    if (!allOf(dd).some((n) => n.tagName === "ins" && textOf(n) === "new") || !allOf(dd).some((n) => n.tagName === "del" && textOf(n) === "old")) fail("word marks");
+    if (!withCls(dd, "dsdel").some((n) => /collapsed/.test(cls(n)))) fail("a long removed block should start collapsed");
+    if (!withCls(dd, "dsins").some((n) => n.tagName === "tr") || !withCls(dd, "dsdel").some((n) => n.tagName === "tr")) fail("table row ops");
+    run("dsKey({ key: 'n', target: { tagName: 'DIV' }, preventDefault() {} })");
+    run('DS.dview = "lines"; dsRenderDoc()');
+    const dl2 = els.get("dsdoc");
+    if (withCls(dl2, "dsline").length !== 4 || !withCls(dl2, "add").length || !/40 unchanged lines/.test(textOf(dl2))) fail("lines view");
+    run("DS.diff = Object.assign({}, DS.diff, { blocks: null }); DS.dview = 'rendered'; dsRenderDoc()");
+    if (!/Too large for the rendered diff/.test(textOf(els.get("dsdoc"))) || !withCls(els.get("dsdoc"), "dsline").length) fail("blocks:null fallback");
+    // Source toggle needs a text field
+    run(`DS.mode = "doc"; DS.doc.text = "# raw"; DS.source = true; dsRenderDoc()`);
+    if (!withCls(els.get("dsdoc"), "dssrc").length) fail("source view");
+    run("DS.source = false; delete DS.doc.text");
+    // working copy refresh: a newer Write on the open doc refetches, at most every 5 s
+    run(`DS.mode = "doc"; DS.rev = "work"; DS.lastLive = 0; DS.fetched = 100; STATE.feed = [{ ts: 200, tool: "Edit", summary: "docs/design/t.md", session_id: "s" }, ...STATE.feed]`);
+    const n0 = calls.length; run("dsLive()"); await tick();
+    if (calls.length !== n0 + 1 || !/updated/.test(textOf(els.get("dsupd")))) fail("working copy not refreshed");
+    run("dsLive()"); await tick();
+    if (calls.length !== n0 + 1) fail("refresh not rate limited");
+    // session tie-in: a link in the panel header, and a tip on the designer node
+    run(`ME = { paired: true }; const s0 = STATE.sessions[0]; s0.ended = false; $("details").hidden = true; AM.cache.clear(); DS.sess.clear(); showDetails({ sid: s0.id })`); await tick();
+    const head = els.get("amhead");
+    const dl = withCls(head, "dslink");
+    if (dl.length !== 1 || dl[0].getAttribute("href") !== `#designs/${ID}` || !/Design: Design title/.test(textOf(dl[0]))) fail("session design link: " + textOf(head));
+    run("showDetails(SELECTED, true)");
+    if (withCls(els.get("amhead"), "dslink").length !== 1) fail("link duplicated or lost on refresh");
+    run("dsOpenSession()"); await tick();
+    if (run("VIEW") !== "designs" || !els.get("details").hidden) fail("designer click did not open the design");
+    // not paired
+    mode = "401"; run("DS.id = null; DS.doc = null"); run("loadDesigns()"); await tick();
+    if (!/Pair this browser to read design docs/.test(textOf(els.get("dslist"))) || !/Pair this browser/.test(textOf(els.get("dsdoc")))) fail("401 hint");
+    mode = "ok";
+    // source scan: no HTML sinks in this section
+    const app = fs.readFileSync(process.argv[2], "utf8");
+    const a0 = app.indexOf("// ---------- design docs ----------"), a1 = app.indexOf("// ---------- end design docs ----------");
+    if (a0 < 0 || a1 < a0) fail("section markers not found");
+    for (const bad of ["innerHTML", "insertAdjacentHTML", "outerHTML", "document.write", "eval(", "new Function"]) if (app.slice(a0, a1).includes(bad)) fail("design docs section uses " + bad);
+    if (/\.(children|childNodes)\.(filter|find|findIndex|map|some|every|reduce|slice|indexOf|includes)\(/.test(app.slice(a0, a1))) fail("DOM collection used as an array");
+  } finally {
+    ctx.TP_TRAP = false; ctx.fetch = realFetch;
+    run(`(() => { const o = ${saved}; Object.assign(STATE.sessions[0], { ended: o[0], state: o[1] }); STATE.feed = o[2]; $("details").hidden = true; SELECTED = null; AM.sid = null; ME = { paired: true }; setView(${JSON.stringify(view0)}); })()`);
+  }
+  return "design docs ok";
+}
 (async () => {
   try {
     console.log(vm.runInContext(src, ctx, { filename: "app.js" }));
@@ -1546,6 +1672,7 @@ async function amChecks(catFile) {
     if (process.argv[7]) console.log(await tokenChecks(JSON.parse(fs.readFileSync(process.argv[7], "utf8"))));
     if (process.argv[5]) console.log(await topicsChecks(JSON.parse(fs.readFileSync(process.argv[5], "utf8")), fs.readFileSync(process.argv[2], "utf8")));
     console.log(await amChecks());
+    console.log(await designsChecks());
     if (process.argv[5]) console.log(await topicsViewChecks(JSON.parse(fs.readFileSync(process.argv[5], "utf8")), fs.readFileSync(process.argv[2], "utf8")));
   } catch (e) { console.log("ERROR:", e.message, (e.stack || "").split("\n").slice(1,5).join(" ; ")); process.exit(1); }
 })();

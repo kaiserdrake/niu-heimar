@@ -114,18 +114,19 @@ $("bellbtn").addEventListener("click", (e) => {
 function refit() { if (STATE && VIEW === "agents") { renderGraph(); renderTimeline(); } if (VIEW === "events") redrawUsage(); }
 let VIEW = "agents";
 function setView(v) {
-  VIEW = v === "events" ? "events" : v === "research" ? "research" : "agents";
+  VIEW = v === "events" ? "events" : v === "research" ? "research" : v === "designs" ? "designs" : "agents";
   $("mcgrid").dataset.view = VIEW;
-  for (const [id, name] of [["tab-agents", "agents"], ["tab-events", "events"], ["tab-research", "research"]]) {
+  for (const [id, name] of [["tab-agents", "agents"], ["tab-events", "events"], ["tab-research", "research"], ["tab-designs", "designs"]]) {
     $(id).classList.toggle("on", VIEW === name); $(id).setAttribute("aria-pressed", String(VIEW === name));
   }
   store.set("niu.view", VIEW);
-  const hash = VIEW === "agents" ? "" : VIEW === "research" && RSVIEW !== "status" ? `#research/${RSVIEW}` : `#${VIEW}`;
+  const hash = VIEW === "agents" ? "" : VIEW === "designs" ? dsHash() : VIEW === "research" && RSVIEW !== "status" ? `#research/${RSVIEW}` : `#${VIEW}`;
   if (location.hash !== hash) history.replaceState(null, "", hash || location.pathname);
   connect();
   setTimeout(refit, 50);
   if (VIEW === "events") { loadUsage(); loadTokens(); }
   if (VIEW === "research") { renderResearch(); loadResearch(); if (RSVIEW === "topics") loadTopics(); }
+  if (VIEW === "designs") dsEnter();
 }
 $("tab-agents").onclick = () => setView("agents");
 $("tab-events").onclick = () => setView("events");
@@ -154,6 +155,7 @@ function render() {
   renderDomains(); renderCounters(); renderActions(); renderSessions(); renderPRs(); renderToday(); renderFeed();
   if (VIEW === "agents") { renderGraph(); renderTimeline(); }
   if (SELECTED) showDetails(SELECTED, true);
+  dsLive();
 }
 
 function renderDomains() {
@@ -1068,7 +1070,7 @@ function amNode(n) {
     }
     if (n.kind === "gate") for (const t of texts) { t.setAttribute("x", n.w / 2); t.setAttribute("text-anchor", "middle"); }
     g.amText = texts;
-    g.addEventListener("click", () => amFocus(n.id));
+    g.addEventListener("click", () => { amFocus(n.id); if (n.id === "a:designer") dsOpenSession(); });
     g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); amFocus(n.id); } });
     AM.layers.nodes.append(g);
     AM.nodes.set(n.id, g);
@@ -1076,7 +1078,7 @@ function amNode(n) {
   g.setAttribute("transform", `translate(${n.x},${n.y})`);
   const st = n.running ? "running" : n.used ? "used" : "avail";
   g.setAttribute("class", `amnode ${st}${n.kind === "gate" ? " gate" : ""}${n.small ? " small" : ""}${n.kind === "local" ? " alocal" : ""}`);
-  g.setAttribute("data-tip", n.tip);
+  g.setAttribute("data-tip", n.id === "a:designer" && dsSessDocs(AM.sid).length ? `${n.tip}\nclick to open the design` : n.tip);
   g.setAttribute("aria-label", `${n.label}, ${n.sub}`);
   const [badge, mdl, name, sub] = g.amText;
   badge.textContent = n.kind === "gate" ? "" : n.source === "session" || n.source === "builtin" ? n.source : n.source;
@@ -1305,6 +1307,7 @@ function showDetails(sel, refresh) {
   $("details").classList.add("wide");
   $("details").hidden = false;
   amRender(s);
+  dsLinks(s.id);
 }
 
 // ---------- actions ----------
@@ -3423,10 +3426,441 @@ setInterval(() => {
   if (VIEW === "agents") { renderGraph(); renderTimeline(); }
 }, 1000);
 
+// ---------- design docs ----------
+// The server (lib/niu_designs.py) sends a JSON block tree, never HTML. Everything here is built with h() / createTextNode,
+// never with HTML strings. Links are checked again in the browser (https?:, #anchor, sibling doc ids only).
+const DS = { docs: [], loaded: false, unpaired: false, err: "", filter: "", id: null, rev: "work", doc: null, gone: false, busy: false,
+  mode: "doc", a: null, b: null, diff: null, dview: "rendered", source: false, sess: new Map(), inflight: new Set(), seq: 0,
+  fetched: 0, lastLive: 0, upd: "", cur: -1, anchors: new Map() };
+const DS_ID = /^d[0-9a-f]{16}$/, DS_REV = /^(work|git:[0-9a-f]{40}|snap:[0-9]{1,12})$/, DS_FRAG = /^[A-Za-z0-9_-]{1,80}$/;
+const DS_WRITE = new Set(["Write", "Edit", "MultiEdit"]);
+
+async function dsGet(url) {
+  try {
+    const r = await fetch(url, { credentials: "same-origin" });
+    const data = await r.json().catch(() => null);
+    return { status: r.status || (r.ok ? 200 : 0), data };
+  } catch { return { status: 0, data: null }; }
+}
+const dsOp = (o) => { o = String(o || "").toLowerCase(); return /^(ins|insert|add|\+)/.test(o) ? "ins" : /^(del|delete|rem|-|−)/.test(o) ? "del" : /^(chg|replace|chang)/.test(o) ? "chg" : "eq"; };
+const dsTxt = (s) => document.createTextNode(String(s ?? ""));
+
+// #designs/<docId>[/<rev> | /diff/<a>/<b>]
+function dsHash() {
+  if (!DS.id) return "#designs";
+  if (DS.mode === "diff" && DS.a && DS.b) return `#designs/${DS.id}/diff/${DS.a}/${DS.b}`;
+  return DS.rev && DS.rev !== "work" ? `#designs/${DS.id}/${DS.rev}` : `#designs/${DS.id}`;
+}
+function dsRoute(hash) {
+  const p = String(hash || "").split("/");
+  if (p[0] !== "#designs") return false;
+  if (!DS_ID.test(p[1] || "")) { DS.id = null; return true; }
+  DS.id = p[1]; DS.doc = DS.doc && DS.doc.id === DS.id ? DS.doc : null; DS.gone = false;
+  if (p[2] === "diff" && DS_REV.test(p[3] || "") && DS_REV.test(p[4] || "")) { DS.mode = "diff"; DS.a = p[3]; DS.b = p[4]; }
+  else { DS.mode = "doc"; DS.rev = DS_REV.test(p[2] || "") ? p[2] : "work"; }
+  return true;
+}
+function dsSync() { if (VIEW === "designs" && location.hash !== dsHash()) history.replaceState(null, "", dsHash()); }
+
+function dsHint() {
+  const b = h("button", "primary tiny", "Open menu");
+  b.onclick = () => toggleMenu(true);
+  const box = h("div", "empty dshint");
+  box.append(h("span", "", "Pair this browser to read design docs (menu → This browser). "), b);
+  return box;
+}
+
+async function loadDesigns() {
+  const r = await dsGet("/api/designs");
+  if (r.status === 401) { DS.unpaired = true; DS.docs = []; }
+  else if (r.data && Array.isArray(r.data.docs)) { DS.unpaired = false; DS.docs = r.data.docs; DS.loaded = true; DS.err = ""; }
+  else DS.err = "Couldn't load the design docs.";
+  dsRenderList();
+  dsRenderDoc();
+}
+function dsEnter() {
+  dsRenderList(); dsRenderDoc();
+  loadDesigns().then(() => { if (DS.id && !DS.unpaired) return dsFetch(); });
+}
+
+async function dsOpen(id, rev, frag) {
+  if (!DS_ID.test(id || "")) return;
+  const same = DS.doc && DS.doc.id === id;
+  DS.id = id; DS.rev = rev && DS_REV.test(rev) ? rev : "work"; DS.mode = "doc"; DS.diff = null; DS.gone = false; DS.source = false;
+  if (!same) DS.doc = null;
+  DS.frag = frag && DS_FRAG.test(frag) ? frag : null;
+  if (VIEW !== "designs") { setView("designs"); return; }
+  dsSync();
+  await dsFetch();
+}
+async function dsCompare(a, b) {
+  if (!DS.id || !DS_REV.test(a || "") || !DS_REV.test(b || "")) return;
+  DS.mode = "diff"; DS.a = a; DS.b = b; DS.diff = null; DS.gone = false; DS.cur = -1;
+  if (VIEW !== "designs") { setView("designs"); return; }
+  dsSync();
+  await dsFetch();
+}
+
+// Fetch whatever DS describes (a doc revision, or a diff plus the doc meta for the pickers), then draw it.
+async function dsFetch(quiet) {
+  const seq = ++DS.seq, id = DS.id;
+  if (!id) { dsRenderDoc(); return; }
+  if (!quiet) { DS.busy = true; dsRenderDoc(); }
+  const q = encodeURIComponent;
+  const need = !DS.doc || DS.doc.id !== id;
+  const jobs = DS.mode === "diff"
+    ? [dsGet(`/api/designs/diff?id=${q(id)}&a=${q(DS.a)}&b=${q(DS.b)}`), need ? dsGet(`/api/designs/doc?id=${q(id)}&rev=work`) : null]
+    : [dsGet(`/api/designs/doc?id=${q(id)}&rev=${q(DS.rev)}`), null];
+  const [main, meta] = await Promise.all(jobs);
+  if (seq !== DS.seq) return;
+  DS.busy = false;
+  if (main.status === 401 || (meta && meta.status === 401)) { DS.unpaired = true; dsRenderList(); dsRenderDoc(); return; }
+  if (!main.data || main.status >= 400 || main.status === 0) { DS.gone = main.status === 404 || main.status === 400; DS.err = DS.gone ? "" : "Couldn't load this doc."; DS.doc = null; dsRenderDoc(); return; }
+  DS.err = ""; DS.gone = false;
+  DS.fetched = STATE ? STATE.now : Date.now() / 1000;
+  if (DS.mode === "diff") { DS.diff = main.data; if (meta && meta.data && Array.isArray(meta.data.revisions)) DS.doc = meta.data; }
+  else DS.doc = main.data;
+  if (quiet) DS.upd = `updated ${hm(Date.now() / 1000)}`; else DS.upd = "";
+  const host = $("dsdoc"), top = host.scrollTop;
+  dsRenderDoc();
+  if (quiet) host.scrollTop = top;
+  else if (DS.frag) { const t = DS.anchors.get(DS.frag); if (t) t.scrollIntoView({ block: "start" }); DS.frag = null; }
+}
+
+// Working copy refresh: a newer Write/Edit on the open doc in the feed refetches it, at most every 5 s.
+function dsLive() {
+  if (VIEW !== "designs" || DS.mode !== "doc" || DS.rev !== "work" || !DS.doc || !STATE) return;
+  const now = Date.now();
+  if (now - DS.lastLive < 5000) return;
+  const name = String(DS.doc.rel || "").split("/").pop();
+  const hit = (STATE.feed || []).some((e) => e.ts > DS.fetched && DS_WRITE.has(e.tool) && /(^|\/)docs\/design\/[^/]+\.md$/.test(e.summary || "") && String(e.summary).endsWith(name));
+  if (hit) { DS.lastLive = now; dsFetch(true); }
+}
+
+// ----- list -----
+function dsRenderList() {
+  const box = $("dslist");
+  if (DS.unpaired) { box.replaceChildren(dsHint()); return; }
+  if (DS.err && !DS.loaded) { box.replaceChildren(h("div", "empty", DS.err)); return; }
+  if (!DS.loaded) { box.replaceChildren(h("div", "empty", "Loading…")); return; }
+  const f = DS.filter.trim().toLowerCase();
+  const docs = DS.docs.filter((d) => !f || `${d.title || ""} ${d.name || ""}`.toLowerCase().includes(f)).sort((x, y) => (y.mtime || 0) - (x.mtime || 0));
+  if (!docs.length) { box.replaceChildren(h("div", "empty", DS.docs.length ? "No design docs match." : "No design docs found.")); return; }
+  const groups = new Map();
+  for (const d of docs) { const k = `${dl(d.domain)} / ${d.project || ""}`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(d); }
+  const out = [];
+  for (const [k, ds] of groups) {
+    out.push(h("div", "dsgroup", k));
+    for (const d of ds) {
+      const st = String(d.status || "");
+      const it = h("button", `dsitem${d.id === DS.id ? " on" : ""}`, "", { "data-id": d.id, "aria-pressed": String(d.id === DS.id) });
+      const top = h("span", "dsit", d.title || d.name);
+      const meta = h("span", "dsim small muted", `${d.name || ""} · ${d.mtime ? dur(Date.now() / 1000 - d.mtime) + " ago" : "–"}${d.revisions ? ` · ${d.revisions} rev` : ""}`);
+      if (st) top.append(" ", h("span", `badge ${/^(approved|implemented)$/.test(st) ? "b-ok" : st === "proposed" ? "b-warn" : ""}`, st));
+      it.append(top, meta);
+      it.onclick = () => dsOpen(d.id, "work");
+      out.push(it);
+    }
+  }
+  box.replaceChildren(...out);
+}
+
+// ----- doc pane -----
+function dsSeg(label, items, cur, on) {
+  const seg = h("span", "seg", "", { role: "group", "aria-label": label });
+  for (const [v, t] of items) { const b = h("button", `segbtn${v === cur ? " on" : ""}`, t, { "aria-pressed": String(v === cur) }); b.onclick = () => on(v); seg.append(b); }
+  return seg;
+}
+function dsRevSelect(id, cur, on) {
+  const sel = h("select", "", "", { id, "aria-label": id === "dsrev" ? "Revision" : id === "dsa" ? "Compare from" : "Compare to" });
+  for (const r of DS.doc.revisions || []) {
+    const o = h("option", "", `${r.label || r.rev}${r.also ? ` · also: ${Array.isArray(r.also) ? r.also.join(", ") : r.also}` : ""}`, { value: r.rev });
+    if (r.rev === cur) o.setAttribute("selected", "selected");
+    sel.append(o);
+  }
+  sel.value = cur;
+  sel.addEventListener("change", () => on(sel.value));
+  return sel;
+}
+function dsRenderDoc() {
+  const box = $("dsdoc"), ol = $("dsoutline");
+  DS.anchors = new Map();
+  $("dsupd").textContent = DS.upd;
+  ol.replaceChildren();
+  if (DS.unpaired) { box.replaceChildren(dsHint()); return; }
+  if (!DS.id) { box.replaceChildren(h("div", "empty", "Select a design doc from the list.")); return; }
+  if (DS.gone) { box.replaceChildren(h("div", "empty", "This doc is no longer available.")); return; }
+  if (DS.err) { box.replaceChildren(h("div", "empty", DS.err)); return; }
+  const doc = DS.doc;
+  if (!doc) { box.replaceChildren(h("div", "empty", DS.busy ? "Loading…" : "")); return; }
+  const revs = doc.revisions || [];
+  const head = h("div", "dshead");
+  const title = h("h2", "dstitle", doc.title || "(untitled)");
+  if (doc.status) title.append(" ", h("span", `badge ${/^(approved|implemented)$/.test(doc.status) ? "b-ok" : doc.status === "proposed" ? "b-warn" : ""}`, doc.status));
+  head.append(title, h("div", "small muted dsrel", doc.rel || ""));
+  const bar = h("div", "dsbar");
+  if (DS.mode === "diff") {
+    bar.append(h("span", "small muted", "From"), dsRevSelect("dsa", DS.a, (v) => dsCompare(v, DS.b)),
+      h("span", "small muted", "to"), dsRevSelect("dsb", DS.b, (v) => dsCompare(DS.a, v)),
+      dsSeg("Diff view", [["rendered", "Rendered"], ["lines", "Lines"]], DS.dview, (v) => { DS.dview = v; DS.cur = -1; dsRenderDoc(); }));
+    const back = h("button", "ghost tiny", "Back to doc");
+    back.onclick = () => dsOpen(doc.id, DS.b);
+    bar.append(back);
+  } else {
+    bar.append(dsRevSelect("dsrev", DS.rev, (v) => dsOpen(doc.id, v)));
+    const cmp = h("button", "ghost tiny", "Compare", { id: "dscompare" });
+    if (revs.length < 2) { cmp.disabled = true; cmp.setAttribute("title", "Only one revision"); }
+    cmp.onclick = () => dsCompare(revs[1].rev, revs[0].rev);
+    bar.append(cmp);
+    if (typeof doc.text === "string") bar.append(dsSeg("Doc view", [["r", "Rendered"], ["s", "Source"]], DS.source ? "s" : "r", (v) => { DS.source = v === "s"; dsRenderDoc(); }));
+  }
+  const body = h("div", DS.mode === "diff" ? "dsdiff" : "dsmd");
+  if (DS.mode === "diff") {
+    const d = DS.diff;
+    if (!d) body.append(h("div", "empty", DS.busy ? "Loading…" : ""));
+    else {
+      const st = d.stats || {};
+      const secs = Array.isArray(st.sections) && st.sections.length ? ` · ${st.sections.join(", ")}` : "";
+      body.append(h("div", "dschip", `+${st.added || 0} −${st.removed || 0}${secs}`));
+      const rendered = DS.dview === "rendered" && Array.isArray(d.blocks);
+      if (DS.dview === "rendered" && !rendered) body.append(h("div", "small muted", "Too large for the rendered diff. Showing lines."));
+      const inner = h("div", rendered ? "dsmd" : "dslines");
+      if (rendered) inner.append(...dsDiffBlocks(d.blocks)); else inner.append(...dsDiffLines(d.lines));
+      body.append(inner);
+    }
+  } else if (DS.source && typeof doc.text === "string") body.append(h("pre", "dssrc", doc.text));
+  else body.append(...dsBlocks(doc.blocks || []));
+  box.replaceChildren(head, bar, body);
+  if (DS.mode === "doc" && !DS.source) {
+    ol.append(h("div", "dsohd small muted", "Outline"));
+    for (const o of doc.outline || []) {
+      const l = Math.max(1, Math.min(6, Number(o.l) || 1));
+      const b = h("button", `dso dso${l}`, o.text);
+      b.onclick = () => { const t = DS.anchors.get(o.id); if (t) t.scrollIntoView({ block: "start" }); };
+      ol.append(b);
+    }
+  }
+}
+
+// ----- renderer: block tree -> DOM -----
+function dsInl(inl) {
+  const out = [];
+  for (const n of Array.isArray(inl) ? inl : [inl]) {
+    if (n === null || n === undefined) continue;
+    if (typeof n === "string") { out.push(dsTxt(n)); continue; }
+    if (typeof n !== "object") continue;
+    const kids = (e) => { e.append(...dsInl(n.c)); return e; };
+    if (n.t === "code") out.push(h("code", "", n.text));
+    else if (n.t === "b") out.push(kids(h("strong")));
+    else if (n.t === "i") out.push(kids(h("em")));
+    else if (n.t === "s") out.push(kids(h("s")));
+    else if (n.t === "br") out.push(h("br"));
+    else if (n.t === "img") out.push(dsTxt(`[image: ${n.alt || ""}]`));
+    else if (n.t === "a") out.push(...dsLink(n));
+  }
+  return out;
+}
+// Only https?: URLs, #anchors of this doc and sibling doc ids become links; anything else is plain text.
+function dsLink(n) {
+  const href = typeof n.href === "string" ? n.href : "";
+  if (typeof n.doc === "string" && DS_ID.test(n.doc)) {
+    const frag = typeof n.frag === "string" ? n.frag.replace(/^#/, "") : "";
+    const a = h("a", "dsa", "", { href: `#designs/${n.doc}` });
+    a.append(...dsInl(n.c));
+    a.addEventListener("click", (e) => { e.preventDefault(); dsOpen(n.doc, "work", frag); });
+    return [a];
+  }
+  if (/^https?:\/\/[^\s]+$/i.test(href)) {
+    const a = h("a", "dsa", "", { href, target: "_blank", rel: "noopener noreferrer" });
+    a.append(...dsInl(n.c), h("span", "dsext", "↗"));
+    return [a];
+  }
+  if (/^#[A-Za-z0-9_-]{1,80}$/.test(href)) {
+    const a = h("a", "dsa", "", { href });
+    a.append(...dsInl(n.c));
+    a.addEventListener("click", (e) => { e.preventDefault(); const t = DS.anchors.get(href.slice(1)); if (t) t.scrollIntoView({ block: "start" }); });
+    return [a];
+  }
+  return dsInl(n.c);
+}
+function dsBlocks(blocks, depth = 0) {
+  const out = [];
+  if (!Array.isArray(blocks) || depth > 10) return out;
+  for (const b of blocks) {
+    if (!b || typeof b !== "object") continue;
+    if (b.t === "h") {
+      const e = h(`h${Math.max(1, Math.min(6, Number(b.l) || 1))}`);
+      e.append(...dsInl(b.c));
+      if (typeof b.id === "string" && /^[a-z0-9-]{1,80}$/.test(b.id)) { e.setAttribute("id", `dsh-${b.id}`); DS.anchors.set(b.id, e); }
+      out.push(e);
+    } else if (b.t === "p") { const e = h("p"); e.append(...dsInl(b.c)); out.push(e); }
+    else if (b.t === "ul" || b.t === "ol") {
+      const e = h(b.t);
+      if (b.t === "ol" && Number.isInteger(b.start) && b.start !== 1) e.setAttribute("start", String(b.start));
+      for (const it of b.items || []) { const li = h("li"); li.append(...dsBlocks(it, depth + 1)); e.append(li); }
+      out.push(e);
+    } else if (b.t === "table") out.push(dsTable(b));
+    else if (b.t === "code") {
+      const pre = h("pre", "dscode"), code = h("code", "", b.text);
+      if (typeof b.lang === "string" && /^[A-Za-z0-9_+.#-]{1,20}$/.test(b.lang)) pre.setAttribute("data-lang", b.lang);
+      pre.append(code); out.push(pre);
+    } else if (b.t === "quote") { const e = h("blockquote"); e.append(...dsBlocks(b.c, depth + 1)); out.push(e); }
+    else if (b.t === "hr") out.push(h("hr"));
+  }
+  return out;
+}
+const DS_ALIGN = { l: "left", c: "center", r: "right" };
+function dsCells(tag, cells, align) {
+  const tr = h("tr");
+  (cells || []).forEach((c, i) => { const td = h(tag); td.append(...dsInl(c)); if (DS_ALIGN[align && align[i]]) td.style.textAlign = DS_ALIGN[align[i]]; tr.append(td); });
+  return tr;
+}
+// ops: optional per-row ops for the new rows; old: deleted rows (drawn before the first inserted row)
+function dsTable(b, ops, old) {
+  const wrap = h("div", "dstablewrap"), t = h("table"), th = h("thead"), tb = h("tbody");
+  th.append(dsCells("th", b.head, b.align));
+  const rows = (b.rows || []).map((r, i) => { const tr = dsCells("td", r, b.align); if (ops && dsOp(ops[i]) !== "eq") tr.className = "dsins"; return tr; });
+  const dels = (old || []).map((r) => { const tr = dsCells("td", r, b.align); tr.className = "dsdel"; return tr; });
+  const at = ops ? Math.max(0, (b.rows || []).findIndex((_, i) => dsOp(ops[i]) !== "eq")) : 0;
+  rows.splice(ops && rows.length ? at : rows.length, 0, ...dels);
+  tb.append(...rows); t.append(th, tb); wrap.append(t);
+  return wrap;
+}
+
+// ----- renderer: diff -----
+function dsLen(b) {
+  if (!b) return 1;
+  if (b.t === "code") return String(b.text || "").split("\n").length;
+  if (b.t === "table") return (b.rows || []).length + 1;
+  if (b.t === "ul" || b.t === "ol") return (b.items || []).length;
+  if (b.t === "quote") return (b.c || []).length;
+  return 1;
+}
+function dsWords(b, words) {
+  const e = h(b.t === "h" ? `h${Math.max(1, Math.min(6, Number(b.l) || 1))}` : "p");
+  for (const w of words) {
+    const [op, text] = Array.isArray(w) ? w : [w && w.op, w && w.text], o = dsOp(op);
+    e.append(o === "ins" ? h("ins", "", text) : o === "del" ? h("del", "", text) : dsTxt(text));
+  }
+  return e;
+}
+function dsDiffBlocks(blocks) {
+  const out = [];
+  for (const d of blocks || []) {
+    if (!d || !d.block) continue;
+    const op = dsOp(d.op), b = d.block;
+    if (op === "eq") { const w = h("div", "dseq"); w.append(...dsBlocks([b])); out.push(w); }
+    else if (op === "ins") { const w = h("div", "dsins"); w.append(...dsBlocks([b])); out.push(w); }
+    else if (op === "del") {
+      const w = h("div", "dsdel"), n = dsLen(b);
+      w.append(...dsBlocks([b]));
+      if (n > 6) {
+        w.classList.add("collapsed");
+        const btn = h("button", "ghost tiny dsshow", `show removed (${n} lines)`);
+        btn.onclick = () => { const c = w.classList.contains("collapsed"); w.classList.toggle("collapsed", !c); btn.textContent = c ? "hide removed" : `show removed (${n} lines)`; };
+        out.push(btn);
+      }
+      out.push(w);
+    } else {
+      const w = h("div", "dschg");
+      if (Array.isArray(d.words) && (b.t === "p" || b.t === "h")) w.append(dsWords(b, d.words));
+      else if (b.t === "table" && Array.isArray(d.rows)) w.append(dsTable(b, d.rows, d.old_rows));
+      else if ((b.t === "ul" || b.t === "ol") && Array.isArray(d.rows)) {
+        const e = h(b.t);
+        (b.items || []).forEach((it, i) => { const li = h("li", dsOp(d.rows[i]) !== "eq" ? "dsins" : ""); li.append(...dsBlocks(it, 1)); e.append(li); });
+        for (const it of d.old_rows || []) { const li = h("li", "dsdel"); li.append(...dsBlocks(it, 1)); e.append(li); }
+        w.append(e);
+      } else w.append(...dsBlocks([b]));
+      out.push(w);
+    }
+  }
+  return out;
+}
+function dsDiffLines(lines) {
+  const out = [], flat = [];
+  for (const x of lines || []) { if (Array.isArray(x)) flat.push(...x); else flat.push(x); }
+  for (const l of flat) {
+    if (!l || typeof l !== "object") continue;
+    const op = String(l.op || "");
+    if (op === "skip") { out.push(h("div", "dsline skip", `⋯ ${l.n || 0} unchanged lines`)); continue; }
+    const o = dsOp(op), row = h("div", `dsline ${o === "ins" ? "add" : o === "del" ? "del" : "eq"}`);
+    row.append(h("span", "dsg", l.a ?? ""), h("span", "dsg", l.b ?? ""), h("span", "dss", o === "ins" ? "+" : o === "del" ? "−" : " "), h("span", "dst", l.text ?? ""));
+    out.push(row);
+  }
+  return out;
+}
+
+// n / p: next / previous change in a diff
+function dsKey(e) {
+  if (VIEW !== "designs" || DS.mode !== "diff" || (e.key !== "n" && e.key !== "p") || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (/^(input|select|textarea)$/i.test((e.target && e.target.tagName) || "")) return;
+  const all = $("dsdoc").querySelectorAll(".dsins, .dsdel, .dschg, .dsline.add, .dsline.del");
+  const els = [...all].filter((x, i, a) => !a.some((y) => y !== x && y.contains && y.contains(x) && !/\bdsline\b/.test(x.className)));
+  if (!els.length) return;
+  if (els[DS.cur]) els[DS.cur].classList.remove("cur");
+  DS.cur = e.key === "n" ? Math.min(els.length - 1, DS.cur + 1) : Math.max(0, DS.cur - 1);
+  els[DS.cur].classList.add("cur");
+  els[DS.cur].scrollIntoView({ block: "center" });
+  e.preventDefault();
+}
+document.addEventListener("keydown", dsKey);
+
+// ----- session tie-in -----
+const dsSessDocs = (sid) => (DS.sess.get(sid) || {}).docs || [];
+async function dsLoadSess(sid) {
+  const c = DS.sess.get(sid);
+  if (DS.inflight.has(sid) || (c && Date.now() - c.t < 30000) || !ME || !ME.paired) return;
+  DS.inflight.add(sid);
+  try {
+    const r = await dsGet(`/api/designs?sid=${encodeURIComponent(sid)}`);
+    let docs = [];
+    if (r.status === 200 && r.data && Array.isArray(r.data.docs) && Array.isArray(r.data.session_docs)) {
+      const ids = new Set(r.data.session_docs);
+      docs = r.data.docs.filter((d) => ids.has(d.id) && DS_ID.test(d.id)).sort((x, y) => (y.mtime || 0) - (x.mtime || 0)).slice(0, 3);
+    }
+    DS.sess.set(sid, { t: Date.now(), docs });
+  } finally { DS.inflight.delete(sid); }
+}
+function dsLinks(sid) {
+  const head = $("amhead");
+  const draw = () => {
+    const docs = dsSessDocs(sid);
+    if (!docs.length || head.querySelector(".dslinks") || !SELECTED || SELECTED.sid !== sid) return;
+    const box = h("div", "dslinks small");
+    for (const d of docs) {
+      const a = h("a", "dslink", `Design: ${d.title || d.name}`, { href: `#designs/${d.id}` });
+      a.addEventListener("click", (e) => { e.preventDefault(); dsOpen(d.id, "work"); });
+      box.append(a);
+    }
+    head.append(box);
+  };
+  draw();
+  dsLoadSess(sid).then(() => { if (AM.sid === sid) { draw(); amRefreshTip(); } });
+}
+// clicking the designer node opens the newest design the session wrote
+function dsOpenSession() {
+  const d = dsSessDocs(AM.sid)[0];
+  if (!d) return false;
+  $("details").hidden = true; SELECTED = null; AM.sid = null;
+  dsOpen(d.id, "work");
+  return true;
+}
+function amRefreshTip() { const g = AM.nodes.get("a:designer"), n = AM.model && AM.model.nodes.find((x) => x.id === "a:designer"); if (g && n) amNode(n); }
+
+$("tab-designs").onclick = () => setView("designs");
+$("dsrefresh").onclick = () => { DS.sess.clear(); loadDesigns().then(() => { if (DS.id && !DS.unpaired) dsFetch(); }); };
+$("dsfilter").addEventListener("input", () => { DS.filter = $("dsfilter").value || ""; dsRenderList(); });
+window.addEventListener("hashchange", () => {
+  if (location.hash === dsHash() && VIEW === "designs") return;
+  if (!dsRoute(location.hash)) return;
+  if (VIEW !== "designs") setView("designs"); else { dsSync(); dsFetch(); }
+});
+// ---------- end design docs ----------
+
 loadMe();
 loadResearch();  // also keeps the tab badge current while another tab is open
 setInterval(() => { if (!document.hidden) loadResearch(); }, 30000);
 $("rsrefresh").onclick = () => loadResearch(true);
 if (location.hash === "#research/topics") RSVIEW = "topics"; else if (location.hash === "#research/activity") RSVIEW = "activity";
 setRsView(RSVIEW, true);
-setView({ "#events": "events", "#research": "research", "#research/topics": "research", "#research/activity": "research" }[location.hash] || store.get("niu.view", "agents"));
+setView(dsRoute(location.hash) ? "designs" : { "#events": "events", "#research": "research", "#research/topics": "research", "#research/activity": "research" }[location.hash] || store.get("niu.view", "agents"));

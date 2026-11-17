@@ -13,6 +13,10 @@ Usage:
                                     (the server does the same in small steps every minute; NIU_USAGE_TOKENS=0 turns that off)
   GET /api/agents?sid=ID            (read-only, unpaired) the agents, skills and niu-local tools a session can use: names, models,
                                     one-sentence descriptions; 400 for a bad sid, 404 for a session outside the window
+  GET /api/designs[?sid=ID]         (paired only) design docs (docs/design/*.md) of the workspace and linked projects: id, title, status, relative path, revision count;
+                                    with sid, also the ids of the docs that session wrote
+  GET /api/designs/doc?id=&rev=     (paired only) one doc as a JSON block tree + outline + its revision list (rev: work | git:<sha> | snap:<n>)
+  GET /api/designs/diff?id=&a=&b=   (paired only) rendered (block) and line diff between two revisions of a doc
   niu-dash pair [--name laptop]     show a one-time code to pair a browser (interactive terminal only)
   niu-dash devices                  list paired browsers
   niu-dash revoke ID|all            remove paired browsers
@@ -38,6 +42,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import niu_designs  # noqa: E402
 import niu_prs  # noqa: E402
 import niu_research  # noqa: E402
 import niu_topics  # noqa: E402
@@ -46,6 +51,8 @@ from niu_events import agent_catalog, connect, db_path, host_label  # noqa: E402
 from niu_state import SYSTEM_SESSIONS, live, mark_dirty, parse_since  # noqa: E402
 
 RE_SID = re.compile(r"[A-Za-z0-9_-]{1,80}")
+RE_DOC = re.compile(r"d[0-9a-f]{16}")
+RE_REV = re.compile(r"work|git:[0-9a-f]{40}|snap:[0-9]{1,12}")
 from niu_actions import actions  # noqa: E402
 
 WEB = Path(__file__).resolve().parents[1] / "web"
@@ -250,6 +257,87 @@ class Handler(BaseHTTPRequestHandler):
         state["actions"] = actions(state, prs_json())
         return state
 
+    def _designs(self, path):
+        # Design docs hold project internals: paired browsers only (a forged CSRF header cannot fake the cookie).
+        # The browser sends an opaque doc id; paths never leave the server (rel is relative to the workspace).
+        if not device_for(self._cookie()):
+            return self._json({"state": "not_paired", "docs": []}, 401)
+        q = parse_qs(urlparse(self.path).query)
+        arg = lambda k, d="": q.get(k, [d])[0]  # noqa: E731
+        sid = arg("sid")
+        if path == "/api/designs":
+            if sid and not RE_SID.fullmatch(sid):
+                return self._err(400, "bad sid")
+            extra, sdir = [], None
+            try:
+                lv = live(self._args()[0])
+                lv.refresh()
+                extra = sorted({s["project_dir"] for s in lv.sessions.values() if s.get("project_dir")})
+                if sid:
+                    sdir = (lv.sessions.get(sid) or {}).get("project_dir")
+            except Exception:
+                pass
+            con = None
+            try:
+                con = connect(readonly=True)
+                if sid and not sdir:
+                    row = con.execute("SELECT project_dir FROM events WHERE session_id = ? AND project_dir IS NOT NULL ORDER BY id DESC LIMIT 1", (sid,)).fetchone()
+                    sdir = row and row[0]
+                if sdir and sdir not in extra:
+                    extra.append(sdir)
+                idx = niu_designs.index(extra)
+                sdocs = niu_designs.session_docs(con, sid, sdir, idx) if sid and sdir else []
+            except Exception:
+                idx, sdocs = {}, []
+            finally:
+                if con:
+                    con.close()
+            docs = []
+            for e in idx.values():
+                try:
+                    n = len(niu_designs.revisions(e))
+                except Exception:
+                    n = 0
+                docs.append({k: e.get(k) for k in ("id", "domain", "project", "name", "title", "status", "mtime", "rel")} | {"revisions": n})
+            docs.sort(key=lambda d: d["mtime"] or 0, reverse=True)
+            return self._json({"docs": docs, "session_docs": [d for d in sdocs if d in idx]})
+        doc_id = arg("id")
+        if not RE_DOC.fullmatch(doc_id):
+            return self._err(400, "bad id")
+        revs = [("rev", arg("rev", "work"))] if path == "/api/designs/doc" else [("a", arg("a")), ("b", arg("b"))]
+        for name, r in revs:
+            if not RE_REV.fullmatch(r):
+                return self._err(400, f"bad {name}")
+        try:
+            lv = live(self._args()[0])
+            lv.refresh()
+            extra = sorted({s["project_dir"] for s in lv.sessions.values() if s.get("project_dir")})
+        except Exception:
+            extra = []
+        try:
+            idx = niu_designs.index(extra)
+            entry = idx.get(doc_id)
+        except Exception:
+            idx, entry = {}, None
+        if not entry:
+            return self._err(404, "unknown doc")
+        try:
+            known = {r["rev"]: r for r in niu_designs.revisions(entry)}
+            if any(r not in known and r != "work" for _, r in revs):
+                return self._err(404, "unknown revision")
+            texts = [niu_designs.revision_text(entry, r) for _, r in revs]
+        except Exception:
+            return self._err(404, "unavailable")
+        if any(t is None for t in texts):
+            return self._json({"error": "unavailable"}, 404)
+        if path == "/api/designs/doc":
+            blocks = niu_designs.parse(texts[0], niu_designs.link_resolver(entry, idx))
+            # text is the raw markdown for the Source toggle; the browser shows it with textContent only.
+            return self._json({"id": doc_id, "title": entry.get("title"), "status": entry.get("status"), "rel": entry.get("rel"), "rev": revs[0][1],
+                               "revisions": list(known.values()), "blocks": blocks, "outline": niu_designs.outline(blocks), "text": texts[0]})
+        d = niu_designs.diff(texts[0], texts[1])
+        self._json({"id": doc_id, "a": revs[0][1], "b": revs[1][1], "stats": d.get("stats"), "lines": d.get("lines"), "blocks": d.get("blocks")})
+
     # routes
     def do_GET(self):
         path = urlparse(self.path).path
@@ -283,6 +371,8 @@ class Handler(BaseHTTPRequestHandler):
             if not device_for(self._cookie()):
                 return self._json({"state": "not_paired", "message": niu_topics.MESSAGES["not_paired"], "topics": []}, 401)
             self._json(niu_topics.list_topics())
+        elif path in ("/api/designs", "/api/designs/doc", "/api/designs/diff"):
+            self._designs(path)
         elif path == "/api/usage/history":
             # Aggregate percentages only, read-only, cached 60 s; `days` is clamped to 7-70 (anything else gives 35).
             days = parse_qs(urlparse(self.path).query).get("days", [None])[0]

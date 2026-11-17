@@ -137,6 +137,47 @@ old="$(python3 -c "import sqlite3,sys;print(sqlite3.connect(sys.argv[1]).execute
 [[ "$old" == "0" ]] && ok || bad "8-day-old event not pruned"
 [[ "$(stat -c %a "$NIU_EVENTS_DB")" == "600" ]] && ok || bad "db mode is not 600"
 
+# Design doc draft snapshots: PostToolUse Write/Edit/MultiEdit of docs/design/*.md only
+nsnap() { python3 -c "import sqlite3,sys;print(sqlite3.connect(sys.argv[1]).execute('select count(*) from design_snapshots').fetchone()[0])" "$NIU_EVENTS_DB"; }
+mkdir -p "$FIX/docs/design" && printf '# Draft\n\nv1\n' >"$FIX/docs/design/a.md"
+SID=sess-5555
+ev PostToolUse "" "" Bash '{"command":"cat docs/design/a.md"}'
+ev PostToolUse "" "" Read "{\"file_path\":\"$FIX/docs/design/a.md\"}"
+ev PreToolUse "" "" Write "{\"file_path\":\"$FIX/docs/design/a.md\"}"
+[[ "$(nsnap)" == "0" ]] && ok || bad "snapshot taken for Bash/Read/PreToolUse: $(nsnap)"
+ev PostToolUse "" "" Write "{\"file_path\":\"$FIX/docs/design/a.md\"}"
+[[ "$(nsnap)" == "1" ]] && ok || bad "Write of a design doc should store 1 snapshot, got $(nsnap)"
+ev PostToolUse "" "" Edit "{\"file_path\":\"$FIX/docs/design/a.md\"}"
+[[ "$(nsnap)" == "1" ]] && ok || bad "identical content stored twice"
+printf '# Draft\n\nv2\n' >"$FIX/docs/design/a.md"
+ev PostToolUse a1 designer MultiEdit "{\"file_path\":\"$FIX/docs/design/a.md\"}"
+[[ "$(nsnap)" == "2" ]] && ok || bad "changed content should add a snapshot, got $(nsnap)"
+row="$(python3 -c "import sqlite3,sys;print(sqlite3.connect(sys.argv[1]).execute('select rel,agent_type,tool,session_id from design_snapshots order by id desc limit 1').fetchone())" "$NIU_EVENTS_DB")"
+has "$row" "HOBBY/.niu-test-fixture/voxel-mod/docs/design/a.md"
+has "$row" "designer"
+has "$row" "MultiEdit"
+has "$row" "sess-5555"
+printf 'x\n' >"$FIX/docs/design/notes.txt"; mkdir -p "$FIX/docs/design/sub"; printf 'x\n' >"$FIX/docs/design/sub/b.md"
+ev PostToolUse "" "" Write "{\"file_path\":\"$FIX/docs/design/notes.txt\"}"
+ev PostToolUse "" "" Write "{\"file_path\":\"$FIX/docs/design/sub/b.md\"}"
+ev PostToolUse "" "" Write '{"file_path":"/etc/hostname"}'
+ev PostToolUse "" "" Write '{"file_path":123}'
+ev PostToolUse "" "" Write '{}'
+[[ "$(nsnap)" == "2" ]] && ok || bad "non-design paths must not be snapshotted, got $(nsnap)"
+NIU_DESIGN_SNAPSHOT_DAYS=0 ev PostToolUse "" "" Write "{\"file_path\":\"$FIX/docs/design/a.md\"}"
+printf '# Draft\n\nv3\n' >"$FIX/docs/design/a.md"
+NIU_DESIGN_SNAPSHOT_DAYS=0 ev PostToolUse "" "" Write "{\"file_path\":\"$FIX/docs/design/a.md\"}"
+[[ "$(nsnap)" == "2" ]] && ok || bad "NIU_DESIGN_SNAPSHOT_DAYS=0 should disable capture, got $(nsnap)"
+# a broken snapshot never fails the hook, and the event itself is still recorded
+mkfifo "$FIX/docs/design/pipe.md"
+jq -nc --arg c "$FIX/src" --arg f "$FIX/docs/design/pipe.md" '{hook_event_name:"PostToolUse",session_id:"sess-5555",cwd:$c,tool_name:"Write",tool_input:{file_path:$f}}' | timeout 10 "$SH/hooks/agent-events.py" && ok || bad "FIFO design doc broke the hook"
+[[ "$(nsnap)" == "2" ]] && ok || bad "FIFO was snapshotted"
+# 100 non-design events do no snapshot work
+t0=$(date +%s%N)
+for _ in $(seq 100); do ev PostToolUse "" "" Edit "{\"file_path\":\"$FIX/src/x.py\"}"; done
+[[ "$(nsnap)" == "2" ]] && ok || bad "non-design Edits snapshotted"
+echo "  (100 non-design events: $(( ($(date +%s%N) - t0) / 1000000 )) ms)"
+
 # Malformed input never fails
 echo 'not json' | "$SH/hooks/agent-events.py" && ok || bad "malformed input exit code"
 
