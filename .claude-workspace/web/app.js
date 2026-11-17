@@ -2566,7 +2566,7 @@ function rsRun(run, title, live) {
   for (const a of run.agents || []) {
     const row = h("tr"), fb = a.filtered_by;
     const filt = h("td", "", a.items_filtered ?? "–");
-    if (fb) filt.setAttribute("data-tip", `Filtered items\nduplicate: ${fb.duplicate ?? 0}\nexcluded: ${fb.excluded ?? 0}\nno update: ${fb.no_update ?? 0}`);
+    if (fb) filt.setAttribute("data-tip", `Filtered items\nduplicate: ${fb.duplicate ?? 0}\nexcluded: ${fb.excluded ?? 0}\nno update: ${fb.no_update ?? 0}\nbelow threshold: ${fb.below_threshold ?? 0}`);
     row.append(h("td", "", a.agent_type), h("td", "", RS_STATUS[a.status] || a.status),
       h("td", "", [a.research_model, a.structure_model].filter(Boolean).map(shortModel).join(" / ") || "–"), h("td", "", hm(a.started_at)),
       h("td", "", a.duration_s != null ? dur(a.duration_s) : "–"), h("td", "", `${a.num_turns ?? "–"}/${a.max_turns ?? "–"}`),

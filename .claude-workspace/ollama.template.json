@@ -1,7 +1,7 @@
 {
   "endpoints": {
     "remote": {
-      "url": "http://192.168.23.11:11434",
+      "url": "http://ollama-gpu.invalid:11434",
       "url_env": "OLLAMA_REMOTE_BASE_URL",
       "label": "GPU",
       "priority": 1,
