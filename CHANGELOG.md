@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.27.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.26.0...niu-heimar-v0.27.0) (2026-11-17)
+
+
+### Features
+
+* **dashboard:** Designs tab with rendered design docs, revisions and diff ([#92](https://github.com/kaiserdrake/niu-heimar/issues/92)) ([b8ef2e3](https://github.com/kaiserdrake/niu-heimar/commit/b8ef2e3dad2b531cbc1b7760bdf7f845c54e0ca5))
+* **proposals:** Claude design proposals live in .claude-proposals/, not docs/design/ ([#96](https://github.com/kaiserdrake/niu-heimar/issues/96)) ([9ce2c6e](https://github.com/kaiserdrake/niu-heimar/commit/9ce2c6e4c12b2ded57f06a16b3adf8f37b8aa68a))
+
 ## [0.26.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.25.0...niu-heimar-v0.26.0) (2026-11-13)
 
 
