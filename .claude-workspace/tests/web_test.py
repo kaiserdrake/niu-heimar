@@ -70,7 +70,59 @@ ev("PreToolUse", tool_name="Agent", tool_input={"subagent_type": "test-reviewer"
 ev("SubagentStart", agent_id="ag1", agent_type="security-reviewer")
 ev("SubagentStart", agent_id="ag2", agent_type="test-reviewer")
 ev("PreToolUse", agent_id="ag2", agent_type="test-reviewer", tool_name="Bash", tool_input={"command": "pytest -q"}, tool_use_id="t4")
+ev("PreToolUse", tool_name="Write", tool_input={"file_path": f"{CWD}/docs/design/t.md"}, tool_use_id="t6")
 ev("PreToolUse", tool_name="SendMessage", tool_input={"to": "deploy-bot", "message": "hi"}, tool_use_id="t5")
+
+# Design docs fixture: a linked project (settings.local.json) with one readable and one protected doc
+DD = Path(CWD) / "docs" / "design"
+DD.mkdir(parents=True, exist_ok=True)
+(Path(CWD) / ".claude").mkdir(exist_ok=True)
+(Path(CWD) / ".claude" / "settings.local.json").write_text("{}")
+(Path(CWD) / ".claude" / "protected-paths").write_text("docs/design/secret.md\n")
+(DD / "t.md").write_text("# Test design\nStatus: proposed\n\nHello **world**.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n")
+(DD / "secret.md").write_text("# Secret\n\nnot for the browser\n")
+# lib/niu_designs.py is written in parallel; when it is missing, serve a minimal stand-in so the routes can still be tested.
+if not (SH / "lib" / "niu_designs.py").exists():
+    (tmp / "stubs").mkdir()
+    (tmp / "stubs" / "niu_designs.py").write_text(r'''
+import hashlib, os, sqlite3
+from pathlib import Path
+def index(extra_dirs=(), base=None):
+    out = {}
+    for d in extra_dirs:
+        for f in sorted((Path(d) / "docs" / "design").glob("*.md")):
+            if f.name == "secret.md":
+                continue
+            rel = str(f.relative_to(base or os.environ["NIU_STUB_WS"]))
+            i = "d" + hashlib.sha256(rel.encode()).hexdigest()[:16]
+            out[i] = {"id": i, "domain": "PERSONAL", "project": "app", "name": f.name, "title": "Test design", "status": "proposed", "mtime": f.stat().st_mtime, "rel": rel, "project_dir": str(d), "path": str(f)}
+    return out
+def _snaps(e):
+    con = sqlite3.connect(os.environ["NIU_EVENTS_DB"])
+    try:
+        return con.execute("SELECT id, ts, content FROM design_snapshots WHERE rel = ?", (e["rel"],)).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        con.close()
+def revisions(e):
+    return [{"rev": "work", "ts": 2, "label": "Working copy", "kind": "work", "also": []}] + [{"rev": f"snap:{i}", "ts": t, "label": "Draft", "kind": "snap", "also": []} for i, t, _ in _snaps(e)]
+def revision_text(e, rev):
+    if rev == "work":
+        return Path(e["path"]).read_text()
+    return next((c for i, _, c in _snaps(e) if f"snap:{i}" == rev), None)
+def parse(t):
+    return [{"t": "p", "c": [ln]} for ln in t.splitlines() if ln]
+def outline(b):
+    return []
+def diff(a, b):
+    return {"stats": {"added": 1, "removed": 1, "sections": []}, "lines": [], "blocks": []}
+def session_docs(con, sid, project_dir, idx):
+    rows = con.execute("SELECT summary FROM events WHERE session_id = ? AND summary LIKE '%docs/design/%.md'", (sid,)).fetchall()
+    return [i for i, e in idx.items() if any(r[0].endswith(e["rel"].split("/docs/")[-1]) or r[0].endswith("docs/design/" + e["name"]) for r in rows)]
+''')
+    env["PYTHONPATH"] = str(tmp / "stubs")
+    env["NIU_STUB_WS"] = str(WS)
 
 port = (lambda s: (s.bind(("127.0.0.1", 0)), s.getsockname()[1], s.close())[1])(socket.socket())
 srv = subprocess.Popen([str(SH / "bin" / "niu-dash"), "serve", "--port", str(port)], env=env,
@@ -254,6 +306,57 @@ try:
     check(tok.split("=", 1)[1] not in json.dumps(store), "only token hash stored")
     check(oct((tmp / "state" / "web-sessions.json").stat().st_mode)[-3:] == "600", "credential file mode 600")
     check(req("GET", "/api/me", headers={"Cookie": tok})[2]["paired"] is True, "/api/me paired")
+
+    # Design docs: every route is paired only; ids and revisions are validated; no absolute paths leave the server
+    for p in ("/api/designs", "/api/designs/doc?id=d0123456789abcdef", "/api/designs/diff?id=d0123456789abcdef&a=work&b=work"):
+        check(req("GET", p)[0] == 401, f"{p} without a cookie -> 401")
+        check(req("GET", p, headers=POSTH)[0] == 401, f"{p} with forged CSRF/origin headers but no cookie -> 401")
+    st, _, js, _ = req("GET", "/api/designs")
+    check(js and js.get("state") == "not_paired" and js.get("docs") == [], "unpaired list says not_paired and carries no docs")
+    ck = {"Cookie": tok}
+    con = sqlite3.connect(env["NIU_EVENTS_DB"])
+    con.execute("CREATE TABLE IF NOT EXISTS design_snapshots (id INTEGER PRIMARY KEY, ts REAL NOT NULL, rel TEXT NOT NULL, sha TEXT NOT NULL,"
+                " session_id TEXT, agent_type TEXT, tool TEXT, content TEXT NOT NULL)")
+    rel = str((DD / "t.md").relative_to(WS))
+    con.execute("INSERT INTO design_snapshots (ts, rel, sha, session_id, agent_type, tool, content) VALUES (?,?,?,?,?,?,?)",
+                (time.time() - 60, rel, "x" * 8, "sess-web1", "designer", "Write", "# Test design\nStatus: proposed\n\nHello.\n"))
+    con.commit()
+    con.close()
+    st, hd, js, rawd = req("GET", "/api/designs", headers=ck)
+    mine = [d for d in (js or {}).get("docs", []) if d["name"] == "t.md"]
+    check(st == 200 and len(mine) == 1, f"paired list has t.md: {st}")
+    check(all(d["name"] != "secret.md" for d in (js or {}).get("docs", [])), "protected doc is not listed")
+    check(mine and set(("id", "title", "status", "rel", "revisions")) <= set(mine[0]) and "project_dir" not in mine[0], "list entry shape, no project_dir")
+    did = mine[0]["id"] if mine else "d0000000000000000"
+    check(str(WS).encode() not in rawd and b"/home/" not in rawd, "list has no absolute path")
+    check("default-src 'self'" in hd.get("Content-Security-Policy", ""), "CSP unchanged on /api/designs")
+    st, _, js, _ = req("GET", "/api/designs?sid=sess-web1", headers=ck)
+    check(st == 200 and did in js.get("session_docs", []), f"session_docs lists the doc the session wrote: {js and js.get('session_docs')}")
+    st, _, js, _ = req("GET", "/api/designs?sid=nope-9", headers=ck)
+    check(st == 200 and js.get("session_docs") == [], "unknown sid -> empty session_docs")
+    check(req("GET", "/api/designs?sid=../x", headers=ck)[0] == 400, "bad sid -> 400")
+    st, _, js, rawd = req("GET", f"/api/designs/doc?id={did}", headers=ck)
+    check(st == 200 and js["rev"] == "work" and js["blocks"] and "outline" in js and js["revisions"], f"doc defaults to the working copy: {st}")
+    check(str(WS).encode() not in rawd and b"/home/" not in rawd and b"project_dir" not in rawd, "doc has no absolute path")
+    snap = next((r["rev"] for r in (js or {}).get("revisions", []) if r["rev"].startswith("snap:")), None)
+    check(snap is not None, "draft snapshot appears in the revision list")
+    check(req("GET", f"/api/designs/doc?id={did}&rev={snap}", headers=ck)[0] == 200, "doc at a snapshot revision")
+    for bad in ("../x", "D0123456789abcdef", "d123", "", "d0123456789abcdef/../x"):
+        check(req("GET", f"/api/designs/doc?id={bad}", headers=ck)[0] == 400, f"bad id {bad!r} -> 400")
+    check(req("GET", "/api/designs/doc", headers=ck)[0] == 400, "missing id -> 400")
+    for bad in ("git:zzz", "snap:x", "../work", "git:" + "A" * 40, "WORK"):
+        check(req("GET", f"/api/designs/doc?id={did}&rev={bad}", headers=ck)[0] == 400, f"bad rev {bad!r} -> 400")
+    check(req("GET", "/api/designs/doc?id=d0000000000000000", headers=ck)[0] == 404, "unknown id -> 404")
+    check(req("GET", f"/api/designs/doc?id={did}&rev=snap:999999", headers=ck)[0] == 404, "unknown snapshot -> 404")
+    check(req("GET", f"/api/designs/doc?id={did}&rev=git:{'a' * 40}", headers=ck)[0] == 404, "git rev not in the list -> 404")
+    st, _, js, rawd = req("GET", f"/api/designs/diff?id={did}&a={snap}&b=work", headers=ck)
+    check(st == 200 and "stats" in js and "lines" in js and "blocks" in js and js["a"] == snap and js["b"] == "work", f"diff snapshot..work: {st}")
+    check(str(WS).encode() not in rawd and b"/home/" not in rawd, "diff has no absolute path")
+    check(req("GET", f"/api/designs/diff?id={did}&a=work", headers=ck)[0] == 400, "diff without b -> 400")
+    check(req("GET", f"/api/designs/diff?id={did}&a=work&b=nope", headers=ck)[0] == 400, "diff bad rev -> 400")
+    check(req("GET", f"/api/designs/diff?id=zz&a=work&b=work", headers=ck)[0] == 400, "diff bad id -> 400")
+    check(req("GET", f"/api/designs/diff?id=d0000000000000000&a=work&b=work", headers=ck)[0] == 404, "diff unknown id -> 404")
+    check(req("GET", f"/api/designs/diff?id={did}&a=work&b=snap:999999", headers=ck)[0] == 404, "diff unknown rev -> 404")
 
     # Topics through a fake valkyrie-dispatch: a paired browser can list and create; CSP is unchanged
     import threading  # noqa: E401

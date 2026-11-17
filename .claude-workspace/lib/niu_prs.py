@@ -13,6 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from niu_designs import linked_projects
 from niu_events import WS, db_path
 
 GH_FIELDS = "number,title,author,headRefName,url,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,updatedAt,files,isCrossRepository"
@@ -41,14 +42,10 @@ def discover():
     ws_repo = _git_origin(WS)
     if ws_repo:
         found[ws_repo] = "(workspace)"
-    for d in sorted(p for p in WS.iterdir() if p.is_dir() and not p.name.startswith(".")):
-        for link in d.glob("**/.claude/settings.local.json"):
-            if "node_modules" in link.parts or len(link.relative_to(d).parts) > 7:
-                continue
-            proj = link.parent.parent
-            repo = _git_origin(proj)
-            if repo and repo not in found:
-                found[repo] = f"{d.name}/{proj.relative_to(d)}"
+    for domain, rel, proj in linked_projects(WS):
+        repo = _git_origin(proj)
+        if repo and repo not in found:
+            found[repo] = f"{domain}/{rel}"
     return [(label, repo) for repo, label in found.items()]
 
 

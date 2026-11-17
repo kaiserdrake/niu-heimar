@@ -139,6 +139,16 @@ def main():
         if event == "SessionStart":
             days = float(os.environ.get("NIU_EVENTS_RETENTION_DAYS", "7"))
             con.execute("DELETE FROM events WHERE ts < ?", (time.time() - days * 86400,))
+    if event == "PostToolUse" and tool in ("Write", "Edit", "MultiEdit"):
+        try:  # draft snapshot of a design doc; never fails the hook
+            from niu_events import snapshot_design
+            ti = data.get("tool_input")
+            fp = ti.get("file_path") if isinstance(ti, dict) else None
+            if isinstance(fp, str) and "docs/design/" in fp.replace("\\", "/"):
+                snapshot_design(con, fp, project_dir, data.get("session_id"), data.get("agent_type"), tool)
+        except Exception as e:
+            if os.environ.get("NIU_EVENTS_DEBUG"):
+                print(f"agent-events: snapshot: {e}", file=sys.stderr)
     con.close()
 
 

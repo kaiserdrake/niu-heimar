@@ -319,6 +319,14 @@ To revoke at once, remove the `niu-dash-topics` entry from `API_TOKENS` and rest
 
 Service: `systemctl --user status|restart|stop niu-dash`. Logs: `journalctl --user -u niu-dash`.
 
+### Designs tab
+The **Designs** tab lists the `docs/design/*.md` files of `.claude-workspace/` and of linked projects, and renders the
+selected doc as markdown with a heading outline and a **Rendered | Source** toggle. Only a paired browser can read docs.
+Each doc's revisions are its git commits, the uncommitted working copy, and draft snapshots that the `agent-events` hook
+saves on every Write or Edit of a design doc (kept 30 days, newest 40 per doc; `NIU_DESIGN_SNAPSHOT_DAYS=0` turns capture
+off). Edits made through Bash are not captured. **Compare** shows two revisions as a rendered or line diff. A session's
+details list "Design: \<title\>" links to the docs it wrote, and clicking the designer node opens its newest doc.
+
 ## Discord notifications
 `niu-notify` is a small background service that posts to your own Discord server when something changes, so you hear about
 it even when you can't reach the dashboard. It is **outbound only**: Discord webhooks, no bot, and no commands are accepted
