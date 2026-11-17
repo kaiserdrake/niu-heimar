@@ -182,8 +182,9 @@ check(len(many) == 5001 and many[-1]["c"] == ["… (truncated)"], f"block cap: {
 rows = nd.parse("| a |\n|---|\n" + "\n".join("| x |" for _ in range(300)))
 check(len(rows[0]["rows"]) == 200 and rows[-1]["c"] == ["… (truncated)"], "table row cap")
 check(nd.parse("a | b\n---") == [{"t": "p", "c": ["a | b"]}, {"t": "hr"}], f"malformed table -> paragraph: {nd.parse('a | b' + chr(10) + '---')}")
-# golden pass over the real docs
-real = sorted((SH / "docs" / "design").glob("*.md")) + sorted((SH.parent / ".claude-proposals").glob("*.md"))
+# golden pass over the real docs, plus a committed sample so CI (where no proposals may be committed) still checks one
+real = sorted((SH / "tests" / "fixtures" / "designs").glob("*.md")) + sorted((SH / "docs" / "design").glob("*.md")) \
+    + sorted((SH.parent / ".claude-proposals").glob("*.md"))
 check(len(real) > 0, "real docs found")
 for f in real:
     txt = f.read_text()
