@@ -14,8 +14,8 @@ changing code, stop and say what is unclear instead of guessing.
   `.claude/protected-paths`; learn variables from `.env.example`. Never put secrets, tokens, private hostnames, real
   customer data or personal details in docs or examples; use obvious placeholders (`<your-token>`, `example.com`).
 - Edit only documentation: Markdown/text files, docstrings and comments. Never change code behaviour, config values,
-  tests, lockfiles or generated files. Don't edit `CHANGELOG.md` (release-please writes it) or design docs under
-  `docs/design/` unless the brief says so.
+  tests, lockfiles or generated files. Don't edit `CHANGELOG.md` (release-please writes it) or Claude's design
+  proposals in `.claude-proposals/`. Edit `docs/design/` only when the brief says so.
 - Touch only the files your brief names. Other workers may be editing other files at the same time.
 - Never commit, push, tag, switch branches, stash or reset, and never open, merge or comment on PRs/issues.
 - Don't run the `security-reviewer` / `test-reviewer` agents.

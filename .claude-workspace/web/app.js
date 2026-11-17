@@ -3433,6 +3433,7 @@ const DS = { docs: [], loaded: false, unpaired: false, err: "", filter: "", id: 
   mode: "doc", a: null, b: null, diff: null, dview: "rendered", source: false, sess: new Map(), inflight: new Set(), seq: 0,
   fetched: 0, lastLive: 0, upd: "", cur: -1, anchors: new Map() };
 const DS_ID = /^d[0-9a-f]{16}$/, DS_REV = /^(work|git:[0-9a-f]{40}|snap:[0-9]{1,12})$/, DS_FRAG = /^[A-Za-z0-9_-]{1,80}$/;
+// Folder name mirrors niu_events.PROPOSALS_DIR
 const DS_WRITE = new Set(["Write", "Edit", "MultiEdit"]);
 
 async function dsGet(url) {
@@ -3466,7 +3467,7 @@ function dsHint() {
   const b = h("button", "primary tiny", "Open menu");
   b.onclick = () => toggleMenu(true);
   const box = h("div", "empty dshint");
-  box.append(h("span", "", "Pair this browser to read design docs (menu → This browser). "), b);
+  box.append(h("span", "", "Pair this browser to read proposals (menu → This browser). "), b);
   return box;
 }
 
@@ -3474,7 +3475,7 @@ async function loadDesigns() {
   const r = await dsGet("/api/designs");
   if (r.status === 401) { DS.unpaired = true; DS.docs = []; }
   else if (r.data && Array.isArray(r.data.docs)) { DS.unpaired = false; DS.docs = r.data.docs; DS.loaded = true; DS.err = ""; }
-  else DS.err = "Couldn't load the design docs.";
+  else DS.err = "Couldn't load the proposals.";
   dsRenderList();
   dsRenderDoc();
 }
@@ -3533,7 +3534,7 @@ function dsLive() {
   const now = Date.now();
   if (now - DS.lastLive < 5000) return;
   const name = String(DS.doc.rel || "").split("/").pop();
-  const hit = (STATE.feed || []).some((e) => e.ts > DS.fetched && DS_WRITE.has(e.tool) && /(^|\/)docs\/design\/[^/]+\.md$/.test(e.summary || "") && String(e.summary).endsWith(name));
+  const hit = (STATE.feed || []).some((e) => e.ts > DS.fetched && DS_WRITE.has(e.tool) && /(^|\/)\.claude-proposals\/[^/]+\.md$/.test(e.summary || "") && String(e.summary).endsWith(name));
   if (hit) { DS.lastLive = now; dsFetch(true); }
 }
 
@@ -3545,7 +3546,7 @@ function dsRenderList() {
   if (!DS.loaded) { box.replaceChildren(h("div", "empty", "Loading…")); return; }
   const f = DS.filter.trim().toLowerCase();
   const docs = DS.docs.filter((d) => !f || `${d.title || ""} ${d.name || ""}`.toLowerCase().includes(f)).sort((x, y) => (y.mtime || 0) - (x.mtime || 0));
-  if (!docs.length) { box.replaceChildren(h("div", "empty", DS.docs.length ? "No design docs match." : "No design docs found.")); return; }
+  if (!docs.length) { box.replaceChildren(h("div", "empty", DS.docs.length ? "No proposals match." : "No proposals found.")); return; }
   const groups = new Map();
   for (const d of docs) { const k = `${dl(d.domain)} / ${d.project || ""}`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(d); }
   const out = [];
@@ -3588,7 +3589,7 @@ function dsRenderDoc() {
   $("dsupd").textContent = DS.upd;
   ol.replaceChildren();
   if (DS.unpaired) { box.replaceChildren(dsHint()); return; }
-  if (!DS.id) { box.replaceChildren(h("div", "empty", "Select a design doc from the list.")); return; }
+  if (!DS.id) { box.replaceChildren(h("div", "empty", "Select a proposal from the list.")); return; }
   if (DS.gone) { box.replaceChildren(h("div", "empty", "This doc is no longer available.")); return; }
   if (DS.err) { box.replaceChildren(h("div", "empty", DS.err)); return; }
   const doc = DS.doc;
@@ -3828,7 +3829,7 @@ function dsLinks(sid) {
     if (!docs.length || head.querySelector(".dslinks") || !SELECTED || SELECTED.sid !== sid) return;
     const box = h("div", "dslinks small");
     for (const d of docs) {
-      const a = h("a", "dslink", `Design: ${d.title || d.name}`, { href: `#designs/${d.id}` });
+      const a = h("a", "dslink", `Proposal: ${d.title || d.name}`, { href: `#designs/${d.id}` });
       a.addEventListener("click", (e) => { e.preventDefault(); dsOpen(d.id, "work"); });
       box.append(a);
     }

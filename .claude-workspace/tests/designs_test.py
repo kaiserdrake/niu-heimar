@@ -40,16 +40,19 @@ protected = set()
 nd.guard_allows = lambda path, cwd: Path(path).name not in protected
 
 DOC = "# Title one\nStatus: proposed · Date: 2026-11-17\n\nIntro text.\n"
-sdd = WS / ".claude-workspace" / "docs" / "design"
+sdd = WS / ".claude-proposals"
 write(sdd / "s.md", DOC)
 app = WS / "PERSONAL" / "app"
 write(app / ".claude" / "settings.local.json", "{}")
-dd = app / "docs" / "design"
+dd = app / ".claude-proposals"
 write(dd / "t.md", "# Real doc\nStatus: approved\n\nBody.\n")
 write(dd / "secret.md", "# Secret\n")
 protected.add("secret.md")
 write(dd / ".env.md", "x")
 write(dd / "notes.txt", "x")
+write(app / "docs" / "design" / "legacy.md", "# legacy human doc\n")
+write(app / ".claude" / "proposals" / "dotclaude.md", "# dotclaude\n")
+write(WS / ".claude-workspace" / "docs" / "design" / "wslegacy.md", "# ws legacy\n")
 write(dd / "sub" / "dir" / "x.md", "x")
 write(dd / "big.md", "# big\n" + "x" * (600 * 1024))
 os.mkfifo(dd / "pipe.md")
@@ -57,24 +60,24 @@ os.symlink("/etc/passwd", dd / "link-passwd.md")
 write(app / "secret-outside.md", "# outside\n")
 os.symlink("../../secret-outside.md", dd / "link-out.md")
 os.symlink("t.md", dd / "alias.md")
-write(WS / "PERSONAL" / "other" / "docs" / "design" / "unlinked.md", "# unlinked\n")  # no settings.local.json
+write(WS / "PERSONAL" / "other" / ".claude-proposals" / "unlinked.md", "# unlinked\n")  # no settings.local.json
 extra = WS / "HOBBY" / "game"
-write(extra / "docs" / "design" / "g.md", "# Game\n")
+write(extra / ".claude-proposals" / "g.md", "# Game\n")
 os.makedirs(WS / "PERSONAL" / "app" / "node_modules" / "p" / ".claude", exist_ok=True)
 
 # ---------- index ----------
 idx = nd.index(force=True)
 names = {e["name"] for e in idx.values()}
 check({"s.md", "t.md"} <= names, f"finds shared and linked docs: {names}")
-for bad in ("secret.md", ".env.md", "notes.txt", "x.md", "big.md", "pipe.md", "link-passwd.md", "link-out.md", "unlinked.md", "g.md"):
+for bad in ("legacy.md", "dotclaude.md", "wslegacy.md", "secret.md", ".env.md", "notes.txt", "x.md", "big.md", "pipe.md", "link-passwd.md", "link-out.md", "unlinked.md", "g.md"):
     check(bad not in names, f"index skips {bad}")
 check("alias.md" in names, "symlink to a sibling in the same dir is kept")
 e_t = next(e for e in idx.values() if e["name"] == "t.md")
 check(e_t["title"] == "Real doc" and e_t["status"] == "approved" and e_t["domain"] == "PERSONAL" and e_t["project"] == "app", f"title/status/domain: {e_t}")
 e_s = next(e for e in idx.values() if e["name"] == "s.md")
-check(e_s["domain"] == "(workspace)" and e_s["status"] == "proposed" and e_s["rel"] == ".claude-workspace/docs/design/s.md", f"workspace doc: {e_s}")
-check(e_t["rel"] == "PERSONAL/app/docs/design/t.md", f"rel is relative to the workspace: {e_t['rel']}")
-check(e_t["id"] == nd.doc_id(e_t["rel"]) == nd.doc_id("PERSONAL/app/docs/design/t.md") and nd.RE_DOC.fullmatch(e_t["id"]), "doc_id stable")
+check(e_s["domain"] == "(workspace)" and e_s["status"] == "proposed" and e_s["rel"] == ".claude-proposals/s.md", f"workspace doc: {e_s}")
+check(e_t["rel"] == "PERSONAL/app/.claude-proposals/t.md", f"rel is relative to the workspace: {e_t['rel']}")
+check(e_t["id"] == nd.doc_id(e_t["rel"]) == nd.doc_id("PERSONAL/app/.claude-proposals/t.md") and nd.RE_DOC.fullmatch(e_t["id"]), "doc_id stable")
 public = [{k: v for k, v in e.items() if k != "project_dir"} for e in idx.values()]
 check(str(tmp) not in json.dumps(public), "no absolute path in public fields")
 idx2 = nd.index([str(extra)], force=True)
@@ -180,7 +183,7 @@ rows = nd.parse("| a |\n|---|\n" + "\n".join("| x |" for _ in range(300)))
 check(len(rows[0]["rows"]) == 200 and rows[-1]["c"] == ["… (truncated)"], "table row cap")
 check(nd.parse("a | b\n---") == [{"t": "p", "c": ["a | b"]}, {"t": "hr"}], f"malformed table -> paragraph: {nd.parse('a | b' + chr(10) + '---')}")
 # golden pass over the real docs
-real = sorted((SH / "docs" / "design").glob("*.md"))
+real = sorted((SH / "docs" / "design").glob("*.md")) + sorted((SH.parent / ".claude-proposals").glob("*.md"))
 check(len(real) > 0, "real docs found")
 for f in real:
     txt = f.read_text()
@@ -226,7 +229,7 @@ d1 = "# R\n\nfirst version.\n"
 d2 = "# R\n\nsecond version.\n"
 rv = dd / "rev.md"
 write(rv, d1)
-git(app, "add", "docs/design/rev.md")
+git(app, "add", ".claude-proposals/rev.md")
 git(app, "commit", "-q", "-m", "first subject")
 write(rv, d2)
 git(app, "commit", "-q", "-am", "second subject with token=abcdefghijklmnopqrstuvwxyz0123456789")
@@ -256,23 +259,43 @@ check(nd.revision_text(er, gsha) == d1, "git text")
 check(nd.revision_text(er, "git:" + "0" * 40) is None, "unknown sha -> None")
 snap = next(r["rev"] for r in revs if r["kind"] == "snap")
 check(nd.revision_text(er, snap, con).strip().endswith("snap only."), "snap text")
-other = con.execute("INSERT INTO design_snapshots(ts,rel,sha,tool,content) VALUES(?,?,?,?,?)", (t, "PERSONAL/app/docs/design/other.md", "z", "Write", "secret")).lastrowid
+other = con.execute("INSERT INTO design_snapshots(ts,rel,sha,tool,content) VALUES(?,?,?,?,?)", (t, "PERSONAL/app/.claude-proposals/other.md", "z", "Write", "secret")).lastrowid
 con.commit()
 check(nd.revision_text(er, f"snap:{other}", con) is None, "snapshot of another doc is refused")
 for badrev in ("../x", "git:zzz", "snap:", "WORK", "git:" + "A" * 40, "snap:1;drop", ""):
     check(nd.revision_text(er, badrev, con) is None, f"bad token {badrev!r}")
 # rename followed
-git(app, "mv", "docs/design/rev.md", "docs/design/renamed.md")
+git(app, "mv", ".claude-proposals/rev.md", ".claude-proposals/renamed.md")
 git(app, "commit", "-q", "-m", "rename")
 idx = nd.index(force=True)
 nd._REV_CACHE.clear()
 en = next(e for e in idx.values() if e["name"] == "renamed.md")
 rn = nd.revisions(en, con)
 check(any("first subject" in r["label"] for r in rn), f"--follow shows pre-rename history: {[r['label'] for r in rn]}")
+# git history follows a legacy docs/design -> .claude-proposals move
+write(app / "docs" / "design" / "mv.md", "# M\n\nold home.\n")
+git(app, "add", "docs/design/mv.md")
+git(app, "commit", "-q", "-m", "legacy home")
+git(app, "mv", "docs/design/mv.md", ".claude-proposals/mv.md")
+git(app, "commit", "-q", "-m", "move to proposals")
+idx = nd.index(force=True)
+nd._REV_CACHE.clear()
+emv = next(e for e in idx.values() if e["name"] == "mv.md")
+check(any("legacy home" in x for r in nd.revisions(emv, con) for x in [r["label"]] + r["also"]), "history follows a move from docs/design")
+# symlinked .claude-proposals is rejected
+symp = WS / "PERSONAL" / "symp"
+write(symp / ".claude" / "settings.local.json", "{}")
+write(tmp / "elsewhere" / "z.md", "# Z\n")
+os.symlink(tmp / "elsewhere", symp / ".claude-proposals")
+check(not any(e["project"] == "symp" for e in nd.index(force=True).values()), "symlinked .claude-proposals rejected")
+# a feed summary under docs/design is not a session doc
+con.execute("INSERT INTO events(ts,event,session_id,tool,summary,project_dir) VALUES(?,?,?,?,?,?)", (time.time(), "PostToolUse", "sess-legacy", "Write", "docs/design/t.md", str(app)))
+con.commit()
+check(nd.session_docs(con, "sess-legacy", str(app), idx) == [], "docs/design summary is not a session doc")
 # not a repo
 nogit = WS / "PERSONAL" / "plain"
 write(nogit / ".claude" / "settings.local.json", "{}")
-write(nogit / "docs" / "design" / "p.md", "# P\n")
+write(nogit / ".claude-proposals" / "p.md", "# P\n")
 idx = nd.index(force=True)
 ep = next(e for e in idx.values() if e["project"] == "plain")
 rp = nd.revisions(ep, con)
@@ -305,34 +328,34 @@ bd = nd.diff(big_a, big_b)
 check(bd["blocks"] is None and bd["lines"] and bd["note"] and time.time() - t0 < 10, f"large diff falls back to lines only ({time.time() - t0:.1f}s)")
 
 # ---------- session docs ----------
-con.execute("INSERT INTO events(ts,event,session_id,tool,summary,project_dir) VALUES(?,?,?,?,?,?)", (t, "PostToolUse", "sess-a", "Write", "docs/design/t.md", str(app)))
-con.execute("INSERT INTO events(ts,event,session_id,tool,summary,project_dir) VALUES(?,?,?,?,?,?)", (t, "PostToolUse", "sess-a", "Edit", "docs/design/notes.txt", str(app)))
-con.execute("INSERT INTO events(ts,event,session_id,tool,summary,project_dir) VALUES(?,?,?,?,?,?)", (t, "PostToolUse", "sess-a", "Read", "docs/design/s.md", str(app)))
-con.execute("INSERT INTO events(ts,event,session_id,tool,summary,project_dir) VALUES(?,?,?,?,?,?)", (t, "PostToolUse", "sess-a", "Edit", "../../x/docs/design/t.md", str(app)))
+con.execute("INSERT INTO events(ts,event,session_id,tool,summary,project_dir) VALUES(?,?,?,?,?,?)", (t, "PostToolUse", "sess-a", "Write", ".claude-proposals/t.md", str(app)))
+con.execute("INSERT INTO events(ts,event,session_id,tool,summary,project_dir) VALUES(?,?,?,?,?,?)", (t, "PostToolUse", "sess-a", "Edit", ".claude-proposals/notes.txt", str(app)))
+con.execute("INSERT INTO events(ts,event,session_id,tool,summary,project_dir) VALUES(?,?,?,?,?,?)", (t, "PostToolUse", "sess-a", "Read", ".claude-proposals/s.md", str(app)))
+con.execute("INSERT INTO events(ts,event,session_id,tool,summary,project_dir) VALUES(?,?,?,?,?,?)", (t, "PostToolUse", "sess-a", "Edit", "../../x/.claude-proposals/t.md", str(app)))
 con.commit()
 idx = nd.index(force=True)
 check(nd.session_docs(con, "sess-a", str(app), idx) == [e_t["id"]], f"session docs: {nd.session_docs(con, 'sess-a', str(app), idx)}")
 check(nd.session_docs(con, "sess-none", str(app), idx) == [] and nd.session_docs(con, "sess-a", "", idx) == [], "unknown session / dir -> []")
 res = nd.link_resolver(e_t, idx)
-check(res("alias.md") == nd.doc_id("PERSONAL/app/docs/design/alias.md") and res("missing.md") is None and res("../x.md") is None, "link_resolver")
+check(res("alias.md") == nd.doc_id("PERSONAL/app/.claude-proposals/alias.md") and res("missing.md") is None and res("../x.md") is None, "link_resolver")
 
 # ---------- snapshot_design ----------
 con.execute("DELETE FROM design_snapshots")
 con.commit()
 sn = WS / "PERSONAL" / "snap"
-sd = sn / "docs" / "design"
+sd = sn / ".claude-proposals"
 write(sd / "a.md", "v1\n")
 f = str(sd / "a.md")
 check(ne.snapshot_design(con, f, str(sn), "s1", "designer", "Write") is True, "first write stored")
 check(ne.snapshot_design(con, f, str(sn), "s1", "designer", "Edit") is False, "identical second write skipped")
 write(sd / "a.md", "v2\n")
-check(ne.snapshot_design(con, "docs/design/a.md", str(sn), "s1", "", "Edit") is True, "relative path resolved against the project")
+check(ne.snapshot_design(con, ".claude-proposals/a.md", str(sn), "s1", "", "Edit") is True, "relative path resolved against the project")
 rows = con.execute("SELECT rel, agent_type, tool, session_id FROM design_snapshots ORDER BY id").fetchall()
-check([tuple(r) for r in rows] == [("PERSONAL/snap/docs/design/a.md", "designer", "Write", "s1"), ("PERSONAL/snap/docs/design/a.md", "", "Edit", "s1")], f"rows {[tuple(r) for r in rows]}")
+check([tuple(r) for r in rows] == [("PERSONAL/snap/.claude-proposals/a.md", "designer", "Write", "s1"), ("PERSONAL/snap/.claude-proposals/a.md", "", "Edit", "s1")], f"rows {[tuple(r) for r in rows]}")
 for k in range(50):
     write(sd / "a.md", f"v{k + 10}\n")
     ne.snapshot_design(con, f, str(sn), "s1", "", "Write")
-check(con.execute("SELECT count(*) FROM design_snapshots WHERE rel='PERSONAL/snap/docs/design/a.md'").fetchone()[0] == 40, "capped at 40 per doc")
+check(con.execute("SELECT count(*) FROM design_snapshots WHERE rel='PERSONAL/snap/.claude-proposals/a.md'").fetchone()[0] == 40, "capped at 40 per doc")
 con.execute("UPDATE design_snapshots SET ts = ? WHERE id = (SELECT min(id) FROM design_snapshots)", (time.time() - 40 * 86400,))
 con.commit()
 write(sd / "a.md", "fresh\n")
@@ -342,8 +365,12 @@ before = con.execute("SELECT count(*) FROM design_snapshots").fetchone()[0]
 write(sd / "sub" / "x.md", "x\n")
 write(sn / "docs" / "x.md", "x\n")
 write(sd / "notes.txt", "x\n")
-outside = tmp / "outside" / "docs" / "design" / "o.md"
+outside = tmp / "outside" / ".claude-proposals" / "o.md"
 write(outside, "x\n")
+write(sn / "docs" / "design" / "a.md", "x\n")
+write(sn / ".claude" / "proposals" / "a.md", "x\n")
+for path in (sn / "docs" / "design" / "a.md", sn / ".claude" / "proposals" / "a.md"):
+    check(ne.snapshot_design(con, str(path), str(sn), "s", "", "Write") is False, f"legacy path not snapshotted: {path.parent}")
 for path in (sd / "sub" / "x.md", sn / "docs" / "x.md", sd / "notes.txt", outside, sd / ".env.md", sd / "missing.md"):
     check(ne.snapshot_design(con, str(path), str(sn), "s", "", "Write") is False, f"ignored {path.name}")
 os.symlink("/etc/passwd", sd / "pw.md")

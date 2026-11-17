@@ -144,7 +144,7 @@ def main():
             from niu_events import snapshot_design
             ti = data.get("tool_input")
             fp = ti.get("file_path") if isinstance(ti, dict) else None
-            if isinstance(fp, str) and "docs/design/" in fp.replace("\\", "/"):
+            if isinstance(fp, str) and ".claude-proposals/" in fp.replace("\\", "/"):
                 snapshot_design(con, fp, project_dir, data.get("session_id"), data.get("agent_type"), tool)
         except Exception as e:
             if os.environ.get("NIU_EVENTS_DEBUG"):

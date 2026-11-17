@@ -19,7 +19,7 @@ per step. Never commit, push, or open a merge request without asking.
 
 ## 2. Write (delegate to `doc-writer` agents, Haiku)
 - Give each piece to a `doc-writer` agent with a brief: the files it owns, the code or config it documents (paths),
-  what to add or change, the audience, and what done looks like. Point it at any design doc under `docs/design/`.
+  what to add or change, the audience, and what done looks like. Point it at any design proposal under `.claude-proposals/` for context (read only; never edit those).
 - Pieces whose files don't overlap run **in parallel, in one message**. One file has one writer.
 - Do one- or two-line wording fixes yourself; don't spawn an agent for them.
 

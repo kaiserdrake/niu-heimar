@@ -70,15 +70,15 @@ ev("PreToolUse", tool_name="Agent", tool_input={"subagent_type": "test-reviewer"
 ev("SubagentStart", agent_id="ag1", agent_type="security-reviewer")
 ev("SubagentStart", agent_id="ag2", agent_type="test-reviewer")
 ev("PreToolUse", agent_id="ag2", agent_type="test-reviewer", tool_name="Bash", tool_input={"command": "pytest -q"}, tool_use_id="t4")
-ev("PreToolUse", tool_name="Write", tool_input={"file_path": f"{CWD}/docs/design/t.md"}, tool_use_id="t6")
+ev("PreToolUse", tool_name="Write", tool_input={"file_path": f"{CWD}/.claude-proposals/t.md"}, tool_use_id="t6")
 ev("PreToolUse", tool_name="SendMessage", tool_input={"to": "deploy-bot", "message": "hi"}, tool_use_id="t5")
 
 # Design docs fixture: a linked project (settings.local.json) with one readable and one protected doc
-DD = Path(CWD) / "docs" / "design"
+DD = Path(CWD) / ".claude-proposals"
 DD.mkdir(parents=True, exist_ok=True)
 (Path(CWD) / ".claude").mkdir(exist_ok=True)
 (Path(CWD) / ".claude" / "settings.local.json").write_text("{}")
-(Path(CWD) / ".claude" / "protected-paths").write_text("docs/design/secret.md\n")
+(Path(CWD) / ".claude" / "protected-paths").write_text(".claude-proposals/secret.md\n")
 (DD / "t.md").write_text("# Test design\nStatus: proposed\n\nHello **world**.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n")
 (DD / "secret.md").write_text("# Secret\n\nnot for the browser\n")
 # lib/niu_designs.py is written in parallel; when it is missing, serve a minimal stand-in so the routes can still be tested.
@@ -90,7 +90,7 @@ from pathlib import Path
 def index(extra_dirs=(), base=None):
     out = {}
     for d in extra_dirs:
-        for f in sorted((Path(d) / "docs" / "design").glob("*.md")):
+        for f in sorted((Path(d) / ".claude-proposals").glob("*.md")):
             if f.name == "secret.md":
                 continue
             rel = str(f.relative_to(base or os.environ["NIU_STUB_WS"]))
@@ -118,8 +118,8 @@ def outline(b):
 def diff(a, b):
     return {"stats": {"added": 1, "removed": 1, "sections": []}, "lines": [], "blocks": []}
 def session_docs(con, sid, project_dir, idx):
-    rows = con.execute("SELECT summary FROM events WHERE session_id = ? AND summary LIKE '%docs/design/%.md'", (sid,)).fetchall()
-    return [i for i, e in idx.items() if any(r[0].endswith(e["rel"].split("/docs/")[-1]) or r[0].endswith("docs/design/" + e["name"]) for r in rows)]
+    rows = con.execute("SELECT summary FROM events WHERE session_id = ? AND summary LIKE '%.claude-proposals/%.md'", (sid,)).fetchall()
+    return [i for i, e in idx.items() if any(r[0].endswith(e["rel"].split("/.claude-proposals/")[-1]) or r[0].endswith(".claude-proposals/" + e["name"]) for r in rows)]
 ''')
     env["PYTHONPATH"] = str(tmp / "stubs")
     env["NIU_STUB_WS"] = str(WS)

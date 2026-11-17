@@ -8,6 +8,7 @@
 !/.github/
 !/.claude/
 !/.claude-workspace/
+!/.claude-proposals/
 
 # Domains: only their CLAUDE.md and .claude/ config, never project folders.
 !/*/
@@ -15,6 +16,7 @@
 !/*/CLAUDE.md
 !/*/.claude/
 !/.claude-workspace/**
+!/.claude-proposals/**
 !/.github/**
 !/.claude/**
 
