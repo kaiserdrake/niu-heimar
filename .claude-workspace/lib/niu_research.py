@@ -402,7 +402,7 @@ def _agent(a):
             "cache_read": _cnt(a.get("cache_read")), "equiv_usd": _usd(a.get("equiv_usd")),
             "items_kept": _cnt(a.get("items_kept")), "items_filtered": _cnt(a.get("items_filtered")),
             "filtered_by": {"duplicate": _cnt(fb.get("duplicate")), "excluded": _cnt(fb.get("excluded")),
-                            "no_update": _cnt(fb.get("no_update"))} if fb else None,
+                            "no_update": _cnt(fb.get("no_update")), "below_threshold": _cnt(fb.get("below_threshold"))} if fb else None,
             "uncited_dropped": _cnt(a.get("uncited_dropped")), "scout_searches": _cnt(a.get("scout_searches")),
             "topics_scouted": _cnt(a.get("topics_scouted")), "topics_changed": _cnt(a.get("topics_changed")), "permission_denials": _cnt(a.get("permission_denials")),
             "error_code": _nenum(a.get("error_code"), ERRORS)}

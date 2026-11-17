@@ -185,7 +185,8 @@
     "filtered_by": {
      "duplicate": 2,
      "excluded": 1,
-     "no_update": 0
+     "no_update": 0,
+     "below_threshold": 0
     },
     "uncited_dropped": 1,
     "permission_denials": 0,
@@ -217,7 +218,8 @@
     "filtered_by": {
      "duplicate": 0,
      "excluded": 0,
-     "no_update": 0
+     "no_update": 0,
+     "below_threshold": 0
     },
     "uncited_dropped": 1,
     "permission_denials": 0,
