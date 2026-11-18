@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.1](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.27.0...niu-heimar-v0.27.1) (2026-11-17)
+
+
+### Bug Fixes
+
+* remove committed LAN address from Ollama template; pass research below_threshold through ([#97](https://github.com/kaiserdrake/niu-heimar/issues/97)) ([ca4bced](https://github.com/kaiserdrake/niu-heimar/commit/ca4bced1a789149d9474fea843afc6e445625d4a))
+
 ## [0.27.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.26.0...niu-heimar-v0.27.0) (2026-11-17)
 
 
