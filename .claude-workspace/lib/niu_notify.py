@@ -68,6 +68,7 @@ DEFAULTS = {
                "ci": "DISCORD_WEBHOOK_CI", "llm": "DISCORD_WEBHOOK_LLM",
                "limits": "DISCORD_WEBHOOK_LIMITS", "alerts": "DISCORD_WEBHOOK_ALERTS"},
     "silent_routes": ["activity", "ci", "llm"],
+    "disabled_routes": [],
     "domains": {"PERSONAL": "full", "HOBBY": "full", "(workspace)": "full", "WORK": "full"},
     "endpoints": {},
     "wait_delay_secs": 60, "done_min_secs": 600, "down_after_polls": 2,
@@ -130,7 +131,8 @@ def load_config(path=None):
                 cfg[k].update(v)
             else:
                 cfg[k] = v
-    for k, typ in (("routes", dict), ("domains", dict), ("endpoints", dict), ("limit_thresholds", list), ("silent_routes", list)):
+    for k, typ in (("routes", dict), ("domains", dict), ("endpoints", dict), ("limit_thresholds", list), ("silent_routes", list),
+                   ("disabled_routes", list)):
         if not isinstance(cfg[k], typ):
             raise ConfigError(f"{k} must be a JSON {'object' if typ is dict else 'array'}")
     for route, env in cfg["routes"].items():
@@ -163,6 +165,9 @@ def load_config(path=None):
     for r in cfg["silent_routes"]:
         if r not in ROUTES:
             raise ConfigError(f"silent_routes: unknown route {r!r}")
+    for r in cfg["disabled_routes"]:
+        if r not in ROUTES:
+            raise ConfigError(f"disabled_routes: unknown route {r!r}")
     qh = cfg["quiet_hours"]
     if qh is not None:
         if not isinstance(qh, dict) or not all(re.fullmatch(r"([01][0-9]|2[0-3]):[0-5][0-9]", str(qh.get(k, ""))) for k in ("start", "end")):
@@ -174,10 +179,13 @@ def load_config(path=None):
 
 
 def webhook_status(cfg, env=None):
-    """{route: 'ok' | 'missing' | 'invalid' | 'fallback'} without ever returning a value."""
+    """{route: 'ok' | 'missing' | 'invalid' | 'fallback' | 'disabled'} without ever returning a value."""
     env = os.environ if env is None else env
     out = {}
     for route in ROUTES:
+        if route in cfg["disabled_routes"]:
+            out[route] = "disabled"
+            continue
         v = env.get(cfg["routes"].get(route, ""), "")
         out[route] = "missing" if not v else "ok" if RE_WEBHOOK.fullmatch(v) else "invalid"
     if out["needs-you"] == "missing" and out["alerts"] == "ok":
@@ -193,14 +201,16 @@ def drop_webhook_env(cfg, env=None):
 
 
 def webhook_urls(cfg, env=None):
-    """{route: url} for valid webhooks only; needs-you falls back to alerts."""
+    """{route: url} for valid webhooks only, minus disabled_routes; needs-you falls back to alerts."""
     env = os.environ if env is None else env
     urls = {}
     for route in ROUTES:
+        if route in cfg["disabled_routes"]:
+            continue
         v = env.get(cfg["routes"].get(route, ""), "")
         if v and RE_WEBHOOK.fullmatch(v):
             urls[route] = v
-    if "needs-you" not in urls and "alerts" in urls:
+    if "needs-you" not in urls and "alerts" in urls and "needs-you" not in cfg["disabled_routes"]:
         urls["needs-you"] = urls["alerts"]
     return urls
 

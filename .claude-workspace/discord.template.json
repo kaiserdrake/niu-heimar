@@ -10,6 +10,8 @@
     "alerts": "DISCORD_WEBHOOK_ALERTS"
   },
   "silent_routes": ["activity", "ci", "llm"],
+  "_disabled_routes": "Routes listed here are never posted, even when their webhook is set (for example [\"activity\", \"llm\"]).",
+  "disabled_routes": [],
   "domains": {"PERSONAL": "full", "HOBBY": "full", "(workspace)": "full", "WORK": "full"},
   "_endpoints": "Keys are the endpoint names from ollama.json. notify: on | silent | off. Set an endpoint that is not always on to silent (with a larger down_after_polls) or off. display overrides the label shown in Discord.",
   "endpoints": {

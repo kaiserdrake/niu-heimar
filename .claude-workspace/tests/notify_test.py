@@ -239,6 +239,11 @@ d.send([])
 check(len(fs.posts) == 3, f"5xx retried on later polls, at most 3 tries: {len(fs.posts)}")
 check(nn.webhook_urls(cfg, {"DISCORD_WEBHOOK_ALERTS": URL["alerts"]}) == {"alerts": URL["alerts"], "needs-you": URL["alerts"]},
       "needs-you falls back to alerts only")
+dcfg = {**cfg, "disabled_routes": ["llm", "activity"]}
+denv = {"DISCORD_WEBHOOK_ALERTS": URL["alerts"], "DISCORD_WEBHOOK_LLM": URL["llm"], "DISCORD_WEBHOOK_ACTIVITY": URL["activity"]}
+check(set(nn.webhook_urls(dcfg, denv)) == {"alerts", "needs-you"}, "disabled_routes get no webhook")
+check(nn.webhook_status(dcfg, denv)["llm"] == "disabled", "disabled_routes reported as disabled")
+check("needs-you" not in nn.webhook_urls({**cfg, "disabled_routes": ["needs-you"]}, denv), "disabled needs-you does not fall back")
 
 # 6. secrets
 bad = ["http://discord.com/api/webhooks/123456789012345678/" + TOKEN,
@@ -248,7 +253,8 @@ bad = ["http://discord.com/api/webhooks/123456789012345678/" + TOKEN,
        URL["alerts"] + "\n"]
 check(all(nn.webhook_status(cfg, {"DISCORD_WEBHOOK_ALERTS": b})["alerts"] == "invalid" for b in bad), "invalid webhook URLs rejected")
 check(nn.UrllibSender().post(bad[1], {}) == (0, None), "sender refuses a non-Discord URL")
-for badcfg in ({"routes": {"alerts": URL["alerts"]}}, {"routes": {"alerts": "PATH"}}, {"domains": {"WORK": "maybe"}}):
+for badcfg in ({"routes": {"alerts": URL["alerts"]}}, {"routes": {"alerts": "PATH"}}, {"domains": {"WORK": "maybe"}},
+               {"disabled_routes": ["nope"]}, {"disabled_routes": "llm"}):
     (tmp / "discord.json").write_text(json.dumps(badcfg))
     try:
         nn.load_config()
