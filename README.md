@@ -337,22 +337,18 @@ secrets are redacted, mentions and link previews are off, and it alerts only on 
 | Channel | What lands there | Suggested notification setting |
 |---|---|---|
 | `#needs-you` | A session is waiting for your permission or reply (after 60 s) | All messages |
-| `#activity` | A long session finished | Muted |
 | `#ci-prs` | PR checks failing, changes requested, ready to merge, blocked on token scope | Mentions only |
-| `#local-llm` | Ollama endpoint down / back up; no GPU endpoint up | Mentions only |
 | `#claude-limits` | 5-hour / weekly usage crossed 80 % / 95 % (works with the desktop app via the usage API, see above) | All messages |
 | `#alerts` | Notifier started, dashboard down / back, rate-limit summary, webhook rejected, source errors | All messages |
 
 One-time setup (you do the secret parts yourself; never paste webhook URLs into a Claude session):
 1. In Discord: **Create a server** → *Create My Own* → *For me and my friends* (e.g. `niu-heimar`). Don't create invites. Turn on 2FA for your account.
-2. Create a category `niu-heimar` with the six text channels above.
+2. Create a category `niu-heimar` with the four text channels above.
 3. For each channel: *Edit Channel* → *Integrations* → *Webhooks* → *New Webhook*, name it `niu-heimar`, *Copy Webhook URL*.
 4. Copy `.claude-workspace/.env.example` to the secrets file beside it (same name without `.example`), paste each URL after its
    `DISCORD_WEBHOOK_*` name, and `chmod 600` it. A route whose variable is empty is off; `needs-you` falls back to the alerts webhook.
 5. Install the service: `.claude-workspace/bin/install --notify` (writes `niu-notify.service`, creates `discord.json` from the
-   template, enables linger). In `.claude-workspace/discord.json`, list your `ollama.json` endpoint names under `endpoints`:
-   set an endpoint that isn't always on to `"notify": "silent"` (with e.g. `"down_after_polls": 10`) or `"off"`; `display`
-   changes the name shown.
+   template, enables linger).
 6. `niu-notify check` shows each route as `ok` / `missing` / `invalid`. `systemctl --user restart niu-notify` posts
    "notifier started" in `#alerts`. (`niu-notify test` sends a test message, but needs the variables in its environment, which only the service has.)
 7. Discord notification settings: server → *Only @mentions*, suppress @everyone and roles; then per channel as in the table. Allow push on your phone.

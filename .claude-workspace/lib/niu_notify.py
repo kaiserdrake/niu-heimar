@@ -21,36 +21,31 @@ from pathlib import Path
 
 from niu_events import SHARED, db_path
 
-ROUTES = ("needs-you", "alerts", "limits", "llm", "ci", "activity")  # also the send priority order
+ROUTES = ("needs-you", "alerts", "limits", "ci")  # also the send priority order
+REMOVED_ROUTES = ("llm", "activity")  # dropped routes: still accepted (and ignored) in old configs
+OBSOLETE_KEYS = ("endpoints", "done_min_secs", "down_after_polls")  # dropped options: ignored in old configs
 RE_WEBHOOK = re.compile(r"https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api/webhooks/[0-9]{17,21}/[A-Za-z0-9_-]{60,100}")
 RE_ENVNAME = re.compile(r"DISCORD_WEBHOOK_[A-Z_]{1,40}")
 RE_DOMAIN = re.compile(r"[A-Z][A-Z0-9_]{0,15}")
 RE_PROJECT = re.compile(r"[A-Za-z0-9._/-]{1,60}")
 RE_REF = re.compile(r"([A-Za-z0-9_.-]{1,39})/([A-Za-z0-9_.-]{1,100})#([0-9]{1,7})")
-RE_LABEL = re.compile(r"[A-Za-z0-9 _-]{1,30}")  # no dots / colons: a label must not be a hostname or IP
 RE_TITLE_DROP = re.compile(r"[^A-Za-z0-9 .,:;_()/#+'-]")
 MAX_CONTENT = 400
 FLAG_SUPPRESS_EMBEDS = 4
 FLAG_SILENT = 4096
 LIMIT_LABELS = {"five_hour": "5-hour", "seven_day": "Weekly", "seven_day_opus": "Weekly Opus",
                 "seven_day_sonnet": "Weekly Sonnet"}
-SOURCES = ("sessions", "github", "llm", "limits", "dashboard")
+SOURCES = ("sessions", "github", "limits", "dashboard")
 DOMAIN_MODES = ("full", "minimal", "off")
-NOTIFY_MODES = ("on", "silent", "off")
 
 TEMPLATES = {
     "wait-permission": "[needs you] {where}: a session needs your permission",
     "wait-reply": "[needs you] {where}: a session is waiting for your reply",
     "wait-other": "[needs you] {where}: a session is waiting for you",
-    "done": "[done] {where}: session finished after {dur}",
     "pr-failing": "[ci] {ref}: {n} failing check(s) · {title}\n{pr_url}",
     "pr-changes": "[ci] {ref}: changes requested · {title}\n{pr_url}",
     "pr-ready": "[ci] {ref}: ready to merge · {title}\n{pr_url}",
     "pr-blocked": "[ci] {ref}: blocked: gh token needs the workflow scope\n{pr_url}",
-    "llm-down": "[llm] {label} is down",
-    "llm-up": "[llm] {label} is back up",
-    "llm-no-gpu": "[llm] no GPU endpoint is up; local agents use {label}",
-    "llm-none": "[llm] no GPU endpoint is up, and no local endpoint either",
     "limit": "[limits] {window} usage at {pct}% (resets {reset})",
     "dash-down": "[alerts] dashboard is not responding on this machine",
     "dash-up": "[alerts] dashboard is back",
@@ -64,14 +59,12 @@ PR_KINDS = {"pr-failing": "fail", "pr-changes": "changes", "pr-ready": "ready", 
 
 DEFAULTS = {
     "poll_secs": 30,
-    "routes": {"needs-you": "DISCORD_WEBHOOK_NEEDS_YOU", "activity": "DISCORD_WEBHOOK_ACTIVITY",
-               "ci": "DISCORD_WEBHOOK_CI", "llm": "DISCORD_WEBHOOK_LLM",
+    "routes": {"needs-you": "DISCORD_WEBHOOK_NEEDS_YOU", "ci": "DISCORD_WEBHOOK_CI",
                "limits": "DISCORD_WEBHOOK_LIMITS", "alerts": "DISCORD_WEBHOOK_ALERTS"},
-    "silent_routes": ["activity", "ci", "llm"],
+    "silent_routes": ["ci"],
     "disabled_routes": [],
     "domains": {"PERSONAL": "full", "HOBBY": "full", "(workspace)": "full", "WORK": "full"},
-    "endpoints": {},
-    "wait_delay_secs": 60, "done_min_secs": 600, "down_after_polls": 2,
+    "wait_delay_secs": 60,
     "limit_thresholds": [80, 95], "pr_refresh_secs": 300,
     "cooldown_secs": 900, "wait_cooldown_secs": 120, "max_per_hour": 30, "error_cooldown_secs": 3600,
     "dash_port": 8765, "dash_check": "auto",
@@ -125,16 +118,18 @@ def load_config(path=None):
         if not isinstance(user, dict):
             raise ConfigError(f"{path.name}: expected a JSON object")
         for k, v in user.items():
-            if k.startswith("_"):
+            if k.startswith("_") or k in OBSOLETE_KEYS:
                 continue
             if k in ("routes", "domains") and isinstance(v, dict):
                 cfg[k].update(v)
             else:
                 cfg[k] = v
-    for k, typ in (("routes", dict), ("domains", dict), ("endpoints", dict), ("limit_thresholds", list), ("silent_routes", list),
-                   ("disabled_routes", list)):
+    for k, typ in (("routes", dict), ("domains", dict), ("limit_thresholds", list), ("silent_routes", list), ("disabled_routes", list)):
         if not isinstance(cfg[k], typ):
             raise ConfigError(f"{k} must be a JSON {'object' if typ is dict else 'array'}")
+    for k in ("silent_routes", "disabled_routes"):
+        cfg[k] = [r for r in cfg[k] if r not in REMOVED_ROUTES]
+    cfg["routes"] = {r: e for r, e in cfg["routes"].items() if r not in REMOVED_ROUTES}
     for route, env in cfg["routes"].items():
         if route not in ROUTES:
             raise ConfigError(f"unknown route {route!r}")
@@ -145,15 +140,7 @@ def load_config(path=None):
     for d, m in cfg["domains"].items():
         if m not in DOMAIN_MODES:
             raise ConfigError(f"domains.{d} must be one of {', '.join(DOMAIN_MODES)}")
-    for name, ep in cfg["endpoints"].items():
-        if not isinstance(ep, dict) or ep.get("notify", "on") not in NOTIFY_MODES:
-            raise ConfigError(f"endpoints.{name}.notify must be one of {', '.join(NOTIFY_MODES)}")
-        dap = ep.get("down_after_polls", 1)
-        if not isinstance(dap, int) or isinstance(dap, bool) or dap < 1:
-            raise ConfigError(f"endpoints.{name}.down_after_polls must be a positive integer")
-        if not isinstance(ep.get("display", ""), str):
-            raise ConfigError(f"endpoints.{name}.display must be a string")
-    for k in ("poll_secs", "wait_delay_secs", "done_min_secs", "down_after_polls", "pr_refresh_secs",
+    for k in ("poll_secs", "wait_delay_secs", "pr_refresh_secs",
               "cooldown_secs", "wait_cooldown_secs", "max_per_hour", "error_cooldown_secs", "dash_port"):
         if not isinstance(cfg[k], (int, float)) or isinstance(cfg[k], bool) or cfg[k] < 0:
             raise ConfigError(f"{k} must be a non-negative number")
@@ -173,8 +160,9 @@ def load_config(path=None):
         if not isinstance(qh, dict) or not all(re.fullmatch(r"([01][0-9]|2[0-3]):[0-5][0-9]", str(qh.get(k, ""))) for k in ("start", "end")):
             raise ConfigError("quiet_hours needs start and end as HH:MM")
         exc = qh.get("except", [])
-        if not isinstance(exc, list) or any(r not in ROUTES for r in exc):
+        if not isinstance(exc, list) or any(r not in ROUTES and r not in REMOVED_ROUTES for r in exc):
             raise ConfigError("quiet_hours.except must be a list of route names")
+        qh["except"] = [r for r in exc if r in ROUTES]
     return cfg
 
 
@@ -239,11 +227,6 @@ def sanitize_title(title):
     return f"`{t}`" if t else "(no title)"
 
 
-def sanitize_label(label, fallback):
-    label = str(label or "")
-    return label if RE_LABEL.fullmatch(label) else fallback
-
-
 def _hhmm(ts):
     try:
         return datetime.fromtimestamp(float(ts)).strftime("%H:%M")
@@ -253,7 +236,6 @@ def _hhmm(ts):
 
 def _fields(msg, cfg):
     """Validated template fields, or None to drop the message."""
-    from niu_state import dur
     f, out = msg.get("f", {}), {}
     if "domain" in f or "project" in f:
         w = where(f.get("domain"), f.get("project"), cfg)
@@ -268,16 +250,12 @@ def _fields(msg, cfg):
         out["pr_url"] = f"https://github.com/{m.group(1)}/{m.group(2)}/pull/{m.group(3)}"
     if "title" in f:
         out["title"] = sanitize_title(f["title"])
-    if "label" in f:
-        out["label"] = sanitize_label(f["label"], "endpoint")
     for k in ("n", "n_wait", "n_review", "code", "pct"):
         if k in f:
             try:
                 out[k] = int(round(float(f[k])))
             except (TypeError, ValueError):
                 return None
-    if "secs" in f:
-        out["dur"] = dur(f["secs"])
     if "window" in f:
         if f["window"] not in LIMIT_LABELS:
             return None
@@ -350,11 +328,6 @@ def _prs(cfg, now):
     return niu_prs.summarize(cache)
 
 
-def _llm():
-    import niu_ollama
-    return niu_ollama.status()
-
-
 def _limits(now):
     import niu_limits
     lim = niu_limits.claude_limits(now)
@@ -363,11 +336,11 @@ def _limits(now):
 
 def observe(cfg, now, urls, sources=None):
     """Plain observation dict. A failing source becomes None plus an entry in 'errors' (never raises)."""
-    src = {"sessions": _sessions, "prs": lambda: _prs(cfg, now), "llm": _llm, "limits": lambda: _limits(now),
+    src = {"sessions": _sessions, "prs": lambda: _prs(cfg, now), "limits": lambda: _limits(now),
            "dash": lambda: _dash_up(cfg)}
     src.update(sources or {})
     obs = {"errors": []}
-    names = {"sessions": "sessions", "prs": "github", "llm": "llm", "limits": "limits", "dash": "dashboard"}
+    names = {"sessions": "sessions", "prs": "github", "limits": "limits", "dash": "dashboard"}
     for key, fn in src.items():
         if key == "prs" and "ci" not in urls:
             obs[key] = None
@@ -380,10 +353,6 @@ def observe(cfg, now, urls, sources=None):
     if obs.get("sessions") is not None:
         obs["sessions"] = [{k: s.get(k) for k in ("id", "domain", "project", "state", "since", "ended", "note", "flagged")}
                            for s in obs["sessions"]]
-    if obs.get("llm") is not None:
-        # url and error can hold private hostnames / IPs: dropped here, never reach diff or render.
-        obs["llm"] = [{"name": e.get("name"), "label": e.get("label"), "mode": e.get("mode", "agent"),
-                       "priority": i + 1, "up": bool(e.get("up"))} for i, e in enumerate(obs["llm"])]
     return obs
 
 
@@ -456,29 +425,6 @@ def diff(prev, obs, cfg, now):
                 tpl = "wait-permission" if "permission" in note else "wait-reply" if "idle" in note else "wait-other"
                 active[a["id"]] = ({"route": "needs-you", "tpl": tpl, "f": f}, cfg["wait_delay_secs"], 1, None)
         track("wait:", {k: v for k, v in active.items() if k.startswith("wait:")})
-        # working -> idle after a long run = "done"
-        old, cur = st.get("sess", {}), {}
-        for s in sessions:
-            p, state = old.get(s["id"]), s.get("state")
-            if state == "waiting" and "idle" in (s.get("note") or "").lower():
-                state = "rest"  # the idle prompt after a turn: the run is over even if the idle state was never polled
-            busy = p and p.get("state") in ("working", "waiting")
-            carried = p.get("work_start") if busy else None
-            if state == "working":
-                cur[s["id"]] = {"state": state, "work_start": carried or s.get("since")}
-                continue
-            if state == "waiting":
-                # waiting mid-run keeps the run's start; waiting from idle (the idle prompt) is not work
-                cur[s["id"]] = {"state": state, "work_start": carried}
-                continue
-            cur[s["id"]] = {"state": state, "work_start": None}
-            if state in ("idle", "rest") and busy and p.get("work_start"):
-                secs = (s.get("since") or now) - p["work_start"]
-                if secs >= cfg["done_min_secs"]:
-                    fire(f"done:{s['id']}:{int(p['work_start'])}",
-                         {"route": "activity", "tpl": "done",
-                          "f": {"domain": s.get("domain"), "project": s.get("project") or "", "secs": secs}})
-        st["sess"] = cur
 
     if prs is not None:
         idx = _pr_index(prs)
@@ -496,29 +442,6 @@ def diff(prev, obs, cfg, now):
             active[a["id"]] = ({"route": "ci", "tpl": a["kind"], "f": f}, 0, 1, None)
         for pre in ("fail:", "changes:", "ready:", "scope:"):
             track(pre, {k: v for k, v in active.items() if k.startswith(pre)})
-
-    llm = obs.get("llm")
-    if llm is not None:
-        active = {}
-        for e in llm:
-            epc = cfg["endpoints"].get(e["name"], {})
-            mode = epc.get("notify", "on")
-            if mode == "off":
-                continue
-            label = sanitize_label(epc.get("display") or e.get("label") or e.get("name"), f"endpoint {e['priority']}")
-            silent = mode == "silent"
-            if not e["up"]:
-                active[f"llm:{e['name']}"] = ({"route": "llm", "tpl": "llm-down", "f": {"label": label}, "silent": silent}, 0,
-                                              int(epc.get("down_after_polls", cfg["down_after_polls"])),
-                                              {"route": "llm", "tpl": "llm-up", "f": {"label": label}, "silent": silent})
-        agents = [e for e in llm if e.get("mode") == "agent"]
-        if agents and not any(e["up"] for e in agents):
-            fb = next((e for e in llm if e["up"]), None)
-            msg = ({"route": "llm", "tpl": "llm-no-gpu",
-                    "f": {"label": sanitize_label((cfg["endpoints"].get(fb["name"], {}).get("display") or fb.get("label")), "local")}}
-                   if fb else {"route": "llm", "tpl": "llm-none", "f": {}})
-            active["llm:no-gpu"] = (msg, 0, cfg["down_after_polls"], None)
-        track("llm:", active)
 
     dash = obs.get("dash")
     if dash is not None:

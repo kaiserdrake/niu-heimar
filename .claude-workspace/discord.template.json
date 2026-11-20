@@ -3,25 +3,16 @@
   "poll_secs": 30,
   "routes": {
     "needs-you": "DISCORD_WEBHOOK_NEEDS_YOU",
-    "activity": "DISCORD_WEBHOOK_ACTIVITY",
     "ci": "DISCORD_WEBHOOK_CI",
-    "llm": "DISCORD_WEBHOOK_LLM",
     "limits": "DISCORD_WEBHOOK_LIMITS",
     "alerts": "DISCORD_WEBHOOK_ALERTS"
   },
-  "silent_routes": ["activity", "ci", "llm"],
-  "_disabled_routes": "Routes listed here are never posted, even when their webhook is set (for example [\"activity\", \"llm\"]).",
+  "silent_routes": ["ci"],
+  "_disabled_routes": "Routes listed here are never posted, even when their webhook is set (for example [\"ci\"]).",
   "disabled_routes": [],
   "domains": {"PERSONAL": "full", "HOBBY": "full", "(workspace)": "full", "WORK": "full"},
-  "_endpoints": "Keys are the endpoint names from ollama.json. notify: on | silent | off. Set an endpoint that is not always on to silent (with a larger down_after_polls) or off. display overrides the label shown in Discord.",
-  "endpoints": {
-    "remote": {"notify": "on"},
-    "local": {"notify": "on"}
-  },
   "wait_delay_secs": 60,
   "wait_cooldown_secs": 120,
-  "done_min_secs": 600,
-  "down_after_polls": 2,
   "limit_thresholds": [80, 95],
   "pr_refresh_secs": 300,
   "cooldown_secs": 900,

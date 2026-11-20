@@ -60,8 +60,8 @@ def sess(sid, state="idle", domain="PERSONAL", project="app", since=None, note=N
             "note": note, "flagged": flagged}
 
 
-def obs(sessions=(), prs=None, llm=None, limits=None, dash=None, errors=()):
-    return {"sessions": list(sessions), "prs": prs, "llm": llm, "limits": limits, "dash": dash, "errors": list(errors)}
+def obs(sessions=(), prs=None, limits=None, dash=None, errors=()):
+    return {"sessions": list(sessions), "prs": prs, "limits": limits, "dash": dash, "errors": list(errors)}
 
 
 def contents(msgs, cfg):
@@ -76,7 +76,7 @@ p = nn.render({"route": "alerts", "tpl": "dash-down", "f": {}}, cfg)
 check(p["allowed_mentions"] == {"parse": []}, "mentions disabled")
 check(p["flags"] & nn.FLAG_SUPPRESS_EMBEDS and not p["flags"] & nn.FLAG_SILENT, f"embeds suppressed, not silent: {p}")
 check(p["username"] == "niu-heimar" and set(p) == {"content", "username", "allowed_mentions", "flags"}, f"no embeds/avatar/tts: {p}")
-check(nn.render({"route": "llm", "tpl": "llm-down", "f": {"label": "GPU"}, "silent": True}, cfg)["flags"] & nn.FLAG_SILENT, "silent flag")
+check(nn.render({"route": "ci", "tpl": "pr-ready", "f": {"ref": "o/r#5", "title": "x"}, "silent": True}, cfg)["flags"] & nn.FLAG_SILENT, "silent flag")
 check(nn.render({"route": "x", "tpl": "nope", "f": {}}, cfg) is None, "unknown template dropped")
 
 # 2. sanitizing
@@ -90,7 +90,6 @@ check(nn.where("PERSONAL", "../x", cfg) == "PERSONAL/(project)" and nn.where("PE
 check(nn.where("(workspace)", "", cfg) == "workspace", "workspace label is never the hostname")
 check(nn.where("evil<@1>", "p", cfg) == "(domain)/p", "bad domain")
 check(len(nn.render({"route": "ci", "tpl": "pr-ready", "f": {"ref": "o/r#5", "title": "x" * 500}}, cfg)["content"]) <= 400, "cap")
-check(nn.sanitize_label("gpu-box.lan:11434", "endpoint 1") == "endpoint 1", "label with ':' falls back")
 
 # 3. privacy: domain modes, hostnames, IPs
 cfgm = cfg_with(domains={"WORK": "minimal"})
@@ -113,19 +112,6 @@ st, m = nn.diff(st, obs([sess("w1", "waiting", "WORK", "x", note="permission")])
 check(contents(m, cfgo) == [], "WORK off sends nothing")
 
 cfg = cfg_with()
-raw_llm = [{"name": "remote", "label": "GPU", "url": "http://10.1.2.3:11434", "mode": "agent", "up": False,
-            "error": "[Errno -2] Name or service not known: gpu-box.lan"},
-           {"name": "local", "label": "CPU", "url": "http://127.0.0.1:11434", "mode": "lite", "up": True, "error": None}]
-o = nn.observe(cfg, NOW, {}, {"sessions": lambda: [], "llm": lambda: raw_llm, "limits": lambda: [], "dash": lambda: None})
-check("url" not in json.dumps(o["llm"]) and "gpu-box" not in json.dumps(o) and "10.1.2.3" not in json.dumps(o), f"observe drops url/error: {o}")
-st, _ = nn.diff({}, obs(), cfg, NOW)
-st, m1 = nn.diff(st, o, cfg, NOW + 30)
-st, m2 = nn.diff(st, o, cfg, NOW + 60)
-allc = " ".join(contents(m1 + m2, cfg))
-check("10.1.2.3" not in allc and "gpu-box" not in allc and "11434" not in allc, f"no host/IP/port: {allc}")
-check(allc == "[llm] GPU is down [llm] no GPU endpoint is up; local agents use CPU" or
-      sorted(contents(m1 + m2, cfg)) == sorted(["[llm] GPU is down", "[llm] no GPU endpoint is up; local agents use CPU"]),
-      f"down after 2 polls + no-gpu: {allc}")
 hostname = socket.gethostname().split(".")[0]
 st, _ = nn.diff({}, obs(), cfg, NOW)
 st, _ = nn.diff(st, obs([sess("s9", "waiting", "(workspace)", "", note="idle")]), cfg, NOW + 1)
@@ -149,27 +135,6 @@ check([x["tpl"] for x in m] == ["wait-permission"] and m[0]["route"] == "needs-y
 st, m = nn.diff(st, obs(w), cfg, NOW + 100)
 check(m == [], "same observation twice -> one message")
 
-ep = lambda up, name="remote", mode="agent": {"name": name, "label": "GPU", "mode": mode, "priority": 1, "up": up}  # noqa: E731
-loc = {"name": "local", "label": "CPU", "mode": "lite", "priority": 2, "up": True}
-st, _ = nn.diff({}, obs(llm=[ep(True), loc]), cfg, NOW)
-st, m = nn.diff(st, obs(llm=[ep(False), loc]), cfg, NOW + 30)
-check(m == [], "endpoint down 1 poll: nothing")
-st, m = nn.diff(st, obs(llm=[ep(False), loc]), cfg, NOW + 60)
-check("llm-down" in [x["tpl"] for x in m] and "llm-no-gpu" in [x["tpl"] for x in m], f"down 2 polls: {m}")
-st, m = nn.diff(st, obs(llm=[ep(False), loc]), cfg, NOW + 90)
-check(m == [], "no-gpu fires once")
-st, m = nn.diff(st, obs(llm=[ep(True), loc]), cfg, NOW + 120)
-check([x["tpl"] for x in m] == ["llm-up"], f"back up: {m}")
-st, _ = nn.diff({}, obs(llm=[ep(False), loc]), cfg, NOW)
-st, m = nn.diff(st, obs(llm=[ep(True), loc]), cfg, NOW + 30)
-check(m == [], "no 'back up' when the down was only a baseline")
-cfgs = cfg_with(endpoints={"remote": {"notify": "silent"}, "alf": {"notify": "off"}})
-st, _ = nn.diff({}, obs(llm=[ep(True), ep(True, "alf"), loc]), cfgs, NOW)
-for t in (30, 60):
-    st, m = nn.diff(st, obs(llm=[ep(False), ep(False, "alf"), loc]), cfgs, NOW + t)
-downs = [x for x in m if x["tpl"] == "llm-down"]
-check(len(downs) == 1 and downs[0]["silent"], f"silent endpoint sent silent, off endpoint not at all: {m}")
-
 cfg = cfg_with()
 lim = lambda u, r=NOW + 3600: [{"key": "five_hour", "label": "5-hour", "used": u, "resets_at": r}]  # noqa: E731
 st, _ = nn.diff({}, obs(limits=lim(10)), cfg, NOW)
@@ -180,15 +145,6 @@ st, m95 = nn.diff(st, obs(limits=lim(95)), cfg, NOW + 4)
 st, mnew = nn.diff(st, obs(limits=lim(85, NOW + 20000)), cfg, NOW + 5)
 check((len(m79), len(m81), len(m90), len(m95), len(mnew)) == (0, 1, 0, 1, 1), f"limit crossings {len(m79), len(m81), len(m90), len(m95), len(mnew)}")
 check(contents(m81, cfg)[0].startswith("[limits] 5-hour usage at 81% (resets "), contents(m81, cfg))
-
-st, _ = nn.diff({}, obs([sess("d1", "idle", since=NOW - 5000)]), cfg, NOW)
-st, _ = nn.diff(st, obs([sess("d1", "working", since=NOW + 10)]), cfg, NOW + 20)
-st, _ = nn.diff(st, obs([sess("d1", "waiting", since=NOW + 300)]), cfg, NOW + 310)
-st, m = nn.diff(st, obs([sess("d1", "idle", since=NOW + 670)]), cfg, NOW + 680)
-check(contents([x for x in m if x["tpl"] == "done"], cfg) == ["[done] PERSONAL/app: session finished after 11m00s"], f"done: {m}")
-st, _ = nn.diff(st, obs([sess("d1", "working", since=NOW + 700)]), cfg, NOW + 700)
-st, m = nn.diff(st, obs([sess("d1", "idle", since=NOW + 820)]), cfg, NOW + 830)
-check([x for x in m if x["tpl"] == "done"] == [], "short run: no done")
 
 st, _ = nn.diff({}, obs(dash=True), cfg, NOW)
 st, m1 = nn.diff(st, obs(dash=False), cfg, NOW + 30)
@@ -208,7 +164,7 @@ cfg = cfg_with(max_per_hour=5)
 clock = [NOW]
 fs = FakeSender()
 d = nn.Dispatcher(fs, URL, cfg, clock=lambda: clock[0], sleep=lambda s: None, log=lambda m: None)
-msgs = [{"key": f"r:{i}", "route": "activity", "tpl": "wait-reply", "f": {"domain": "HOBBY", "project": f"p{i}"}} for i in range(50)]
+msgs = [{"key": f"r:{i}", "route": "ci", "tpl": "wait-reply", "f": {"domain": "HOBBY", "project": f"p{i}"}} for i in range(50)]
 d.send(msgs)
 check(len(fs.posts) == 5 and d.suppressed == 45, f"hourly cap: {len(fs.posts)} posts, {d.suppressed} suppressed")
 clock[0] += 3601
@@ -225,9 +181,9 @@ check(len(fs.posts) == 2, f"429 then retry: {len(fs.posts)}")
 logs = []
 fs = FakeSender([(404, None)])
 d = nn.Dispatcher(fs, URL, cfg, clock=time.time, sleep=lambda s: None, log=logs.append)
-d.send([{"key": "k", "route": "llm", "tpl": "llm-down", "f": {"label": "GPU"}}])
-check(len(fs.posts) == 2 and fs.posts[1][0] == URL["alerts"] and "route llm disabled" in fs.posts[1][1]["content"], f"404: {fs.posts}")
-d.send([{"key": "k2", "route": "llm", "tpl": "llm-down", "f": {"label": "GPU"}}])
+d.send([{"key": "k", "route": "limits", "tpl": "wait-reply", "f": {"domain": "HOBBY", "project": "p"}}])
+check(len(fs.posts) == 2 and fs.posts[1][0] == URL["alerts"] and "route limits disabled" in fs.posts[1][1]["content"], f"404: {fs.posts}")
+d.send([{"key": "k2", "route": "limits", "tpl": "wait-reply", "f": {"domain": "HOBBY", "project": "p"}}])
 check(len(fs.posts) == 2, "disabled route not used again")
 check(not any(TOKEN in l or "discord.com" in l for l in logs), f"logs carry no URL: {logs}")
 fs = FakeSender([(500, None), (500, None), (500, None), (500, None)])
@@ -239,10 +195,10 @@ d.send([])
 check(len(fs.posts) == 3, f"5xx retried on later polls, at most 3 tries: {len(fs.posts)}")
 check(nn.webhook_urls(cfg, {"DISCORD_WEBHOOK_ALERTS": URL["alerts"]}) == {"alerts": URL["alerts"], "needs-you": URL["alerts"]},
       "needs-you falls back to alerts only")
-dcfg = {**cfg, "disabled_routes": ["llm", "activity"]}
-denv = {"DISCORD_WEBHOOK_ALERTS": URL["alerts"], "DISCORD_WEBHOOK_LLM": URL["llm"], "DISCORD_WEBHOOK_ACTIVITY": URL["activity"]}
+dcfg = {**cfg, "disabled_routes": ["ci", "limits"]}
+denv = {"DISCORD_WEBHOOK_ALERTS": URL["alerts"], "DISCORD_WEBHOOK_CI": URL["ci"], "DISCORD_WEBHOOK_LIMITS": URL["limits"]}
 check(set(nn.webhook_urls(dcfg, denv)) == {"alerts", "needs-you"}, "disabled_routes get no webhook")
-check(nn.webhook_status(dcfg, denv)["llm"] == "disabled", "disabled_routes reported as disabled")
+check(nn.webhook_status(dcfg, denv)["ci"] == "disabled", "disabled_routes reported as disabled")
 check("needs-you" not in nn.webhook_urls({**cfg, "disabled_routes": ["needs-you"]}, denv), "disabled needs-you does not fall back")
 
 # 6. secrets
@@ -254,7 +210,7 @@ bad = ["http://discord.com/api/webhooks/123456789012345678/" + TOKEN,
 check(all(nn.webhook_status(cfg, {"DISCORD_WEBHOOK_ALERTS": b})["alerts"] == "invalid" for b in bad), "invalid webhook URLs rejected")
 check(nn.UrllibSender().post(bad[1], {}) == (0, None), "sender refuses a non-Discord URL")
 for badcfg in ({"routes": {"alerts": URL["alerts"]}}, {"routes": {"alerts": "PATH"}}, {"domains": {"WORK": "maybe"}},
-               {"disabled_routes": ["nope"]}, {"disabled_routes": "llm"}):
+               {"disabled_routes": ["nope"]}, {"disabled_routes": "ci"}):
     (tmp / "discord.json").write_text(json.dumps(badcfg))
     try:
         nn.load_config()
@@ -267,7 +223,7 @@ cfg_with()
 penv = dict(os.environ, **ENV, NIU_NOTIFY_CONFIG=str(tmp / "discord.json"))
 penv["HOME"] = str(tmp / "home")
 r = subprocess.run([sys.executable, str(SH / "bin" / "niu-notify"), "check"], env=penv, capture_output=True, text=True, timeout=60)
-check(r.returncode == 0 and sum(l.endswith(" ok") for l in r.stdout.splitlines()) == 6, f"check ok: {r.returncode} {r.stdout} {r.stderr}")
+check(r.returncode == 0 and sum(l.endswith(" ok") for l in r.stdout.splitlines()) == 4, f"check ok: {r.returncode} {r.stdout} {r.stderr}")
 check(TOKEN not in r.stdout + r.stderr and "discord.com" not in r.stdout + r.stderr, "check prints no URL")
 r = subprocess.run([sys.executable, str(SH / "bin" / "niu-notify"), "check"], env=dict(penv, DISCORD_WEBHOOK_CI="nope " + TOKEN),
                    capture_output=True, text=True, timeout=60)
@@ -287,7 +243,7 @@ class Boom:
             return 0, None
 def bad_sessions():
     raise RuntimeError("leak " + {URL['alerts']!r})
-n = nn.Notifier(nn.load_config(), sender=Boom(), sources={{"sessions": bad_sessions, "llm": lambda: [], "limits": lambda: [],
+n = nn.Notifier(nn.load_config(), sender=Boom(), sources={{"sessions": bad_sessions, "limits": lambda: [],
                 "dash": lambda: None, "prs": lambda: {{"repos": []}}}})
 n.poll(); n.poll()
 print("ok")
@@ -345,7 +301,7 @@ cfg = cfg_with(wait_delay_secs=0)
 stp.unlink()
 fs = FakeSender()
 clock = [t0]
-n = nn.Notifier(cfg, sender=fs, env=ENV, sources={"llm": lambda: [], "limits": lambda: [], "dash": lambda: None,
+n = nn.Notifier(cfg, sender=fs, env=ENV, sources={"limits": lambda: [], "dash": lambda: None,
                                                     "prs": lambda: {"repos": []}}, clock=lambda: clock[0])
 n.dispatcher.sleep = lambda s: None
 n.state = {"baselined": True}
@@ -359,16 +315,6 @@ check(len(fs.posts) == 2, "no repeat on next poll")
 
 # 9. regressions from review
 cfg = cfg_with()
-# done must not count time the user spent replying after an idle-prompt wait
-st, _ = nn.diff({}, obs([sess("r1", "idle", since=NOW - 50)]), cfg, NOW)
-st, _ = nn.diff(st, obs([sess("r1", "working", since=NOW + 10)]), cfg, NOW + 20)
-st, m = nn.diff(st, obs([sess("r1", "idle", since=NOW + 690)]), cfg, NOW + 700)
-check([x["tpl"] for x in m] == ["done"], f"first run done: {m}")
-st, _ = nn.diff(st, obs([sess("r1", "waiting", since=NOW + 750, note="idle")]), cfg, NOW + 760)
-st, _ = nn.diff(st, obs([sess("r1", "working", since=NOW + 3990)]), cfg, NOW + 4000)
-st, m = nn.diff(st, obs([sess("r1", "idle", since=NOW + 4090)]), cfg, NOW + 4100)
-check([x for x in m if x["tpl"] == "done"] == [], f"reply wait not counted as work: {m}")
-st, _ = nn.diff(st, obs([sess("r1", "ended", since=NOW + 5000)]), cfg, NOW + 5000)
 # a second wait within the cooldown is deferred, not lost
 pw = lambda: [sess("c1", "waiting", note="needs your permission")]  # noqa: E731
 st, _ = nn.diff({}, obs(), cfg, NOW)
@@ -383,8 +329,8 @@ st, m = nn.diff(st, obs(pw()), cfg, NOW + 200)
 check([x["tpl"] for x in m] == ["wait-permission"], f"second wait sent once the cooldown passes: {m}")
 # generic cooldown expiry re-fires a key; error cooldown expires
 st, _ = nn.diff({}, obs(), cfg, NOW)
-st, _ = nn.diff(st, obs(errors=["llm"]), cfg, NOW + 1)
-_, m = nn.diff(st, obs(errors=["llm"]), cfg, NOW + 3700)
+st, _ = nn.diff(st, obs(errors=["github"]), cfg, NOW + 1)
+_, m = nn.diff(st, obs(errors=["github"]), cfg, NOW + 3700)
 check(len(m) == 1, "error re-reported after its cooldown")
 # limits: resets_at jitter does not re-fire; straight to 96 sends one (95)
 st, _ = nn.diff({}, obs(limits=lim(10)), cfg, NOW)
@@ -408,15 +354,6 @@ check(sorted(x["tpl"] for x in m) == ["pr-blocked", "pr-changes", "pr-ready"], f
 cfgh = cfg_with(domains={"HOBBY": "off"})
 _, m = nn.diff(st, obs(prs=prs2), cfgh, NOW + 1)
 check(m == [], "PRs of an off domain are dropped")
-# llm-none and display override
-cfgd = cfg_with(endpoints={"remote": {"display": "Big GPU"}})
-st, _ = nn.diff({}, obs(), cfgd, NOW)
-for t in (30, 60):
-    st, m = nn.diff(st, obs(llm=[ep(False), dict(loc, up=False)]), cfgd, NOW + t)
-cs = sorted(contents(m, cfgd))
-check("[llm] Big GPU is down" in cs and "[llm] no GPU endpoint is up, and no local endpoint either" in cs, f"llm-none/display: {cs}")
-check(nn.sanitize_label("gpu.tail1234.ts.net", "endpoint 1") == "endpoint 1" and nn.sanitize_label("192.168.1.20", "e") == "e",
-      "labels that look like hostnames / IPs fall back")
 # quiet hours
 cfgq = cfg_with(quiet_hours={"start": "23:00", "end": "07:00", "except": ["needs-you"]})
 night = time.mktime(time.strptime("2026-11-06 02:00", "%Y-%m-%d %H:%M"))
@@ -455,9 +392,19 @@ d.send([{"key": "a", "route": "needs-you", "tpl": "wait-reply", "f": {"domain": 
 check(logs and "needs-you" in logs[0] and "alerts" in logs[0], f"shared webhook disable names both routes: {logs}")
 check(nn.webhook_status(cfg, {"DISCORD_WEBHOOK_ALERTS": URL["alerts"], "DISCORD_WEBHOOK_NEEDS_YOU": "bad"})["needs-you"] == "invalid",
       "invalid needs-you is reported, not hidden as fallback")
+# removed routes / obsolete keys from an old discord.json are ignored, not refused
+old = {"routes": {"llm": "DISCORD_WEBHOOK_LLM", "activity": "DISCORD_WEBHOOK_ACTIVITY", "ci": "DISCORD_WEBHOOK_CI"},
+       "silent_routes": ["activity", "ci", "llm"], "disabled_routes": ["llm", "activity"],
+       "quiet_hours": {"start": "23:00", "end": "07:00", "except": ["needs-you", "llm"]},
+       "endpoints": {"remote": {"notify": "loud"}}, "done_min_secs": 600}
+(tmp / "discord.json").write_text(json.dumps(old))
+oc = nn.load_config()
+check("llm" not in oc["routes"] and "activity" not in oc["routes"] and oc["silent_routes"] == ["ci"] and oc["disabled_routes"] == []
+      and oc["quiet_hours"]["except"] == ["needs-you"] and "endpoints" not in oc and "done_min_secs" not in oc, f"old config: {oc}")
+check(set(nn.ROUTES) == {"needs-you", "alerts", "limits", "ci"} and set(nn.webhook_status(oc, {})) == set(nn.ROUTES),
+      "removed routes do not appear")
 # config validation
-for badcfg in ({"limit_thresholds": 80}, {"routes": "x"}, {"endpoints": {"a": {"down_after_polls": "a"}}},
-               {"endpoints": {"a": {"notify": "loud"}}}, {"quiet_hours": {"start": "1", "end": "2"}},
+for badcfg in ({"limit_thresholds": 80}, {"routes": "x"}, {"quiet_hours": {"start": "1", "end": "2"}},
                {"quiet_hours": {"start": "23:00", "end": "07:00", "except": "needs-you"}}):
     (tmp / "discord.json").write_text(json.dumps(badcfg))
     try:
@@ -482,26 +429,12 @@ check(r.returncode == 0 and "no valid webhooks" in r.stderr, f"cli once without 
 
 # flap: a delayed "down" (held by cooldown) must still get its "up"
 cfg = cfg_with()
-st, _ = nn.diff({}, obs(llm=[ep(True), loc]), cfg, NOW)
-seq = []
-for t, up in ((30, False), (60, False), (90, True), (100, False), (120, False), (960, False), (970, True)):
-    st, m = nn.diff(st, obs(llm=[ep(up), loc]), cfg, NOW + t)
-    seq += [x["tpl"] for x in m if x["key"].startswith("llm:remote")]
-check(seq == ["llm-down", "llm-up", "llm-down", "llm-up"], f"flap keeps down/up paired: {seq}")
 st, _ = nn.diff({}, obs(dash=True), cfg, NOW)
 seq = []
 for t, up in ((30, False), (60, False), (90, True), (100, False), (130, False), (970, False), (980, True)):
     st, m = nn.diff(st, obs(dash=up), cfg, NOW + t)
     seq += [x["tpl"] for x in m]
 check(seq == ["dash-down", "dash-up", "dash-down", "dash-up"], f"dash flap paired: {seq}")
-# working -> idle-prompt wait without the idle state ever polled: run ends at the wait
-st, _ = nn.diff({}, obs([sess("h1", "idle", since=NOW - 9)]), cfg, NOW)
-st, _ = nn.diff(st, obs([sess("h1", "working", since=NOW + 5)]), cfg, NOW + 5)
-st, m1 = nn.diff(st, obs([sess("h1", "waiting", since=NOW + 750, note="idle")]), cfg, NOW + 760)
-st, _ = nn.diff(st, obs([sess("h1", "working", since=NOW + 3990)]), cfg, NOW + 3990)
-st, m2 = nn.diff(st, obs([sess("h1", "idle", since=NOW + 4090)]), cfg, NOW + 4100)
-d1 = [x for x in m1 if x["tpl"] == "done"]
-check(len(d1) == 1 and d1[0]["f"]["secs"] == 745 and [x for x in m2 if x["tpl"] == "done"] == [], f"idle-prompt ends run: {m1} {m2}")
 
 # 8. unit text and install wiring (static: running install would touch systemd)
 u = nn.unit_text("/opt/ws/.claude-workspace")
