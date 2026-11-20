@@ -148,7 +148,7 @@ if $notify; then
   unit="$HOME/.config/systemd/user/niu-notify.service"
   mkdir -p "$(dirname "$unit")"
   python3 "$SHARED/bin/niu-notify" unit >"$unit.tmp" && mv "$unit.tmp" "$unit"
-  [[ -f "$SHARED/discord.json" ]] || { cp "$SHARED/discord.template.json" "$SHARED/discord.json"; echo "created $SHARED/discord.json (edit endpoints for your ollama.json names)"; }
+  [[ -f "$SHARED/discord.json" ]] || { cp "$SHARED/discord.template.json" "$SHARED/discord.json"; echo "created $SHARED/discord.json"; }
   secrets="$SHARED/.env"
   if [[ -e "$secrets" ]]; then
     mode="$(stat -c %a "$secrets")"
