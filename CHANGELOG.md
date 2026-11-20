@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.27.1...niu-heimar-v1.0.0) (2026-11-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **notify:** remove the llm and activity Discord routes ([#101](https://github.com/kaiserdrake/niu-heimar/issues/101))
+
+### Features
+
+* **notify:** disabled_routes switch to turn off Discord routes ([#99](https://github.com/kaiserdrake/niu-heimar/issues/99)) ([3044e7e](https://github.com/kaiserdrake/niu-heimar/commit/3044e7e4034dc388d64867f570478551991873b2))
+* **notify:** remove the llm and activity Discord routes ([#101](https://github.com/kaiserdrake/niu-heimar/issues/101)) ([d589bdb](https://github.com/kaiserdrake/niu-heimar/commit/d589bdbd23eba51e7ade8d9e1bb9bf4f0f8cb67e))
+
 ## [0.27.1](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.27.0...niu-heimar-v0.27.1) (2026-11-17)
 
 
