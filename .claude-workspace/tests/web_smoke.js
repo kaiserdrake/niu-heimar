@@ -1665,12 +1665,56 @@ async function designsChecks() {
   }
   return "design docs ok";
 }
+function hostChecks() {
+  const fail = (m) => { throw new Error("host: " + m); };
+  const run = (c) => vm.runInContext(c, ctx);
+  const saved = run("JSON.stringify([STATE.hosts, STATE.sessions.map((s) => [s.host, s.state, s.ended, s.last]), STATE.feed.map((e) => e.host)])");
+  try {
+    const hs = els.get("host"); hs.options = []; hs.add = (o) => { o.remove = () => hs.options.splice(hs.options.indexOf(o), 1); hs.options.push(o); };
+    ctx.Option = function (t, v) { return { text: t, value: v }; };
+    run(`STATE.hosts = ["hub"]; renderHosts()`);
+    if (els.get("host").hidden !== true) fail("select should be hidden with one host");
+    run(`renderSessions()`);
+    if (els.get("sessions").innerHTML.includes("hostbadge")) fail("badge shown with one host");
+    run(`STATE.hosts = ["hub", "laptop"]; renderHosts()`);
+    if (els.get("host").hidden !== false) fail("select should be visible with two hosts");
+    const opts = els.get("host").options || [];
+    // Remote session: badge shows the host, dismiss control hidden even when otherwise dismissable.
+    run(`(() => { const s = STATE.sessions[0]; s.host = "evil<b>x</b>"; s.domain = "(workspace)"; s.ended = false; s.state = "stale"; s.last = STATE.now - 4000; ME = { paired: true }; $("ended").checked = true; renderSessions(); })()`);
+    const html = els.get("sessions").innerHTML;
+    if (!html.includes('class="hostbadge"')) fail("no host badge with two hosts");
+    if (html.includes("evil<b>")) fail("host text not escaped");
+    if (!html.includes("evil&lt;b&gt;x")) fail("host label missing from card");
+    if (html.includes(`data-dismiss="${run("STATE.sessions[0].id")}"`)) fail("dismiss rendered for remote session");
+    // Needs you: the entry names the machine; the detail header carries a badge.
+    run(`(() => { const s = STATE.sessions[0]; ACTIONS = [{ id: "a1", priority: 3, kind: "waiting", title: "Needs <i>x</i>", detail: "d", target: { session: s.id } }]; renderActions(); })()`);
+    const nl = els.get("needslist").innerHTML;
+    if (!nl.includes('class="hostbadge"') || !nl.includes("evil&lt;b&gt;x")) fail("needs-you entry lacks escaped host badge");
+    run(`showDetails({ sid: STATE.sessions[0].id })`);
+    if (!allOf(els.get("amhead")).some((n) => n.classList && n.classList.contains("hostbadge") && n.textContent === "evil<b>x</b>")) fail("detail header badge");
+    run(`STATE.hosts = ["hub"]; renderActions()`);
+    if (els.get("needslist").innerHTML.includes("hostbadge")) fail("needs-you badge with one host");
+    run(`STATE.hosts = ["hub", "laptop"]; ACTIONS = []; renderActions()`);
+    run(`STATE.sessions[0].host = null; renderSessions()`);
+    if (!els.get("sessions").innerHTML.includes(`data-dismiss="${run("STATE.sessions[0].id")}"`)) fail("dismiss missing for local stale session");
+    if (run(`dl("(workspace)", "laptop")`) !== "laptop") fail("dl(d, host)");
+    if (run(`dl("(workspace)", null)`) !== run("HOST()")) fail("dl(d, null)");
+    if (run(`dl("proj", "laptop")`) !== "proj") fail("dl keeps plain domains");
+    if (!/this host and paired machines/.test(textOf(run("tokCounted()")))) fail("token note");
+    run(`STATE.hosts = ["hub"]`);
+    if (/paired machines/.test(textOf(run("tokCounted()")))) fail("token note with one host");
+  } finally {
+    run(`(() => { const o = ${saved}; SELECTED = null; AM.sid = null; $("details").hidden = true; ACTIONS = []; STATE.hosts = o[0]; STATE.sessions.forEach((s, i) => { if (o[1][i]) { s.host = o[1][i][0]; s.state = o[1][i][1]; s.ended = o[1][i][2]; s.last = o[1][i][3]; } }); renderHosts(); })()`);
+  }
+  return "host ok";
+}
 (async () => {
   try {
     console.log(vm.runInContext(src, ctx, { filename: "app.js" }));
     console.log(await vm.runInContext(extra, ctx, { filename: "extra.js" }));
     console.log(timelineChecks());
     console.log(flagChecks());
+    console.log(hostChecks());
     if (process.argv[4]) console.log(await researchChecks(JSON.parse(fs.readFileSync(process.argv[4], "utf8"))));
     if (process.argv[4]) console.log(await researchStatusChecks(JSON.parse(fs.readFileSync(process.argv[4], "utf8")), fs.readFileSync(process.argv[2], "utf8")));
     if (process.argv[6]) console.log(await usageChecks(JSON.parse(fs.readFileSync(process.argv[6], "utf8"))));

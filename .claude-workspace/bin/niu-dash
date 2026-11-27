@@ -20,6 +20,14 @@ Usage:
   niu-dash pair [--name laptop]     show a one-time code to pair a browser (interactive terminal only)
   niu-dash devices                  list paired browsers
   niu-dash revoke ID|all            remove paired browsers
+  niu-dash machine add LABEL        show an 8-digit code (5 min, 5 attempts) to pair a satellite machine that pushes its sessions to this hub
+                                    (interactive terminal only; the satellite runs `niu-forward pair`)
+  niu-dash machines                 list paired machines: label, last seen, rows ingested
+  niu-dash machine revoke LABEL|all remove paired machines (their token stops working at once; their data stays)
+  niu-dash machine purge LABEL      delete everything one machine sent (events, design drafts and copies, token usage)
+  POST /api/machine/pair, POST /api/ingest, GET /api/ingest/cursor
+                                    machine-to-machine routes (bearer token, tailnet identity or loopback, no cookie/Origin; 404 until a machine is paired)
+  host=LABEL                        optional query arg on /api/state, /api/stream and /api/usage/tokens (the hub's own label or a paired machine; else 400)
   niu-dash research-token [--scope monitor|topics] [--remove]
                                     store (or delete) the valkyrie-dispatch token for the Research tab (monitor, the default)
                                     or the Topics panel (topics). Interactive terminal only; the token is read without echo.
@@ -47,6 +55,7 @@ import niu_prs  # noqa: E402
 import niu_research  # noqa: E402
 import niu_topics  # noqa: E402
 import niu_usage  # noqa: E402
+import niu_ingest  # noqa: E402
 from niu_events import agent_catalog, connect, db_path, host_label  # noqa: E402
 from niu_state import SYSTEM_SESSIONS, live, mark_dirty, parse_since  # noqa: E402
 
@@ -108,6 +117,83 @@ def device_for(token):
                     save_auth(data)
                 return d
     return None
+
+
+# ---------- paired-machine store (a different credential type: device_for() never reads it, machine_for() never reads web-sessions.json) ----------
+
+MLOCK = threading.Lock()
+BUCKETS = {}                  # machine id -> [tokens, last refill]; memory only
+BUCKET_BURST, BUCKET_RATE = 10, 2.0
+INGEST_LIMIT, DESIGN_LIMIT = 256 * 1024, 600 * 1024
+
+
+def machines_path() -> Path:
+    return db_path().parent / "machines.json"
+
+
+def load_machines():
+    try:
+        d = json.loads(machines_path().read_text())
+        if isinstance(d, dict) and isinstance(d.get("machines"), list):
+            d.setdefault("pair", None)
+            return d
+    except (OSError, ValueError):
+        pass
+    return {"machines": [], "pair": None}
+
+
+def save_machines(data):
+    p = machines_path()
+    p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = p.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(data, indent=1))
+    os.chmod(tmp, 0o600)
+    tmp.replace(p)
+
+
+def machine_for(token):
+    """The paired machine this bearer token belongs to (or None). Compares against every hash."""
+    if not token:
+        return None
+    h, found = _sha(token), None
+    with MLOCK:
+        for m in load_machines()["machines"]:
+            if hmac.compare_digest(str(m.get("hash", "")), h):
+                found = m
+    return found
+
+
+def machine_touch(mid, rows=0):
+    with MLOCK:
+        data = load_machines()
+        for m in data["machines"]:
+            if m["id"] == mid:
+                m["last_seen"] = time.time()
+                m["rows"] = int(m.get("rows", 0)) + int(rows)
+        save_machines(data)
+
+
+def bucket_ok(mid):
+    """Token bucket per machine: 10 requests burst, 2 per second sustained."""
+    now = time.monotonic()
+    with MLOCK:
+        b = BUCKETS.setdefault(mid, [float(BUCKET_BURST), now])
+        b[0] = min(BUCKET_BURST, b[0] + (now - b[1]) * BUCKET_RATE)
+        b[1] = now
+        if b[0] < 1:
+            return False
+        b[0] -= 1
+        return True
+
+
+def known_hosts():
+    """{lowercase label: canonical label} of the hub itself and every paired machine."""
+    out = {host_label().lower(): host_label()}
+    for m in load_machines()["machines"]:
+        out[str(m.get("label", "")).lower()] = m["label"]
+    return out
 
 
 # ---------- PR cache with background refresh ----------
@@ -240,6 +326,17 @@ class Handler(BaseHTTPRequestHandler):
             since = 86400
         return since, (q.get("domain", [""])[0] or None)
 
+    def _host_arg(self):
+        """(host, ok): host as niu_state wants it (None = all, hub label = hub only, else a paired label); ok False after answering 400."""
+        raw = parse_qs(urlparse(self.path).query).get("host", [""])[0]
+        if not raw:
+            return None, True
+        canon = known_hosts().get(raw.lower())
+        if not canon:
+            self._err(400, "unknown host")
+            return None, False
+        return canon, True
+
     def _feed_n(self):
         try:
             return max(20, min(500, int(parse_qs(urlparse(self.path).query).get("feed", ["60"])[0])))
@@ -248,9 +345,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _state(self):
         since, domain = self._args()
+        host, ok = self._host_arg()
+        if not ok:
+            return None
         lv = live(since)
         lv.refresh()
-        state = dict(lv.json_for(domain, self._feed_n()))
+        state = dict(lv.json_for(domain, self._feed_n(), host=host))
         state["host"] = host_label()
         state["version"] = lv.version
         state["server_now"] = time.time()
@@ -268,25 +368,33 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/designs":
             if sid and not RE_SID.fullmatch(sid):
                 return self._err(400, "bad sid")
-            extra, sdir = [], None
+            extra, sdir, remote_sids, rhost = [], None, set(), None
             try:
                 lv = live(self._args()[0])
                 lv.refresh()
-                extra = sorted({s["project_dir"] for s in lv.sessions.values() if s.get("project_dir")})
+                remote_sids = {k for k, v in lv.sessions.items() if v.get("host")}
+                extra = sorted({s["project_dir"] for s in lv.sessions.values() if s.get("project_dir") and not s.get("host")})
                 if sid:
-                    sdir = (lv.sessions.get(sid) or {}).get("project_dir")
+                    ss = lv.sessions.get(sid) or {}
+                    sdir = None if ss.get("host") else ss.get("project_dir")
+                    rhost = ss.get("host") or None
             except Exception:
                 pass
             con = None
             try:
                 con = connect(readonly=True)
-                if sid and not sdir:
+                if sid and not sdir and sid not in remote_sids:
                     row = con.execute("SELECT project_dir FROM events WHERE session_id = ? AND project_dir IS NOT NULL ORDER BY id DESC LIMIT 1", (sid,)).fetchone()
                     sdir = row and row[0]
+                    if sdir and not str(sdir).startswith("/"):
+                        sdir = None   # a paired machine's opaque key, never a local path
                 if sdir and sdir not in extra:
                     extra.append(sdir)
                 idx = niu_designs.index(extra)
-                sdocs = niu_designs.session_docs(con, sid, sdir, idx) if sid and sdir else []
+                if sid and rhost:   # a paired machine's session: matched by (host, rel) in the DB, never by a local path
+                    sdocs = niu_designs.session_docs(con, sid, "remote", idx, host=rhost)
+                else:
+                    sdocs = niu_designs.session_docs(con, sid, sdir, idx) if sid and sdir else []
             except Exception:
                 idx, sdocs = {}, []
             finally:
@@ -298,7 +406,7 @@ class Handler(BaseHTTPRequestHandler):
                     n = len(niu_designs.revisions(e))
                 except Exception:
                     n = 0
-                docs.append({k: e.get(k) for k in ("id", "domain", "project", "name", "title", "status", "mtime", "rel")} | {"revisions": n})
+                docs.append({k: e.get(k) for k in ("id", "domain", "project", "name", "title", "status", "mtime", "rel", "host")} | {"revisions": n})
             docs.sort(key=lambda d: d["mtime"] or 0, reverse=True)
             return self._json({"docs": docs, "session_docs": [d for d in sdocs if d in idx]})
         doc_id = arg("id")
@@ -311,7 +419,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             lv = live(self._args()[0])
             lv.refresh()
-            extra = sorted({s["project_dir"] for s in lv.sessions.values() if s.get("project_dir")})
+            extra = sorted({s["project_dir"] for s in lv.sessions.values() if s.get("project_dir") and not s.get("host")})
         except Exception:
             extra = []
         try:
@@ -338,9 +446,136 @@ class Handler(BaseHTTPRequestHandler):
         d = niu_designs.diff(texts[0], texts[1])
         self._json({"id": doc_id, "a": revs[0][1], "b": revs[1][1], "stats": d.get("stats"), "lines": d.get("lines"), "blocks": d.get("blocks")})
 
+    # machine-to-machine routes (satellites push here; never cookies, never CSRF/Origin)
+    def _machine_gate(self, pairing=False):
+        """Checks 1-3 of the ingest design, each failing closed. True when the request may go on (answers itself otherwise)."""
+        data = load_machines()
+        pair = data.get("pair")
+        if pairing:
+            if not pair or time.time() > pair.get("expires", 0):
+                self._err(404, "not found")
+                return False
+        elif not data["machines"]:
+            self._err(404, "not found")
+            return False
+        if self.headers.get("Cookie") is not None or self.headers.get("Origin") is not None:
+            self._err(403, "browsers may not use this route")
+            return False
+        host = (self.headers.get("Host") or "").rsplit(":", 1)[0] if not (self.headers.get("Host") or "").startswith("[") else ""
+        if not self.headers.get("Tailscale-User-Login") and host not in ("127.0.0.1", "localhost"):
+            self._err(403, "tailnet or loopback only")
+            return False
+        return True
+
+    def _machine_auth(self):
+        """The authenticated machine dict (answers 401 / 403 / 429 otherwise and returns None)."""
+        auth = self.headers.get("Authorization") or ""
+        token = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+        m = machine_for(token)
+        if not m:
+            self._err(401, "bad token")
+            return None
+        if m.get("login") and self.headers.get("Tailscale-User-Login") != m["login"]:
+            self._err(403, "login mismatch")
+            return None
+        if not bucket_ok(m["id"]):
+            self._json({"error": "slow down"}, 429, {"Retry-After": "1"})
+            return None
+        return m
+
+    def _machine_pair(self):
+        if not self._machine_gate(pairing=True):
+            return
+        b = self._body_strict(1024)
+        if b is None:
+            return
+        code = str(b.get("code", "")).strip()
+        login = self.headers.get("Tailscale-User-Login") or ""
+        with MLOCK:
+            data = load_machines()
+            p = data.get("pair")
+            if not p or time.time() > p.get("expires", 0):
+                return self._err(404, "not found")
+            p["attempts"] = p.get("attempts", 0) + 1
+            if p["attempts"] > PAIR_MAX_ATTEMPTS:
+                data["pair"] = None
+                save_machines(data)
+                return self._err(429, "too many attempts: run the pairing command on the hub again")
+            if not hmac.compare_digest(str(p.get("code_hash", "")), _sha(code)):
+                save_machines(data)
+                return self._err(403, "wrong code")
+            token = secrets.token_urlsafe(32)
+            m = {"id": secrets.token_hex(4), "label": p["label"], "hash": _sha(token), "created": time.time(),
+                 "last_seen": time.time(), "login": login[:200], "rows": 0}
+            data["machines"].append(m)
+            data["pair"] = None
+            save_machines(data)
+        self._json({"ok": True, "token": token, "label": m["label"]})
+
+    def _ingest(self):
+        if not self._machine_gate():
+            return
+        m = self._machine_auth()
+        if m is None:
+            return
+        try:
+            n = int(self.headers.get("Content-Length") or "")
+        except ValueError:
+            n = -1
+        b = self._body_strict(DESIGN_LIMIT)
+        if b is None:
+            return
+        kind, rows = b.get("kind"), b.get("rows")
+        if b.get("v") != 1 or kind not in niu_ingest.MAX_ROWS or not isinstance(rows, list):
+            return self._json({"ok": False, "code": "badbody"}, 400)
+        if kind != "designs" and n > INGEST_LIMIT:
+            return self._json({"ok": False, "code": "toolarge"}, 413)
+        label = m["label"]
+        try:
+            if kind == "tokens":
+                res = niu_ingest.ingest_tokens(label, rows)
+                cur = None
+            else:
+                con = connect()
+                try:
+                    res = getattr(niu_ingest, "ingest_" + kind)(con, label, rows)
+                    cur = niu_ingest.cursor(con, label)
+                finally:
+                    con.close()
+        except Exception:
+            return self._json({"ok": False, "code": "error"}, 500)
+        machine_touch(m["id"], res.get("accepted", 0))
+        if res.get("accepted") and kind != "tokens":
+            mark_dirty()
+            if kind in ("designs", "snapshots"):
+                niu_designs.invalidate()   # the 30 s doc index must show the pushed copy at once
+        out = {"ok": True, "accepted": res.get("accepted", 0), "skipped": res.get("skipped", 0)}
+        if cur is not None:
+            out["cursor"] = cur
+        self._json(out)
+
+    def _ingest_cursor(self):
+        if not self._machine_gate():
+            return
+        m = self._machine_auth()
+        if m is None:
+            return
+        try:
+            con = connect()
+            try:
+                cur = niu_ingest.cursor(con, m["label"])
+            finally:
+                con.close()
+        except Exception:
+            return self._json({"ok": False, "code": "error"}, 500)
+        machine_touch(m["id"])
+        self._json({"ok": True, "cursor": cur, "server_now": time.time()})
+
     # routes
     def do_GET(self):
         path = urlparse(self.path).path
+        if path == "/api/ingest/cursor":
+            return self._ingest_cursor()
         if path in STATIC:
             name, ctype = STATIC[path]
             try:
@@ -350,7 +585,9 @@ class Handler(BaseHTTPRequestHandler):
             self._headers(200, ctype, {"Content-Length": str(len(body))})
             self.wfile.write(body)
         elif path == "/api/state":
-            self._json(self._state())
+            state = self._state()
+            if state is not None:
+                self._json(state)
         elif path == "/api/agents":
             # Read-only agent catalog of one session (names, models, one-sentence descriptions; no paths). Unpaired like /api/state.
             sid = parse_qs(urlparse(self.path).query).get("sid", [""])[0]
@@ -361,6 +598,8 @@ class Handler(BaseHTTPRequestHandler):
             s = lv.sessions.get(sid)
             if not s:
                 return self._err(404, "unknown session")
+            if s.get("host"):   # the catalog lives on that machine; never read local files for a remote project_dir
+                return self._json({"sid": sid, "remote": True, "host": s["host"], "agents": [], "skills": [], "local_tools": []})
             self._json({"sid": sid, **agent_catalog(s["project_dir"], s["domain"])})
         elif path == "/api/prs":
             self._json(prs_json())
@@ -381,7 +620,12 @@ class Handler(BaseHTTPRequestHandler):
             # Token totals from usage.db (aggregates only: no paths, no text). range and source are enums, domain is validated; cached 60 s.
             q = parse_qs(urlparse(self.path).query)
             src = q.get("source", ["all"])[0]
-            self._json(niu_usage.tokens_cached(q.get("range", [None])[0], q.get("domain", [""])[0], source=src if src in niu_usage.TOKEN_SOURCES else "all"))
+            host, ok = self._host_arg()
+            if not ok:
+                return
+            if host is not None and host == host_label():
+                host = ""      # niu_usage: "" = this machine only
+            self._json(niu_usage.tokens_cached(q.get("range", [None])[0], q.get("domain", [""])[0], source=src if src in niu_usage.TOKEN_SOURCES else "all", host=host))
         elif path == "/api/me":
             d = device_for(self._cookie())
             self._json({"paired": bool(d), "device": d and {"id": d["id"], "name": d["name"]}})
@@ -402,8 +646,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _stream(self):
         """Push a snapshot whenever the shared state or the PR list changes (checked once a second)."""
-        self._headers(200, "text/event-stream", {"Connection": "keep-alive", "X-Accel-Buffering": "no"})
         since, domain = self._args()
+        host, ok = self._host_arg()
+        if not ok:
+            return
+        self._headers(200, "text/event-stream", {"Connection": "keep-alive", "X-Accel-Buffering": "no"})
         lv = live(since)
         sent, beat = None, time.time()
         try:
@@ -412,7 +659,7 @@ class Handler(BaseHTTPRequestHandler):
                 prs = prs_json()
                 key = (version, prs.get("fetched"), prs.get("refreshing"))
                 if key != sent:
-                    state = dict(lv.json_for(domain, self._feed_n()))
+                    state = dict(lv.json_for(domain, self._feed_n(), host=host))
                     state.update(host=host_label(), version=version, prs=prs, server_now=time.time())
                     state["actions"] = actions(state, prs)
                     self.wfile.write(b"data: " + json.dumps(state, default=str).encode() + b"\n\n")
@@ -428,6 +675,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/machine/pair":
+            return self._machine_pair()
+        if path == "/api/ingest":
+            return self._ingest()
         if not self._post_ok():
             return
         if path == "/api/pair":
@@ -475,6 +726,16 @@ class Handler(BaseHTTPRequestHandler):
                 row = None
             if not row:
                 return self._err(404, "unknown session")
+            try:
+                con = connect(readonly=True)
+                try:
+                    remote = con.execute("SELECT 1 FROM events WHERE session_id = ? AND host IS NOT NULL LIMIT 1", (sid,)).fetchone()
+                finally:
+                    con.close()
+            except Exception:
+                remote = None
+            if remote or not str(row["project_dir"] or "/").startswith("/"):
+                return self._err(403, "sessions from paired machines are read-only here")
             if row["event"] == "SessionEnd" and (row["summary"] or "").startswith("dismissed"):
                 return self._json({"ok": True})  # already dismissed: don't add another row
             try:
@@ -619,6 +880,68 @@ def cmd_revoke(args):
     print(f"revoked {before - len(data['devices'])} device(s)")
 
 
+def cmd_machine_add(args):
+    if not niu_prs.can_prompt():
+        sys.exit("niu-dash: machine add needs an interactive terminal (you pair each machine yourself)")
+    with MLOCK:
+        data = load_machines()
+        taken = {str(m.get("label", "")).lower() for m in data["machines"]}
+        if not niu_ingest.label_ok(args.label, host_label()):
+            sys.exit("niu-dash: the label must be 1-32 characters of A-Z a-z 0-9 _ - and differ from this machine's own name")
+        if args.label.lower() in taken:
+            sys.exit(f"niu-dash: a machine called {args.label} is already paired (revoke it first)")
+        code = f"{secrets.randbelow(10**8):08d}"
+        data["pair"] = {"code_hash": _sha(code), "expires": time.time() + PAIR_TTL, "attempts": 0, "label": args.label}
+        save_machines(data)
+    print(f"Pairing code for {args.label}: {code[:4]} {code[4:]}   (valid 5 minutes, {PAIR_MAX_ATTEMPTS} attempts)")
+    print("On that machine run: niu-forward pair --url https://<hub>.<tailnet>.ts.net:8443")
+
+
+def cmd_machines(_args):
+    ms = load_machines()["machines"]
+    if not ms:
+        print("no paired machines")
+    for m in ms:
+        seen = time.strftime("%Y-%m-%d %H:%M", time.localtime(m.get("last_seen", 0)))
+        print(f"{m['label']:<20} last seen {seen}  rows {int(m.get('rows', 0))}")
+
+
+def cmd_machine_revoke(args):
+    with MLOCK:
+        data = load_machines()
+        before = len(data["machines"])
+        want = args.label.lower()
+        data["machines"] = [] if args.label == "all" else [m for m in data["machines"] if str(m.get("label", "")).lower() != want]
+        if args.label == "all":
+            data["pair"] = None
+        save_machines(data)
+    print(f"revoked {before - len(data['machines'])} machine(s)")
+
+
+def cmd_machine_purge(args):
+    if not niu_ingest.RE_LABEL.fullmatch(args.label):
+        sys.exit("niu-dash: bad machine label")
+    counts = {}
+    con = connect()
+    try:
+        with con:
+            for t in ("events", "design_snapshots", "remote_designs"):
+                counts[t] = con.execute(f"DELETE FROM {t} WHERE host = ?", (args.label,)).rowcount
+    finally:
+        con.close()
+    prefix = f"remote:{args.label}:"
+    uc = niu_usage.connect()
+    try:
+        with uc:
+            where = "substr(path, 1, ?) = ?"
+            ids = "SELECT id FROM tok_files WHERE " + where
+            counts["tok_msgs"] = uc.execute(f"DELETE FROM tok_msgs WHERE file_id IN ({ids})", (len(prefix), prefix)).rowcount
+            counts["tok_files"] = uc.execute("DELETE FROM tok_files WHERE " + where, (len(prefix), prefix)).rowcount
+    finally:
+        uc.close()
+    print("purged " + ", ".join(f"{k}: {v}" for k, v in counts.items()))
+
+
 def cmd_research_token(args):
     mod = niu_topics if args.scope == "topics" else niu_research
     if args.remove:
@@ -665,6 +988,12 @@ def main():
     r = sub.add_parser("revoke")
     r.add_argument("id")
     r.set_defaults(fn=cmd_revoke)
+    sub.add_parser("machines").set_defaults(fn=cmd_machines)
+    mc = sub.add_parser("machine").add_subparsers(dest="mcmd", required=True)
+    for name, fn in (("add", cmd_machine_add), ("revoke", cmd_machine_revoke), ("purge", cmd_machine_purge)):
+        x = mc.add_parser(name)
+        x.add_argument("label")
+        x.set_defaults(fn=fn)
     t = sub.add_parser("research-token")
     t.add_argument("--remove", action="store_true")
     t.add_argument("--scope", choices=("monitor", "topics"), default="monitor")

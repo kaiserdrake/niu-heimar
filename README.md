@@ -328,6 +328,63 @@ saves on every Write or Edit of a proposal (kept 30 days, newest 40 per proposal
 off). Edits made through Bash are not captured. **Compare** shows two revisions as a rendered or line diff. A session's
 details list "Proposal: \<title\>" links to the proposals it wrote, and clicking the designer node opens its newest proposal.
 
+## Multiple machines
+Run Claude on a second machine (the **satellite**, e.g. Vanaheim) and see its sessions on the dashboard of the **hub**
+(e.g. Midgard). Only dashboard data is pushed. Agents always run on the machine where Claude runs.
+
+- **Hub** (Midgard): the machine with the dashboard and Discord notifications. Set it up as in *Web dashboard*.
+- **Satellite** (Vanaheim): its own niu-heimar checkout, with `install` and `claude-init` per project. Its agents, skills,
+  hooks and `niu-local` tools run there and read that machine's files.
+- Give the satellite its own model endpoint. In its own gitignored `.claude-workspace/ollama.json`, set `api_key_file` on the
+  GPU box / llm-gateway endpoint to a 0600 file with that satellite's own key. Never publish the hub's Ollama on the tailnet.
+
+**Setup**
+```bash
+# satellite (Vanaheim)
+.claude-workspace/bin/install --satellite                          # enables niu-forward; it waits until paired
+
+# hub (Midgard), interactive terminal: prints an 8-digit code, valid 5 minutes
+niu-dash machine add Vanaheim
+
+# satellite, interactive terminal: enter the code when asked
+niu-forward pair --url https://<hub>.<tailnet>.ts.net:8443
+systemctl --user restart niu-forward
+niu-forward status                                                 # on the satellite
+niu-dash machines                                                  # on the hub
+```
+- The label may use `A-Z a-z 0-9 _ -` (1 to 32 characters) and must differ from the hub's own name.
+- Don't run `install --notify` on a satellite. Discord notifications run on the hub only.
+
+**What is sent** (satellite to hub)
+- Session, subagent and tool events, with summaries redacted and cut to 120 characters. Paths are workspace-relative only;
+  absolute paths and the home directory are never sent.
+- Token usage counts (no prompts or replies).
+- Design proposals (`.claude-proposals/`) and their drafts for `(workspace)`, `PERSONAL` and `HOBBY`.
+  **WORK** sends events and usage but never design docs.
+- Not sent: Claude plan limits (the hub samples those itself).
+- The `send` block in `.claude-workspace/forward.json` switches `events`, `tokens` or `designs` off.
+
+**Offline:** the hooks only write to the satellite's local database, so no Claude session waits for the hub. If the hub is
+unreachable, `niu-forward` retries with backoff and catches up from where it stopped. Events older than the 7-day local
+retention are lost.
+
+**On the hub**
+- Remote sessions are read-only: you can't dismiss them.
+- A host filter next to the domain filter, and host badges on sessions and feed rows, appear once more than one host exists.
+
+**Requirements**
+- Publish the hub's dashboard with `tailscale serve` (see *Web dashboard*), not Funnel. The hub refuses requests without
+  the tailnet identity header, and Funnel doesn't send one.
+- Use untagged Tailscale nodes only. A tagged node sends no identity header, so the hub refuses it.
+
+**Turn off and clean up**
+```bash
+systemctl --user disable --now niu-forward      # satellite: stop forwarding
+niu-dash machine revoke Vanaheim                # hub: the token stops working at once (data stays)
+niu-dash machine purge Vanaheim                 # hub: delete everything this machine sent
+```
+`niu-dash machine revoke all` removes every paired machine.
+
 ## Discord notifications
 `niu-notify` is a small background service that posts to your own Discord server when something changes, so you hear about
 it even when you can't reach the dashboard. It is **outbound only**: Discord webhooks, no bot, and no commands are accepted

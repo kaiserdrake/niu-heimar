@@ -64,6 +64,10 @@ RE_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,59}")
 RE_AGENT_TYPE = re.compile(r"[A-Za-z0-9_.:-]{1,80}")
 RE_DOMAIN_Q = re.compile(r"[A-Za-z0-9 ._()-]{1,64}")
 OUTSIDE = "(outside)"
+RE_HOST = re.compile(r"[A-Za-z0-9_-]{1,32}")      # a paired machine label
+RE_FILE_KEY = re.compile(r"[hl]:[0-9a-f]{32}(#side)?")
+INGEST_MAX_ROWS = 2000
+INT64 = 2 ** 63
 RE_LOCAL_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}")
 FAMILIES = ("opus", "sonnet", "haiku", "local", "other")
 TOKEN_SOURCES = ("all", "claude", "local")
@@ -84,7 +88,8 @@ CREATE TABLE IF NOT EXISTS tok_files (
   id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, dev INTEGER, ino INTEGER, size INTEGER, mtime_ns INTEGER,
   offset INTEGER NOT NULL DEFAULT 0, skipping INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL CHECK (kind IN ('main','sub')),
   session_id TEXT, agent_id TEXT, agent_type TEXT, domain TEXT, project TEXT, last_seen REAL,
-  source TEXT NOT NULL DEFAULT 'claude' CHECK (source IN ('claude','local_agent','local_lite')));
+  source TEXT NOT NULL DEFAULT 'claude' CHECK (source IN ('claude','local_agent','local_lite')),
+  host TEXT);
 CREATE TABLE IF NOT EXISTS tok_models (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, family TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tok_msgs (
   mkey INTEGER PRIMARY KEY,
@@ -93,7 +98,7 @@ CREATE TABLE IF NOT EXISTS tok_msgs (
 CREATE INDEX IF NOT EXISTS tok_msgs_ts ON tok_msgs(ts);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 """
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Fixed, content-free summaries of what went wrong; exception text is never exposed.
 ERR_NONE, ERR_READ, ERR_DB, ERR_OTHER = "none", "reading", "database", "other"
@@ -135,7 +140,11 @@ def connect(readonly: bool = False) -> sqlite3.Connection:
         if uv < 3 and not any(r[1] == "source" for r in con.execute("PRAGMA table_info(tok_files)")):
             # v2 -> v3: existing rows are Claude rows (the default). SQLite can't add a CHECK here; the writer validates the value.
             con.execute("ALTER TABLE tok_files ADD COLUMN source TEXT NOT NULL DEFAULT 'claude'")
+        if not any(r[1] == "host" for r in con.execute("PRAGMA table_info(tok_files)")):
+            # v3 -> v4: existing rows belong to this machine (host NULL); remote rows (ingest_rows) carry the paired machine's label.
+            con.execute("ALTER TABLE tok_files ADD COLUMN host TEXT")
         con.execute("CREATE INDEX IF NOT EXISTS tok_files_source ON tok_files(source)")
+        con.execute("CREATE INDEX IF NOT EXISTS tok_files_host ON tok_files(host)")
         if uv < SCHEMA_VERSION:
             con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     con.row_factory = sqlite3.Row
@@ -587,7 +596,7 @@ def _meta_int(con, k):
 
 def reset_offsets(con):
     """`usage-scan --full`: forget every offset so each file is read again (dedup makes that safe)."""
-    con.execute("UPDATE tok_files SET offset=0, size=NULL, mtime_ns=NULL, skipping=0")
+    con.execute("UPDATE tok_files SET offset=0, size=NULL, mtime_ns=NULL, skipping=0 WHERE path NOT LIKE 'remote:%'")
     con.execute("DELETE FROM meta WHERE k LIKE 'lite:%'")
     _meta_set(con, "corrupt_lines", 0)
     _meta_set(con, "skipped_files", 0)
@@ -855,7 +864,7 @@ def scan_once(budget_bytes=SCAN_BYTES, budget_secs=SCAN_SECS, now=None, clock=ti
             con = connect()
         if full:
             reset_offsets(con)
-        known = {r["path"]: r for r in con.execute("SELECT id, path, dev, ino, size, mtime_ns, offset, skipping, agent_type, domain, project, last_seen, kind, session_id, source FROM tok_files")}
+        known = {r["path"]: r for r in con.execute("SELECT id, path, dev, ino, size, mtime_ns, offset, skipping, agent_type, domain, project, last_seen, kind, session_id, source FROM tok_files WHERE path NOT LIKE 'remote:%'")}
         ps = _Pass(None, os.getuid() if uid is None else uid, budget_bytes, budget_secs, clock, now)
         done, pending_bytes, touch, total = 0, 0, [], 0
         for source, rt in roots:
@@ -1149,11 +1158,22 @@ def _fold(rows, limit):
     return rows[:limit] + [other]
 
 
-def tokens(range_=None, domain=None, now=None, source="all"):
-    """Payload of GET /api/usage/tokens (read-only). Never raises; failures give a fixed `error` state. No paths, no titles, no text."""
+def clamp_host(v):
+    """None = all hosts; "" = this machine only (hub); a label matching RE_HOST = that paired machine; anything else = all hosts."""
+    if v == "":
+        return ""
+    return v if isinstance(v, str) and RE_HOST.fullmatch(v) else None
+
+
+def tokens(range_=None, domain=None, now=None, source="all", host=None):
+    """Payload of GET /api/usage/tokens (read-only). Never raises; failures give a fixed `error` state. No paths, no titles, no text.
+
+    `host`: None = every host (this machine and paired ones); "" = this machine only (tok_files.host IS NULL); a machine
+    label (RE_HOST) = rows ingested from that machine. An invalid label counts as None."""
     now = time.time() if now is None else now
     rng = clamp_range(range_)
     source = clamp_source(source)
+    host = clamp_host(host)
     domain = domain if isinstance(domain, str) and RE_DOMAIN_Q.fullmatch(domain) else ""
     if tokens_disabled():
         return _empty_tokens("disabled", rng, now, source=source)
@@ -1176,6 +1196,13 @@ def tokens(range_=None, domain=None, now=None, source="all"):
         st = _starts(now)
         since, until = st[rng], now + 1
         dom_sql, dom_arg = (" AND COALESCE(f.domain, ?) = ?", [OUTSIDE, domain]) if domain else ("", [])
+        if host is not None:       # a file without the host column (v3, not migrated yet) is all this machine's
+            has_host = any(r[1] == "host" for r in con.execute("PRAGMA table_info(tok_files)"))
+            if host == "":
+                dom_sql += " AND f.host IS NULL" if has_host else ""
+            else:
+                dom_sql += " AND f.host = ?" if has_host else " AND 0"
+                dom_arg = dom_arg + ([host] if has_host else [])
         base0 = "FROM tok_msgs t JOIN tok_files f ON f.id = t.file_id JOIN tok_models m ON m.id = t.model_id WHERE t.ts >= ? AND t.ts < ?" + dom_sql
         base = base0 + {"all": "", "claude": f" AND {SRC} = 'claude'", "local": f" AND {SRC} <> 'claude'"}[source]   # literals from a fixed enum
 
@@ -1289,20 +1316,149 @@ def tokens(range_=None, domain=None, now=None, source="all"):
 _tok_memo = {}
 
 
-def tokens_cached(range_=None, domain=None, now=None, source="all"):
-    """tokens() memoised per (range, domain, source) for 60 s; the memo is small and bounded."""
+def tokens_cached(range_=None, domain=None, now=None, source="all", host=None):
+    """tokens() memoised per (range, domain, source, host) for 60 s; the memo is small and bounded."""
     rng = clamp_range(range_)
     src = clamp_source(source)
     dom = domain if isinstance(domain, str) and RE_DOMAIN_Q.fullmatch(domain) else ""
     t = time.time() if now is None else now
-    key = (rng, dom, src)
+    hst = clamp_host(host)
+    key = (rng, dom, src, hst)
     with _memo_lock:
         hit = _tok_memo.get(key)
         if hit and 0 <= t - hit[0] < MEMO_SECS:
             return hit[1]
-    payload = tokens(rng, dom, t, src)
+    payload = tokens(rng, dom, t, src, hst)
     with _memo_lock:
         if len(_tok_memo) >= 64:
             _tok_memo.clear()
         _tok_memo[key] = (t, payload)
     return payload
+
+
+# ---------- multi-machine: token rows from / to a paired machine ----------
+def _count(v):
+    return isinstance(v, int) and not isinstance(v, bool) and 0 <= v < 10 ** 9
+
+
+def _opt(v, rx):
+    return v is None or (isinstance(v, str) and rx.fullmatch(v) is not None)
+
+
+def _valid_row(r):
+    """(row, file) of one ingest row when every field passes the allow-lists the scanner uses, else None."""
+    if not isinstance(r, dict):
+        return None
+    f = r.get("file")
+    if not isinstance(f, dict):
+        return None
+    mkey, ts, model = r.get("mkey"), r.get("ts"), r.get("model")
+    if isinstance(mkey, bool) or not isinstance(mkey, int) or not -INT64 <= mkey < INT64:
+        return None
+    if isinstance(ts, bool) or not isinstance(ts, (int, float)) or not 1.5e9 < ts < time.time() + 86400 * 2:
+        return None
+    if not all(_count(r.get(k)) for k in ("inp", "outp", "cw", "cr")):
+        return None
+    src, kind, key = f.get("source"), f.get("kind"), f.get("key")
+    if src not in (SRC_CLAUDE, SRC_AGENT, SRC_LITE) or kind not in ("main", "sub"):
+        return None
+    if not (isinstance(key, str) and RE_FILE_KEY.fullmatch(key)):
+        return None
+    if not (isinstance(model, str) and (RE_MODEL if src == SRC_CLAUDE else RE_LOCAL_MODEL).fullmatch(model)):
+        return None
+    if not (_opt(f.get("session_id"), RE_UUID) and _opt(f.get("agent_id"), RE_AGENT_ID) and _opt(f.get("agent_type"), RE_AGENT_TYPE)
+            and _opt(f.get("domain"), RE_DOMAIN_Q)):
+        return None
+    project = f.get("project")
+    if not (project is None or (isinstance(project, str) and 0 < len(project) <= 120 and ".." not in project
+                                and not project.startswith("/") and project.isprintable())):
+        return None
+    return r, f
+
+
+def ingest_rows(label: str, rows: list) -> dict:
+    """Store token rows sent by the paired machine `label` (the hub assigns the label; the payload never names a host).
+
+    Row shape (same as export_rows): {mkey, ts, model, inp, outp, cw, cr, file: {key, kind, session_id, agent_id, agent_type,
+    domain, project, source}}. A bad row is skipped, not fatal; a bad label, a non-list or more than INGEST_MAX_ROWS rows
+    accepts nothing. Files are stored in tok_files as path "remote:<label>:<file key>" with host=label and last_seen=now (so
+    prune() keeps them while they stay active); messages are INSERT OR IGNORE by mkey (a transcript present on two machines
+    counts once). Opens the usage DB itself. Returns {"accepted": n, "skipped": m}."""
+    if not isinstance(rows, list):
+        return {"accepted": 0, "skipped": 0}
+    if not isinstance(label, str) or not RE_HOST.fullmatch(label) or len(rows) > INGEST_MAX_ROWS:
+        return {"accepted": 0, "skipped": len(rows)}
+    now = time.time()
+    good = [v for v in map(_valid_row, rows) if v is not None]
+    accepted = 0
+    if good:
+        con = connect()
+        try:
+            files, models = {}, {}
+            for r, f in good:
+                path = f"remote:{label}:{f['key']}"
+                fid = files.get(path)
+                if fid is None:
+                    con.execute("INSERT OR IGNORE INTO tok_files(path, kind, session_id, agent_id, agent_type, domain, project, last_seen, source, host) "
+                                "VALUES (?,?,?,?,?,?,?,?,?,?)", (path, f["kind"], f.get("session_id"), f.get("agent_id"), f.get("agent_type"),
+                                                                 f.get("domain"), f.get("project"), now, f["source"], label))
+                    con.execute("UPDATE tok_files SET last_seen=? WHERE path=?", (now, path))
+                    fid = files[path] = con.execute("SELECT id FROM tok_files WHERE path=?", (path,)).fetchone()[0]
+                local = f["source"] != SRC_CLAUDE
+                mid = models.get((local, r["model"]))
+                if mid is None:
+                    name, fam = (r["model"], "local") if local else norm_model(r["model"])
+                    if local:
+                        ex = con.execute("SELECT family FROM tok_models WHERE name=?", (name,)).fetchone()
+                        if ex is not None and ex[0] != "local":
+                            name = "local:" + name[:73]          # a Claude row is never re-labelled
+                    con.execute("INSERT OR IGNORE INTO tok_models(name, family) VALUES (?, ?)", (name, fam))
+                    mid = models[(local, r["model"])] = con.execute("SELECT id FROM tok_models WHERE name=?", (name,)).fetchone()[0]
+                accepted += con.execute("INSERT OR IGNORE INTO tok_msgs(mkey, ts, file_id, model_id, inp, outp, cw, cr) VALUES (?,?,?,?,?,?,?,?)",
+                                        (r["mkey"], float(r["ts"]), fid, mid, r["inp"], r["outp"], r["cw"], r["cr"])).rowcount
+            con.commit()
+        except sqlite3.Error:
+            con.rollback()
+            raise
+        finally:
+            con.close()
+    return {"accepted": accepted, "skipped": len(rows) - accepted}
+
+
+def export_rows(since_ts: float, limit: int, after_mkeys=None) -> list:
+    """Token rows of THIS machine (tok_files.host IS NULL) with ts >= since_ts, oldest first, in exactly the ingest_rows shape.
+
+    `after_mkeys` is a container of mkeys already sent (set/dict/...) or a callable mkey -> bool; those rows are skipped, so the
+    forwarder passes its sent set and gets the next batch. At most `limit` rows (capped at INGEST_MAX_ROWS). file.key is the
+    hashed _file_key value stored in tok_files.path, never a real path; a row whose key is not such a hash is not exported.
+    Read-only; [] when there is no usage.db or on a database error."""
+    limit = max(0, min(int(limit), INGEST_MAX_ROWS))
+    seen = after_mkeys if callable(after_mkeys) else (after_mkeys.__contains__ if after_mkeys is not None else (lambda _k: False))
+    out = []
+    if not limit:
+        return out
+    try:
+        con = connect(readonly=True)
+    except (FileNotFoundError, sqlite3.Error):
+        return out
+    try:
+        has_host = any(r[1] == "host" for r in con.execute("PRAGMA table_info(tok_files)"))
+        has_src = any(r[1] == "source" for r in con.execute("PRAGMA table_info(tok_files)"))
+        cur = con.execute("SELECT t.mkey, t.ts, m.name, t.inp, t.outp, t.cw, t.cr, f.path, f.kind, f.session_id, f.agent_id, f.agent_type, f.domain, f.project, "
+                          + ("f.source" if has_src else "'claude'")
+                          + " FROM tok_msgs t JOIN tok_files f ON f.id = t.file_id JOIN tok_models m ON m.id = t.model_id WHERE t.ts >= ?"
+                          + (" AND f.host IS NULL" if has_host else "") + " ORDER BY t.ts, t.mkey", (float(since_ts),))
+        for r in cur:
+            if seen(r[0]) or not RE_FILE_KEY.fullmatch(r[7] or ""):
+                continue
+            model = r[2][6:] if r[14] != SRC_CLAUDE and r[2].startswith("local:") else r[2]
+            out.append({"mkey": r[0], "ts": r[1], "model": model, "inp": r[3], "outp": r[4], "cw": r[5], "cr": r[6],
+                        "file": {"key": r[7], "kind": r[8], "session_id": r[9], "agent_id": r[10], "agent_type": r[11],
+                                 "domain": r[12], "project": r[13], "source": r[14]}})
+            if len(out) >= limit:
+                break
+    except sqlite3.Error:
+        return out
+    finally:
+        con.close()
+    return out

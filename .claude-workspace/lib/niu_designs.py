@@ -12,6 +12,7 @@ import difflib
 import hashlib
 import json
 import os
+import posixpath
 import re
 import subprocess
 import time
@@ -39,6 +40,12 @@ GIT_LOG_MAX = 20
 _INDEX_CACHE = {}
 _GUARD_CACHE = {}
 _REV_CACHE = {}
+
+
+def invalidate():
+    """Drop cached indexes and revisions (after a satellite pushed designs or snapshots)."""
+    _INDEX_CACHE.clear()
+    _REV_CACHE.clear()
 _BLOB_CACHE = {}
 
 
@@ -227,19 +234,56 @@ def _scan(domain, project, project_dir, base, out):
                     "status": status, "mtime": st.st_mtime, "rel": rel, "project_dir": str(Path(project_dir).resolve())}
 
 
+def _has_col(con, table, col):
+    """True if the table has the column (a read-only connect to an unmigrated DB lacks the multi-machine columns)."""
+    try:
+        return any(r[1] == col for r in con.execute(f"PRAGMA table_info({table})"))
+    except Exception:
+        return False
+
+
+def _remote_docs(out):
+    """Add the design working copies pushed by paired machines (remote_designs). Nothing here touches the filesystem."""
+    try:
+        con = ne.connect(readonly=True)
+    except Exception:
+        return
+    try:
+        rows = con.execute("SELECT host, rel, mtime, title, status FROM remote_designs ORDER BY host, rel").fetchall()
+    except Exception:
+        return
+    finally:
+        con.close()
+    for host, rel, mtime, title, status in rows:
+        if len(out) >= MAX_DOCS:
+            return
+        parts = (rel or "").split("/")
+        name = parts[-1]
+        if (not host or ".." in parts or len(parts) < 2 or parts[-2] != ne.PROPOSALS_DIR
+                or not NAME_RE.fullmatch(name) or name.lower().startswith(".en" + "v")):
+            continue
+        before = parts[:-2]
+        domain, project = (before[0], "/".join(before[1:])) if before else ("(workspace)", "")
+        did = doc_id(f"{host}:{rel}")
+        out[did] = {"id": did, "domain": domain, "project": project, "name": name, "title": title or name,
+                    "status": status or "", "mtime": mtime, "rel": rel, "host": host}
+
+
 def index(extra_dirs=(), base=None, force=False):
     """{docId: {id, domain, project, name, title, status, mtime, rel, project_dir}}, cached for 30 s.
 
-    project_dir is for the server only: never put it in an API response.
+    project_dir is for the server only: never put it in an API response. Docs pushed by a paired machine carry
+    `host` and have no project_dir (their text lives in the events DB, never on this filesystem).
     """
     base = _base(base)
-    key = (tuple(sorted(str(d) for d in (extra_dirs or ()))), str(base))
+    key = (tuple(sorted(str(d) for d in (extra_dirs or ()))), str(base), str(ne.db_path()))
     hit = _INDEX_CACHE.get(key)
     if hit and not force and time.time() - hit[0] < INDEX_TTL:
         return hit[1]
     out = {}
     for dom, proj, pdir in roots(extra_dirs, base):
         _scan(dom, proj, pdir, base, out)
+    _remote_docs(out)
     if len(_INDEX_CACHE) > 50:
         _INDEX_CACHE.clear()
     _INDEX_CACHE[key] = (time.time(), out)
@@ -255,6 +299,8 @@ def lookup(did, extra_dirs=(), base=None):
 
 def read_doc(entry, base=None):
     """Current text of a doc after re-validating everything, or None."""
+    if entry.get("host"):
+        return _remote_text(entry)
     base = _base(base)
     try:
         dd = _proposal_dir(entry["project_dir"], base)
@@ -268,14 +314,34 @@ def read_doc(entry, base=None):
         return None
 
 
+def _remote_text(entry, con=None):
+    """Pushed working copy of a remote doc, from the DB only."""
+    close = False
+    if con is None:
+        try:
+            con = ne.connect(readonly=True)
+            close = True
+        except Exception:
+            return None
+    try:
+        r = con.execute("SELECT content FROM remote_designs WHERE host=? AND rel=?", (entry["host"], entry["rel"])).fetchone()
+        return _clean(r[0])[:MAX_BYTES] if r else None
+    except Exception:
+        return None
+    finally:
+        if close:
+            con.close()
+
+
 def link_resolver(entry, idx):
     """Callable name -> docId for sibling *.md links, to pass as parse(text, link_doc=...)."""
     prefix = entry["rel"].rsplit("/", 1)[0]
+    host = entry.get("host")
 
     def f(name):
         if not NAME_RE.fullmatch(name):
             return None
-        d = doc_id(prefix + "/" + name)
+        d = doc_id((f"{host}:" if host else "") + prefix + "/" + name)
         return d if d in idx else None
     return f
 
@@ -339,9 +405,17 @@ def _snap_rows(entry, con):
         except Exception:
             return []
     try:
+        if not _has_col(con, "design_snapshots", "host"):  # unmigrated DB: every row is local
+            if entry.get("host"):
+                return []
+            hostq, args = "", ()
+        elif entry.get("host"):
+            hostq, args = "host=? AND ", (entry["host"],)
+        else:
+            hostq, args = "host IS NULL AND ", ()
         return [tuple(r) for r in con.execute(
-            "SELECT id, ts, agent_type, content FROM design_snapshots WHERE rel=? ORDER BY ts DESC, id DESC LIMIT ?",
-            (entry["rel"], ne.SNAPSHOT_KEEP))]
+            f"SELECT id, ts, agent_type, content FROM design_snapshots WHERE {hostq}rel=? ORDER BY ts DESC, id DESC LIMIT ?",
+            (*args, entry["rel"], ne.SNAPSHOT_KEEP))]
     except Exception:
         return []
     finally:
@@ -358,6 +432,13 @@ def _snap_label(ts, agent):
 def _collect(entry, con, base):
     """All known revisions, before dedup: [{rev, ts, kind, label, text}]."""
     items = []
+    if entry.get("host"):  # remote: the pushed work copy + its snapshots; no git, no filesystem
+        text = _remote_text(entry, con)
+        if text is not None:
+            items.append({"rev": "work", "ts": entry.get("mtime") or time.time(), "kind": "work", "label": "Working copy", "text": text})
+        for sid_, ts, agent, content in _snap_rows(entry, con):
+            items.append({"rev": f"snap:{sid_}", "ts": ts, "kind": "snap", "label": _snap_label(ts, agent), "text": content})
+        return items
     dd = _proposal_dir(entry["project_dir"], base)
     gits = _git_revs(entry, dd, base) if dd is not None else []
     for sha, ts, subj, text in gits:
@@ -403,11 +484,13 @@ def revision_text(entry, rev, con=None, base=None):
     if not isinstance(rev, str) or not RE_REV.fullmatch(rev):
         return None
     if rev == "work":
-        return read_doc(entry, base)
+        return _remote_text(entry, con) if entry.get("host") else read_doc(entry, base)
     if rev.startswith("snap:"):
         for sid_, _ts, _agent, content in _snap_rows(entry, con):
             if f"snap:{sid_}" == rev:
                 return content
+        return None
+    if entry.get("host"):  # remote docs have no git history here
         return None
     dd = _proposal_dir(entry["project_dir"], base)
     if dd is None:
@@ -423,8 +506,29 @@ def revision_text(entry, rev, con=None, base=None):
 _RE_SUMMARY = re.compile(r"(^|/)\.claude-proposals/[^/]+\.md$")
 
 
-def session_docs(con, sid, project_dir, idx):
-    """Doc ids a session wrote (newest write first), from its Write/Edit event summaries, matched against idx."""
+def _remote_session_docs(rows, host, project_dir, idx):
+    """Remote session: match by (host, rel). project_dir is the opaque "<host>:<WS-relative dir>" key, never a path."""
+    pre = f"{host}:"
+    pdir = project_dir[len(pre):] if project_dir.startswith(pre) else ""
+    rels = {e["rel"]: d for d, e in idx.items() if e.get("host") == host}
+    out = []
+    for summary, pd in rows:
+        if not summary or not _RE_SUMMARY.search(summary) or not NAME_RE.fullmatch(summary.rsplit("/", 1)[-1]):
+            continue
+        base = pdir or ((pd or "")[len(pre):] if (pd or "").startswith(pre) else "")
+        rel = posixpath.normpath(posixpath.join(base, ne.PROPOSALS_DIR, summary.rsplit("/", 1)[-1]))
+        if rel.startswith(("/", "..")) or ".." in rel.split("/"):
+            continue
+        d = rels.get(rel)
+        if d and d not in out:
+            out.append(d)
+    return out
+
+
+def session_docs(con, sid, project_dir, idx, host=None):
+    """Doc ids a session wrote (newest write first), from its Write/Edit event summaries, matched against idx.
+
+    host: set for a session from a paired machine; it is matched by (host, rel), with no filesystem access."""
     if not sid or not project_dir:
         return []
     marks = ",".join("?" for _ in ne.EDIT_TOOLS)
@@ -433,7 +537,9 @@ def session_docs(con, sid, project_dir, idx):
                            "ORDER BY id DESC LIMIT 500", (sid, *sorted(ne.EDIT_TOOLS))).fetchall()
     except Exception:
         return []
-    rels = {e["rel"]: d for d, e in idx.items()}
+    if host:
+        return _remote_session_docs(rows, host, project_dir, idx)
+    rels = {e["rel"]: d for d, e in idx.items() if not e.get("host")}
     base = ne.WS
     try:
         b = base.resolve()

@@ -111,6 +111,27 @@ st, m = nn.diff(st, obs([sess("w1", "waiting", "WORK", "x", note="permission")])
 st, m = nn.diff(st, obs([sess("w1", "waiting", "WORK", "x", note="permission")]), cfgo, NOW + 200)
 check(contents(m, cfgo) == [], "WORK off sends nothing")
 
+# 10. multi-machine: remote sessions carry their host label; dedupe keys include the host
+cfg = cfg_with()
+rs = lambda sid, host, state="waiting": {**sess(sid, state, note="needs your permission"), "host": host}  # noqa: E731
+ob = nn.observe(cfg, NOW, {}, sources={"sessions": lambda: [{**rs("r1", "Vanaheim"), "extra": 1}], "prs": lambda: None,
+                                       "limits": lambda: [], "dash": lambda: None})
+check(ob["sessions"][0]["host"] == "Vanaheim" and "extra" not in ob["sessions"][0], f"host kept in observations: {ob['sessions']}")
+st, _ = nn.diff({}, obs(), cfg, NOW)
+st, _ = nn.diff(st, obs([rs("r1", "Vanaheim")]), cfg, NOW + 1)
+st, m = nn.diff(st, obs([rs("r1", "Vanaheim")]), cfg, NOW + 70)
+check(contents(m, cfg) == ["[needs you] Vanaheim: PERSONAL/app: a session needs your permission"], f"remote wait carries the host: {contents(m, cfg)}")
+check(m and "wait:r1@Vanaheim" in st["keys"] and "wait:r1" not in st["keys"], f"dedupe key includes host: {list(st['keys'])}")
+st, m = nn.diff(st, obs([rs("r1", "Vanaheim")]), cfg, NOW + 100)
+check(m == [], "remote wait sent once")
+st, m = nn.diff(st, obs([rs("r1", "Vanaheim"), rs("r2", "Asgard")]), cfg, NOW + 110)
+st, m = nn.diff(st, obs([rs("r1", "Vanaheim"), rs("r2", "Asgard")]), cfg, NOW + 200)
+check(contents(m, cfg) == ["[needs you] Asgard: PERSONAL/app: a session needs your permission"], f"other host notified separately: {contents(m, cfg)}")
+check(contents([{"route": "needs-you", "tpl": "wait-reply", "f": {"domain": "HOBBY", "project": "x", "host": "bad host!"}}], cfg)
+      == ["[needs you] (host): HOBBY/x: a session is waiting for your reply"], "bad host label is not echoed")
+hubm = contents([{"route": "needs-you", "tpl": "wait-reply", "f": {"domain": "HOBBY", "project": "x"}}], cfg)
+check(hubm == ["[needs you] HOBBY/x: a session is waiting for your reply"], f"hub sessions unchanged: {hubm}")
+
 cfg = cfg_with()
 hostname = socket.gethostname().split(".")[0]
 st, _ = nn.diff({}, obs(), cfg, NOW)

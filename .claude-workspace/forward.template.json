@@ -1,0 +1,7 @@
+{
+  "url": "https://dashboard-hub.invalid:8443",
+  "token_file": "~/.local/state/niu-heimar/forward-token",
+  "send": { "events": true, "tokens": true, "designs": true },
+  "design_domains": ["(workspace)", "PERSONAL", "HOBBY"],
+  "poll_secs": 2
+}

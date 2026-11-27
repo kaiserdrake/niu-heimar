@@ -28,6 +28,7 @@ RE_WEBHOOK = re.compile(r"https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api/
 RE_ENVNAME = re.compile(r"DISCORD_WEBHOOK_[A-Z_]{1,40}")
 RE_DOMAIN = re.compile(r"[A-Z][A-Z0-9_]{0,15}")
 RE_PROJECT = re.compile(r"[A-Za-z0-9._/-]{1,60}")
+RE_HOST = re.compile(r"[A-Za-z0-9_-]{1,32}")  # machine label of a paired satellite
 RE_REF = re.compile(r"([A-Za-z0-9_.-]{1,39})/([A-Za-z0-9_.-]{1,100})#([0-9]{1,7})")
 RE_TITLE_DROP = re.compile(r"[^A-Za-z0-9 .,:;_()/#+'-]")
 MAX_CONTENT = 400
@@ -241,6 +242,9 @@ def _fields(msg, cfg):
         w = where(f.get("domain"), f.get("project"), cfg)
         if w is None:
             return None
+        h = f.get("host")
+        if h:  # session of a paired machine: say which one
+            w = f"{h if RE_HOST.fullmatch(str(h)) else '(host)'}: {w}"
         out["where"] = w
     if "ref" in f:
         m = RE_REF.fullmatch(str(f["ref"]))
@@ -351,7 +355,7 @@ def observe(cfg, now, urls, sources=None):
             obs[key] = None
             obs["errors"].append(names.get(key, key))
     if obs.get("sessions") is not None:
-        obs["sessions"] = [{k: s.get(k) for k in ("id", "domain", "project", "state", "since", "ended", "note", "flagged")}
+        obs["sessions"] = [{k: s.get(k) for k in ("id", "host", "domain", "project", "state", "since", "ended", "note", "flagged")}
                            for s in obs["sessions"]]
     return obs
 
@@ -420,10 +424,13 @@ def diff(prev, obs, cfg, now):
             if not s:
                 continue
             f = {"domain": s.get("domain"), "project": s.get("project") or ""}
+            host = s.get("host") or None
+            if host:
+                f["host"] = host
             if a["kind"] == "waiting":
                 note = (s.get("note") or "").lower()
                 tpl = "wait-permission" if "permission" in note else "wait-reply" if "idle" in note else "wait-other"
-                active[a["id"]] = ({"route": "needs-you", "tpl": tpl, "f": f}, cfg["wait_delay_secs"], 1, None)
+                active[a["id"] + (f"@{host}" if host else "")] = ({"route": "needs-you", "tpl": tpl, "f": f}, cfg["wait_delay_secs"], 1, None)
         track("wait:", {k: v for k, v in active.items() if k.startswith("wait:")})
 
     if prs is not None:

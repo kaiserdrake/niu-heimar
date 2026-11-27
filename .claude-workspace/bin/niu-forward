@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""niu-forward: push this machine's agent events, token usage and design proposals to the hub niu-dash.
+
+  niu-forward pair --url https://<hub>.<tailnet>.ts.net:8443   exchange the code from `niu-dash machine add` for a token
+  niu-forward run                                              service loop (systemd: niu-forward.service)
+  niu-forward once                                             one pass (catch-up / tests)
+  niu-forward status [--line]                                  paired?, backlog, last success, last error class
+
+Config: .claude-workspace/forward.json (from forward.template.json). The token lives in a 0600 file under
+~/.local/state/niu-heimar; it is never printed or logged. Logs hold only counts and error classes.
+"""
+import argparse
+import getpass
+import signal
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import niu_forward as nf  # noqa: E402
+
+
+def _forwarder(**kw):
+    try:
+        cfg = nf.load_config()
+    except nf.ConfigError as e:
+        print(f"niu-forward: {e}", file=sys.stderr)
+        sys.exit(2)
+    import niu_usage
+    return nf.Forwarder(cfg, scan=niu_usage.scan_once, **kw)
+
+
+def cmd_pair(a):
+    import niu_prs
+    if not niu_prs.can_prompt():
+        print("niu-forward: pairing needs an interactive terminal", file=sys.stderr)
+        return 2
+    code = getpass.getpass("pairing code from `niu-dash machine add`: ")
+    try:
+        label = nf.pair(a.url, code)
+    except nf.ConfigError as e:
+        print(f"niu-forward: {e}", file=sys.stderr)
+        return 1
+    print(f"paired as {label}; start forwarding with: systemctl --user restart niu-forward  (or: niu-forward once)")
+    return 0
+
+
+def cmd_once(_a):
+    fw = _forwarder()
+    res = fw.once()
+    print(" ".join(f"{k}={res[k]}" for k in ("events", "tokens", "designs", "snapshots", "skipped", "dropped")))
+    if res["error"]:
+        print(f"error: {res['error']}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_run(_a):
+    fw = _forwarder(pace=0.5)
+    stop = []
+    signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
+    fw.run(should_stop=lambda: bool(stop))
+    return 0
+
+
+def cmd_status(a):
+    s = nf.status()
+    if a.line:
+        print(nf.status_line(s))
+        return 0 if s.get("paired") and not s.get("error") else 1
+    if s["host"] is None:
+        print(f"config: {s['error']}")
+        return 2
+    print(f"hub:        {s['host']}")
+    print(f"paired:     {'yes' if s['paired'] else 'no'} (token: {s['token']}){' as ' + s['label'] if s['label'] else ''}")
+    c = s.get("cursor") or {}
+    print(f"cursor:     events={c.get('events')} snapshots={c.get('snapshots')}")
+    print(f"backlog:    {s['backlog']} event(s)")
+    if s["last_ok"]:
+        print(f"last ok:    {int(max(0, time.time() - float(s['last_ok'])))}s ago")
+    print(f"last error: {s['error'] or '-'}")
+    if s.get("skew") is not None and abs(float(s["skew"])) > 60:
+        print(f"warning:    clock differs from the hub by {s['skew']}s")
+    return 0
+
+
+def main():
+    p = argparse.ArgumentParser(prog="niu-forward", description=__doc__.split("\n\n")[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+    pp = sub.add_parser("pair")
+    pp.add_argument("--url", required=True)
+    sub.add_parser("run")
+    sub.add_parser("once")
+    st = sub.add_parser("status")
+    st.add_argument("--line", action="store_true", help="one machine-readable line (used by workspace-status)")
+    a = p.parse_args()
+    return {"pair": cmd_pair, "run": cmd_run, "once": cmd_once, "status": cmd_status}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
