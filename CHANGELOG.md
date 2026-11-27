@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v1.0.0...niu-heimar-v1.1.0) (2026-11-27)
+
+
+### Features
+
+* multi-machine support (satellites report to one niu-dash) ([#103](https://github.com/kaiserdrake/niu-heimar/issues/103)) ([6773bf0](https://github.com/kaiserdrake/niu-heimar/commit/6773bf0f221cadb168d9d03dea68d040c7e50ed9))
+
+
+### Bug Fixes
+
+* **multi-machine:** address release review notes ([#105](https://github.com/kaiserdrake/niu-heimar/issues/105)) ([7ca58d8](https://github.com/kaiserdrake/niu-heimar/commit/7ca58d8b939abc50083e27631f5278acaf1cf9fb))
+
 ## [1.0.0](https://github.com/kaiserdrake/niu-heimar/compare/niu-heimar-v0.27.1...niu-heimar-v1.0.0) (2026-11-20)
 
 
