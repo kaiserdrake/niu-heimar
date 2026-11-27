@@ -34,6 +34,7 @@ Usage:
                                     After saving, the token's scope is checked with valkyrie-dispatch and a wrong one is deleted.
 """
 import argparse
+import fcntl
 import getpass
 import hashlib
 import hmac
@@ -42,6 +43,7 @@ import os
 import re
 import secrets
 import sys
+import tempfile
 import threading
 import time
 from http import HTTPStatus
@@ -121,7 +123,38 @@ def device_for(token):
 
 # ---------- paired-machine store (a different credential type: device_for() never reads it, machine_for() never reads web-sessions.json) ----------
 
-MLOCK = threading.Lock()
+class _MachineLock:
+    """Serialises every read-modify-write of the machine store: a thread lock plus an flock on a lockfile, so the server and the CLI never overwrite each other."""
+
+    def __init__(self):
+        self._t = threading.Lock()
+        self._fd = None
+
+    def __enter__(self):
+        self._t.acquire()
+        try:
+            p = machines_path()
+            p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            self._fd = os.open(p.with_name("machines.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+            fcntl.flock(self._fd, fcntl.LOCK_EX)
+        except BaseException:
+            if self._fd is not None:
+                os.close(self._fd)
+                self._fd = None
+            self._t.release()
+            raise
+        return self
+
+    def __exit__(self, *_):
+        try:
+            os.close(self._fd)   # closing drops the flock
+        finally:
+            self._fd = None
+            self._t.release()
+
+
+MLOCK = _MachineLock()
+BLOCK = threading.Lock()
 BUCKETS = {}                  # machine id -> [tokens, last refill]; memory only
 BUCKET_BURST, BUCKET_RATE = 10, 2.0
 INGEST_LIMIT, DESIGN_LIMIT = 256 * 1024, 600 * 1024
@@ -145,12 +178,17 @@ def load_machines():
 def save_machines(data):
     p = machines_path()
     p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    tmp = p.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(json.dumps(data, indent=1))
-    os.chmod(tmp, 0o600)
-    tmp.replace(p)
+    fd, tmp = tempfile.mkstemp(prefix="machines.", suffix=".tmp", dir=str(p.parent))   # unique per write, mode 0600
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(data, indent=1))
+        os.replace(tmp, p)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def machine_for(token):
@@ -178,7 +216,7 @@ def machine_touch(mid, rows=0):
 def bucket_ok(mid):
     """Token bucket per machine: 10 requests burst, 2 per second sustained."""
     now = time.monotonic()
-    with MLOCK:
+    with BLOCK:
         b = BUCKETS.setdefault(mid, [float(BUCKET_BURST), now])
         b[0] = min(BUCKET_BURST, b[0] + (now - b[1]) * BUCKET_RATE)
         b[1] = now
@@ -462,9 +500,12 @@ class Handler(BaseHTTPRequestHandler):
             self._err(403, "browsers may not use this route")
             return False
         host = (self.headers.get("Host") or "").rsplit(":", 1)[0] if not (self.headers.get("Host") or "").startswith("[") else ""
-        if not self.headers.get("Tailscale-User-Login") and host not in ("127.0.0.1", "localhost"):
-            self._err(403, "tailnet or loopback only")
-            return False
+        if not self.headers.get("Tailscale-User-Login"):
+            # No tailnet identity: only a request with no proxy headers at all may use the loopback Host path (Host is client-controlled).
+            proxied = any(self.headers.get(h) is not None for h in ("Tailscale-Funnel-Request", "X-Forwarded-For", "X-Forwarded-Host"))
+            if proxied or host not in ("127.0.0.1", "localhost"):
+                self._err(403, "tailnet or loopback only")
+                return False
         return True
 
     def _machine_auth(self):
@@ -922,18 +963,19 @@ def cmd_machine_purge(args):
     if not niu_ingest.RE_LABEL.fullmatch(args.label):
         sys.exit("niu-dash: bad machine label")
     counts = {}
+    label = args.label
     con = connect()
     try:
         with con:
             for t in ("events", "design_snapshots", "remote_designs"):
-                counts[t] = con.execute(f"DELETE FROM {t} WHERE host = ?", (args.label,)).rowcount
+                counts[t] = con.execute(f"DELETE FROM {t} WHERE lower(host) = lower(?)", (label,)).rowcount
     finally:
         con.close()
-    prefix = f"remote:{args.label}:"
+    prefix = f"remote:{label}:"
     uc = niu_usage.connect()
     try:
         with uc:
-            where = "substr(path, 1, ?) = ?"
+            where = "lower(substr(path, 1, ?)) = lower(?)"
             ids = "SELECT id FROM tok_files WHERE " + where
             counts["tok_msgs"] = uc.execute(f"DELETE FROM tok_msgs WHERE file_id IN ({ids})", (len(prefix), prefix)).rowcount
             counts["tok_files"] = uc.execute("DELETE FROM tok_files WHERE " + where, (len(prefix), prefix)).rowcount

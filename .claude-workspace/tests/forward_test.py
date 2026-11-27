@@ -16,6 +16,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 tmp = Path(tempfile.mkdtemp()).resolve()
+(tmp / "home").mkdir()
+os.environ["HOME"] = str(tmp / "home")  # the real home is never touched
 TOKEN = "tok_" + "A1b2C3d4" * 5
 state = tmp / "state"
 os.environ.update(NIU_EVENTS_DB=str(state / "events.db"), NIU_USAGE_DB=str(state / "usage.db"),

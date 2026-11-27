@@ -584,10 +584,19 @@ try:
     check(sts[-1] == 429 and sts[0] == 403, f"machine pair attempt limit: {sts}")
     check(req("POST", "/api/machine/pair", {"code": "12345678"}, ING)[0] == 404, "pairing is cancelled after too many attempts")
     inject_pair("Vanaheim", "12345678")
+    # Host is client-controlled: proxy / Funnel headers without a tailnet identity never get the loopback path
+    for hdr in ({"Tailscale-Funnel-Request": "?1"}, {"X-Forwarded-For": "203.0.113.9"}, {"X-Forwarded-Host": "evil.example"}):
+        check(req("POST", "/api/machine/pair", {"code": "12345678"}, {**ING, **hdr})[0] == 403, f"machine pair: loopback Host + {next(iter(hdr))} without identity -> 403")
+        check(req("POST", "/api/machine/pair", {"code": "12345678"}, {"Host": "localhost", **hdr})[0] == 403, f"machine pair: Host localhost + {next(iter(hdr))} -> 403")
     st, _, js, _ = req("POST", "/api/machine/pair", {"code": "12345678"}, ING)
     mtok = (js or {}).get("token", "")
     check(st == 200 and js.get("label") == "Vanaheim" and mtok, f"machine pair via injected code (loopback): {st}")
     check(json.loads(MFILE.read_text())["machines"][0]["login"] == "", "no login recorded for loopback pairing")
+
+    # ingest: Funnel / forwarded traffic with a spoofed loopback Host is refused (a tailnet identity header still passes)
+    for hdr in ({"Tailscale-Funnel-Request": "?1"}, {"X-Forwarded-For": "203.0.113.9"}, {"X-Forwarded-Host": "evil.example"}):
+        check(req("GET", "/api/ingest/cursor", headers=bearer(mtok, {"Host": "localhost", **hdr}))[0] == 403, f"cursor: Host localhost + {next(iter(hdr))} without identity -> 403")
+    check(req("POST", "/api/ingest", {"v": 1, "kind": "events", "rows": []}, bearer(mtok, {"Host": "localhost", "Tailscale-Funnel-Request": "?1"}))[0] == 403, "ingest: Host localhost + Funnel header -> 403")
 
     # ingest: gate order
     body1 = {"v": 1, "kind": "events", "rows": [row1]}
@@ -704,17 +713,36 @@ try:
     n_tok = con.execute("SELECT COUNT(*) FROM tok_files WHERE path LIKE 'remote:Vanaheim:%'").fetchone()[0]
     con.close()
     check(n_tok == 1, f"ingested token file stored under remote:<label>: {n_tok}")
-    r = subprocess.run([str(SH / "bin" / "niu-dash"), "machine", "purge", "Vanaheim"], env=env, capture_output=True, text=True)
+    r = subprocess.run([str(SH / "bin" / "niu-dash"), "machine", "purge", "vanaheim"], env=env, capture_output=True, text=True)
     con = sqlite3.connect(env["NIU_EVENTS_DB"])
     left = con.execute("SELECT COUNT(*) FROM events WHERE host='Vanaheim'").fetchone()[0]
     hub = con.execute("SELECT COUNT(*) FROM events WHERE host IS NULL").fetchone()[0]
+    left_d = sum(con.execute(f"SELECT COUNT(*) FROM {t} WHERE lower(host)='vanaheim'").fetchone()[0] for t in ("events", "design_snapshots", "remote_designs"))
     con.close()
+    check(left_d == 0, f"purge vanaheim (lower case) removes rows stored as Vanaheim in every table: {left_d}")
     con = sqlite3.connect(env["NIU_USAGE_DB"])
     left_t = con.execute("SELECT COUNT(*) FROM tok_files WHERE path LIKE 'remote:Vanaheim:%'").fetchone()[0]
     left_m = con.execute("SELECT COUNT(*) FROM tok_msgs").fetchone()[0]
     con.close()
     check(r.returncode == 0 and left == 0 and hub > 0 and left_t == 0 and left_m == 0, f"purge: {r.stdout!r} {r.stderr!r} {left} {hub} {left_t} {left_m}")
     check(json.loads(MFILE.read_text())["machines"], "purge keeps the pairing")
+    # a revoke is never undone by a concurrent machine_touch from another process (flock around every read-modify-write)
+    mid = json.loads(MFILE.read_text())["machines"][0]["id"]
+    child = tmp / "touch_child.py"
+    child.write_text(
+        "import sys, importlib.machinery, importlib.util\n"
+        f"sys.path.insert(0, {str(SH / 'lib')!r}); sys.path.insert(0, {str(SH / 'bin')!r})\n"
+        f"l = importlib.machinery.SourceFileLoader('nd', {str(SH / 'bin' / 'niu-dash')!r})\n"
+        "sp = importlib.util.spec_from_loader('nd', l); m = importlib.util.module_from_spec(sp); l.exec_module(m)\n"
+        f"for i in range(400):\n    m.machine_touch({mid!r}, 1)\n    if i == 5: open({str(tmp / 'touch_started')!r}, 'w').close()\n")
+    tp = subprocess.Popen([sys.executable, str(child)], env=env, stderr=subprocess.PIPE, text=True)
+    t0 = time.time()
+    while not (tmp / "touch_started").exists() and tp.poll() is None and time.time() - t0 < 20:
+        pass   # busy-wait until the child is mid-loop
+    subprocess.run([str(SH / "bin" / "niu-dash"), "machine", "revoke", "Vanaheim"], env=env, capture_output=True)
+    terr = tp.communicate(timeout=60)[1]
+    check(tp.returncode == 0 and json.loads(MFILE.read_text())["machines"] == [], f"revoke is not undone by concurrent machine_touch: rc={tp.returncode} {terr[-300:]!r}")
+    check(not list(MFILE.parent.glob("machines.*.tmp")), "no stray temp files next to the machine store")
     time.sleep(1.0)
     subprocess.run([str(SH / "bin" / "niu-dash"), "machine", "revoke", "all"], env=env, capture_output=True)
     check(req("GET", "/api/ingest/cursor", headers=bearer(mtok, ING))[0] == 404, "after revoke all: ingest is invisible again (404)")

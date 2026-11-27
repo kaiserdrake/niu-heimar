@@ -58,7 +58,10 @@ CREATE TABLE events (id INTEGER PRIMARY KEY, ts REAL NOT NULL, event TEXT NOT NU
 CREATE TABLE design_snapshots (id INTEGER PRIMARY KEY, ts REAL NOT NULL, rel TEXT NOT NULL, sha TEXT NOT NULL,
   session_id TEXT, agent_type TEXT, tool TEXT, content TEXT NOT NULL);
 INSERT INTO events(ts,event,session_id,domain) VALUES(1,'Stop','old1','PERSONAL');
+INSERT INTO events(ts,event,session_id,domain,project,tool,summary) VALUES(2,'PreToolUse','old1','WORK','p','Bash','ls');
+INSERT INTO events(ts,event,session_id,domain) VALUES(3,'SessionStart','old2','HOBBY');
 INSERT INTO design_snapshots(ts,rel,sha,content) VALUES(1,'a/.claude-proposals/z.md','x','c');
+INSERT INTO design_snapshots(ts,rel,sha,content) VALUES(2,'a/.claude-proposals/y.md','y','d');
 """)
 c.commit()
 c.close()
@@ -70,11 +73,23 @@ check("host" in {r[1] for r in con.execute("PRAGMA table_info(design_snapshots)"
 idx = {r[1] for r in con.execute("PRAGMA index_list(events)")}
 check({"events_host_src", "events_host"} <= idx, f"indexes: {idx}")
 check(con.execute("PRAGMA user_version").fetchone()[0] == ne.SCHEMA_VERSION, "user_version set")
-check(con.execute("SELECT COUNT(*), MAX(host) FROM events").fetchone()[:] == (1, None), "old rows kept with host NULL")
+check(con.execute("SELECT COUNT(*), MAX(host) FROM events").fetchone()[:] == (3, None), "old rows kept with host NULL")
+check([tuple(r) for r in con.execute("SELECT ts, event, session_id, domain, host, src_id FROM events ORDER BY ts")]
+      == [(1, "Stop", "old1", "PERSONAL", None, None), (2, "PreToolUse", "old1", "WORK", None, None),
+          (3, "SessionStart", "old2", "HOBBY", None, None)], "old events intact, host and src_id NULL")
+check([tuple(r) for r in con.execute("SELECT rel, sha, content, host, src_id FROM design_snapshots ORDER BY ts")]
+      == [("a/.claude-proposals/z.md", "x", "c", None, None), ("a/.claude-proposals/y.md", "y", "d", None, None)],
+      "old design_snapshots intact, host and src_id NULL")
+dcols = {r[1] for r in con.execute("PRAGMA table_info(design_snapshots)")}
+check({"host", "src_id"} <= dcols, f"design_snapshots migrated: {dcols}")
+didx = {r[1] for r in con.execute("PRAGMA index_list(design_snapshots)")}
+check({"design_snapshots_host_src", "design_snapshots_host_rel"} <= didx, f"design_snapshots indexes: {didx}")
 check(con.execute("SELECT 1 FROM remote_designs LIMIT 1").fetchone() is None, "remote_designs table exists")
 con.close()
 con = ne.connect()  # second connect is a no-op
 check(con.execute("PRAGMA user_version").fetchone()[0] == ne.SCHEMA_VERSION, "re-connect keeps the version")
+check(con.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 3 and con.execute("SELECT COUNT(*) FROM design_snapshots").fetchone()[0] == 2,
+      "re-connect keeps the row counts")
 con.close()
 os.environ["NIU_EVENTS_DB"] = str(Path(tmp) / "events.db")
 con = ne.connect()

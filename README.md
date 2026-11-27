@@ -376,6 +376,10 @@ retention are lost.
 - Publish the hub's dashboard with `tailscale serve` (see *Web dashboard*), not Funnel. The hub refuses requests without
   the tailnet identity header, and Funnel doesn't send one.
 - Use untagged Tailscale nodes only. A tagged node sends no identity header, so the hub refuses it.
+- The gate refuses Funnel or forwarded traffic (`Tailscale-Funnel-Request`, `X-Forwarded-For`, `X-Forwarded-Host`) that has no
+  tailnet identity. Only a request with no proxy headers at all may use the loopback path, because the `Host` header is
+  client-controlled. The per-machine token is the real protection; the gate is a second layer.
+- A machine paired over loopback (no tailnet identity) has no Tailscale login pinned to its token.
 
 **Turn off and clean up**
 ```bash
