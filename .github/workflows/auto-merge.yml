@@ -1,0 +1,71 @@
+name: auto-merge chores
+
+# Squash-merges chore PRs (Dependabot bumps and the owner's own chore(...) PRs)
+# once every check on the PR's head commit has passed. Release PRs are never
+# merged here: a release needs /dual-review first (workspace rules, section 2).
+#
+# Runs on workflow_run so it can wait for all PR workflows, not just one.
+# workflow_run always runs this file as it is on the default branch, so a PR
+# cannot change these rules for itself.
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+
+concurrency:
+  group: auto-merge-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge if it is a passing chore PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PR:-}" ]; then echo "No PR for this run."; exit 0; fi
+
+          pr=$(gh api "repos/$REPO/pulls/$PR")
+          title=$(jq -r .title <<<"$pr")
+          author=$(jq -r .user.login <<<"$pr")
+          branch=$(jq -r .head.ref <<<"$pr")
+          head_repo=$(jq -r .head.repo.full_name <<<"$pr")
+          head_sha=$(jq -r .head.sha <<<"$pr")
+          state=$(jq -r .state <<<"$pr")
+          draft=$(jq -r .draft <<<"$pr")
+
+          skip() { echo "Not merging PR #$PR: $1"; exit 0; }
+          [ "$state" = open ] || skip "not open"
+          [ "$draft" = false ] || skip "draft"
+          [ "$head_repo" = "$REPO" ] || skip "comes from a fork"
+          [ "$head_sha" = "$SHA" ] || skip "new commits since this run"
+          case "$author" in "dependabot[bot]"|"$OWNER") ;; *) skip "author $author";; esac
+          printf '%s' "$title" | grep -Eq '^chore(\(|:|!)' || skip "not a chore PR"
+          printf '%s' "$title" | grep -Eq '^chore\([^)]*\)!?: release' && skip "release PR"
+          case "$branch" in release-please--*) skip "release-please branch";; esac
+
+          # Every check run on the head commit must be finished and green.
+          # Another workflow still running? Its own completion re-triggers this.
+          bad=$(gh api --paginate "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
+            --jq '.check_runs[] | select(.status != "completed" or
+                  (.conclusion | IN("success","skipped","neutral") | not)) | .name')
+          [ -z "$bad" ] || skip "checks not all green yet: $(tr "\n" " " <<<"$bad")"
+
+          gh pr merge "$PR" --repo "$REPO" --squash --delete-branch --match-head-commit "$SHA" \
+            || { gh api "repos/$REPO/pulls/$PR" --jq .merged | grep -q true && echo "Already merged."; }
