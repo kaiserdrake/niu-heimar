@@ -240,6 +240,76 @@ check(qs == {"w1": "waiting", "k1": "stale"}, f"waiting survives 1 h, working go
 qs = {x["id"]: x["state"] for x in to_json(build(q, T + 13 * 3600), q, T + 13 * 3600)["sessions"]}
 check(qs["w1"] == "stale", f"waiting goes stale after 12 h: {qs}")
 
+# ---------- multi-machine: host on sessions/feed, hosts list, host filter, no file lookups for remote sessions ----------
+import niu_state  # noqa: E402
+from niu_events import host_label, show_domain  # noqa: E402
+
+RT = 1_700_000_000.0
+
+
+def R(dt, event, sid, host, **kw):
+    return {"id": 0, "ts": RT + dt, "event": event, "session_id": sid, "domain": kw.get("domain", "PERSONAL"), "project": "app",
+            "project_dir": f"{host}:PERSONAL/app" if host else "/x/PERSONAL/app", "agent_id": kw.get("aid"), "agent_type": kw.get("at"),
+            "tool": kw.get("tool"), "summary": kw.get("s", ""), "tool_use_id": None, "host": host}
+
+
+mm = [R(0, "SessionStart", "hub1", None), R(1, "UserPromptSubmit", "hub1", None),
+      R(0, "SessionStart", "van1", "Vanaheim", domain="(workspace)"), R(1, "UserPromptSubmit", "van1", "Vanaheim", domain="(workspace)"),
+      R(2, "SubagentStart", "van1", "Vanaheim", aid="a1", at="designer", domain="(workspace)"),
+      R(3, "PreToolUse", "van1", "Vanaheim", tool="Bash", s="ls", domain="(workspace)")]
+mm.sort(key=lambda e: e["ts"])
+mss = build(mm, RT + 5)
+check(mss["van1"]["host"] == "Vanaheim" and mss["hub1"]["host"] is None, "sessions carry host from their first event")
+
+boom_calls = []
+
+
+def boom(name):
+    def f(*a, **k):
+        boom_calls.append(name)
+        raise AssertionError(f"{name} must not be called for a remote session")
+    return f
+
+
+real = (niu_state.agent_source, niu_state.agent_model, niu_state.project_agents)
+niu_state.agent_source, niu_state.agent_model, niu_state.project_agents = boom("agent_source"), boom("agent_model"), boom("project_agents")
+try:
+    only_remote = build([e for e in mm if e["host"]], RT + 5)
+    rj = to_json(only_remote, [e for e in mm if e["host"]], RT + 5)
+    vs = rj["sessions"][0]
+    check(vs["id"] == "van1" and vs["host"] == "Vanaheim" and vs["pending"] == [], f"remote session renders without lookups: {vs['pending']}")
+    check(vs["subagents"][0]["source"] == "remote" and vs["subagents"][0]["model"] is None, "remote subagent: source remote, no model from files")
+    check(not boom_calls, f"no local file lookups for remote sessions: {boom_calls}")
+    sess_model = {**only_remote["van1"], "model": "opus"}
+    only_remote["van1"] = sess_model
+    check(to_json(only_remote, [], RT + 5)["sessions"][0]["subagents"][0]["model"] == "opus", "remote model inherited from events only")
+finally:
+    niu_state.agent_source, niu_state.agent_model, niu_state.project_agents = real
+
+mj = to_json(mss, mm, RT + 5)
+check(mj["hosts"] == sorted({host_label(), "Vanaheim"}), f"hosts list incl. the hub label: {mj['hosts']}")
+check({s["id"]: s["host"] for s in mj["sessions"]} == {"hub1": None, "van1": "Vanaheim"}, "every session has a host")
+check(all("host" in f for f in mj["feed"]) and {f["host"] for f in mj["feed"]} == {None, "Vanaheim"}, "every feed row has a host")
+vj = to_json(mss, mm, RT + 5, host="Vanaheim")
+check([s["id"] for s in vj["sessions"]] == ["van1"] and {f["host"] for f in vj["feed"]} == {"Vanaheim"}, "host filter: remote only")
+hj = to_json(mss, mm, RT + 5, host=host_label())
+check([s["id"] for s in hj["sessions"]] == ["hub1"] and {f["host"] for f in hj["feed"]} == {None}, "host == host_label() means hub rows")
+check(to_json(mss, mm, RT + 5, host="Nope")["sessions"] == [], "unknown host -> nothing")
+check(show_domain("(workspace)", "Vanaheim") == "Vanaheim" and show_domain("(workspace)") == host_label(), "(workspace) label per host")
+
+# same project_dir key on two hosts stays distinct; a remote open niu-local call never links a hub session
+two = [R(0, "SessionStart", "x1", "Vanaheim"), R(0, "SessionStart", "x2", None)]
+check(build(two, RT + 1)["x1"]["project_dir"] != build(two, RT + 1)["x2"]["project_dir"], "project_dir keys keep hosts apart")
+
+# memo key includes host; old rows without a host key still build
+mlv = LiveState(10 * 365 * 86400)
+mlv.sessions, mlv.events, mlv.built_at, mlv.version = mss, mm, RT + 5, 1
+check(mlv.json_for(None, 60, "Vanaheim") is not mlv.json_for(None, 60), "memo key includes host")
+check(mlv.json_for(None, 60, "Vanaheim") is mlv.json_for(None, 60, "Vanaheim"), "host JSON memoized")
+legacy = [{k: v for k, v in e.items() if k != "host"} for e in mm if not e["host"]]
+check(build(legacy, RT + 5)["hub1"]["host"] is None and to_json(build(legacy, RT + 5), legacy, RT + 5)["feed"][0]["host"] is None,
+      "events without a host column (old DB) are hub rows")
+
 print(f"live: {passed} passed, {failed} failed")
 os.system(f"rm -rf {tmp}")
 sys.exit(1 if failed else 0)

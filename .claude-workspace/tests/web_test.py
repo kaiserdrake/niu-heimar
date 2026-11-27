@@ -517,6 +517,209 @@ try:
     s = next(x for x in req("GET", "/api/state")[2]["sessions"] if x["id"] == "sess-web1")
     check(not s["ended"] and s["state"] == "working", f"activity after dismiss reopens it: {s['state']}")
 
+    # ---------- Paired machines (multi-machine ingest) ----------
+    import hashlib  # noqa: E401
+    MFILE = tmp / "state" / "machines.json"
+    sha = lambda x: hashlib.sha256(x.encode()).hexdigest()  # noqa: E731
+    ING = {"Host": f"127.0.0.1:{port}"}
+    TSH = {"Host": "hub.example.ts.net", "Tailscale-User-Login": "me@example.com"}
+    row1 = {"event": "SessionStart", "session_id": "rem-sess1", "ts": time.time(), "src_id": 1, "domain": "PERSONAL", "project": "app",
+            "project_dir": "app", "summary": ""}
+
+    def bearer(t, extra=None):
+        return {"Authorization": f"Bearer {t}", **(extra or {})}
+
+    def mreq(method, path, body=None, headers=None):
+        time.sleep(0.55)   # stay under the per-machine rate limit (2/s sustained) between ordinary calls
+        return req(method, path, body, headers)
+
+    def inject_pair(label, code):
+        MFILE.parent.mkdir(parents=True, exist_ok=True)
+        d = json.loads(MFILE.read_text()) if MFILE.exists() else {"machines": []}
+        d["pair"] = {"code_hash": sha(code), "expires": time.time() + 300, "attempts": 0, "label": label}
+        MFILE.write_text(json.dumps(d))
+        os.chmod(MFILE, 0o600)
+
+    # no machine paired: the routes do not exist
+    check(not MFILE.exists(), "no machine store before pairing")
+    check(req("POST", "/api/ingest", {"v": 1, "kind": "events", "rows": []}, bearer("x"))[0] == 404, "ingest: 404 when no machine is paired")
+    check(req("GET", "/api/ingest/cursor", headers=bearer("x"))[0] == 404, "ingest cursor: 404 when no machine is paired")
+    check(req("POST", "/api/machine/pair", {"code": "12345678"})[0] == 404, "machine pair: 404 when no pairing is in progress")
+    check(req("GET", "/api/state?host=Vanaheim")[0] == 400, "host filter: unknown host -> 400")
+    check(req("GET", "/api/state?host=testhost")[0] == 200 and req("GET", "/api/state?host=")[0] == 200, "host filter: hub label and empty value are fine")
+
+    # `niu-dash machine add` needs a terminal; label rules; real tty flow
+    r = subprocess.run([str(SH / "bin" / "niu-dash"), "machine", "add", "Asgard"], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    check(r.returncode != 0 and not MFILE.exists(), "machine add refused without a terminal")
+    for bad in ("Testhost", "testhost", "bad label!", "x" * 33):
+        r = subprocess.run(["script", "-qec", f"{SH / 'bin' / 'niu-dash'} machine add '{bad}'", "/dev/null"], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        check("Pairing code" not in r.stdout, f"machine add refuses label {bad!r}")
+    r = subprocess.run(["script", "-qec", f"{SH / 'bin' / 'niu-dash'} machine add Asgard", "/dev/null"], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    m = re.search(r"Pairing code for Asgard: (\d{4}) (\d{4})", r.stdout)
+    check(m is not None, f"machine add prints an 8-digit code: {r.stdout!r}")
+    acode = "".join(m.groups()) if m else "00000000"
+
+    # pairing route: checks in order
+    check(req("POST", "/api/machine/pair", {"code": acode}, {"Cookie": "a=b"})[0] == 403, "machine pair with a Cookie -> 403")
+    check(req("POST", "/api/machine/pair", {"code": acode}, {"Origin": ORIGIN})[0] == 403, "machine pair with an Origin -> 403")
+    check(req("POST", "/api/machine/pair", {"code": acode}, {"Host": "hub.example.ts.net"})[0] == 403, "machine pair: non-loopback Host without tailnet identity -> 403")
+    wrongc = "11111111" if acode != "11111111" else "22222222"
+    check(req("POST", "/api/machine/pair", {"code": wrongc}, ING)[0] == 403, "machine pair: wrong code -> 403")
+    st, _, js, _ = req("POST", "/api/machine/pair", {"code": acode}, TSH)
+    check(st == 200 and js.get("label") == "Asgard" and len(js.get("token", "")) > 30, f"machine pair through the real CLI code: {st}")
+    atok = (js or {}).get("token", "")
+    store = json.loads(MFILE.read_text())
+    check(atok and atok not in json.dumps(store) and store["machines"][0]["hash"] == sha(atok), "only the token hash is stored")
+    check(store["machines"][0]["login"] == "me@example.com", "login seen at pairing is recorded")
+    check(oct(MFILE.stat().st_mode)[-3:] == "600", "machine store mode 600")
+    check(req("POST", "/api/machine/pair", {"code": acode}, ING)[0] == 404, "machine pair: single use (no pairing in progress afterwards)")
+    r = subprocess.run([str(SH / "bin" / "niu-dash"), "machines"], env=env, capture_output=True, text=True)
+    check("Asgard" in r.stdout and atok not in r.stdout, "machines lists the label, never the token")
+    # Asgard is pinned to me@example.com; remove it and test with an unpinned machine injected through the store
+    subprocess.run([str(SH / "bin" / "niu-dash"), "machine", "revoke", "Asgard"], env=env, capture_output=True)
+    check(mreq("GET", "/api/ingest/cursor", headers=bearer(atok, ING))[0] == 404, "revoked machine token is dead (no machine left: 404)")
+    # attempts limit
+    inject_pair("Vanaheim", "12345678")
+    sts = [req("POST", "/api/machine/pair", {"code": "00000000"}, ING)[0] for _ in range(6)]
+    check(sts[-1] == 429 and sts[0] == 403, f"machine pair attempt limit: {sts}")
+    check(req("POST", "/api/machine/pair", {"code": "12345678"}, ING)[0] == 404, "pairing is cancelled after too many attempts")
+    inject_pair("Vanaheim", "12345678")
+    st, _, js, _ = req("POST", "/api/machine/pair", {"code": "12345678"}, ING)
+    mtok = (js or {}).get("token", "")
+    check(st == 200 and js.get("label") == "Vanaheim" and mtok, f"machine pair via injected code (loopback): {st}")
+    check(json.loads(MFILE.read_text())["machines"][0]["login"] == "", "no login recorded for loopback pairing")
+
+    # ingest: gate order
+    body1 = {"v": 1, "kind": "events", "rows": [row1]}
+    check(req("POST", "/api/ingest", body1, ING)[0] == 401, "ingest without a bearer -> 401")
+    check(req("POST", "/api/ingest", body1, bearer("nope", ING))[0] == 401, "ingest with a wrong bearer -> 401")
+    check(req("POST", "/api/ingest", body1, bearer(mtok, {**ING, "Cookie": "niu_session=x"}))[0] == 403, "ingest with a Cookie -> 403")
+    check(req("POST", "/api/ingest", body1, bearer(mtok, {**ING, "Origin": ORIGIN}))[0] == 403, "ingest with an Origin -> 403")
+    check(req("POST", "/api/ingest", body1, bearer(mtok, {"Host": "hub.example.ts.net"}))[0] == 403, "ingest: non-loopback Host without identity header -> 403")
+    check(req("GET", "/api/ingest/cursor", headers=bearer(mtok, {"Host": "hub.example.ts.net"}))[0] == 403, "cursor: non-loopback Host without identity header -> 403")
+    # a paired browser cookie cannot ingest, and a browser bearer-less POST with the cookie is refused outright
+    check(req("POST", "/api/ingest", body1, {**ING, "Cookie": tok})[0] == 403, "browser cookie cannot ingest (403)")
+    check(req("POST", "/api/ingest", body1, bearer(tok.split("=", 1)[1], ING))[0] == 401, "browser token as bearer cannot ingest (401)")
+    check(req("POST", "/api/ingest", body1, {**POSTH, "Cookie": tok})[0] == 403, "browser cookie + CSRF + Origin cannot ingest (403)")
+
+    # ingest: success, idempotence, ownership, cursor
+    st, _, js, _ = mreq("POST", "/api/ingest", body1, bearer(mtok, ING))
+    check(st == 200 and js["accepted"] == 1 and js["cursor"]["events"] == 1, f"ingest events: {st} {js}")
+    st, _, js, _ = mreq("POST", "/api/ingest", body1, bearer(mtok, ING))
+    check(st == 200 and js["accepted"] == 0 and js["skipped"] == 1, f"re-send is idempotent: {js}")
+    own = {"v": 1, "kind": "events", "rows": [{**row1, "session_id": "sess-web1", "src_id": 2}]}
+    st, _, js, _ = mreq("POST", "/api/ingest", own, bearer(mtok, ING))
+    check(st == 200 and js["accepted"] == 0 and js["skipped"] == 1, f"a hub session id is never taken over: {js}")
+    st, _, js, _ = mreq("GET", "/api/ingest/cursor", headers=bearer(mtok, TSH))
+    check(st == 200 and js["cursor"]["events"] == 1, f"cursor through the tailnet identity header: {st} {js}")
+    check(mreq("POST", "/api/ingest", {"v": 2, "kind": "events", "rows": []}, bearer(mtok, ING))[0] == 400, "bad version -> 400")
+    check(mreq("POST", "/api/ingest", {"v": 1, "kind": "nope", "rows": []}, bearer(mtok, ING))[0] == 400, "bad kind -> 400")
+    st, _, js, _ = mreq("POST", "/api/ingest", {"v": 1, "kind": "tokens", "rows": [{
+        "mkey": 12345, "ts": time.time() - 60, "model": "claude-sonnet-4-5", "inp": 10, "outp": 20, "cw": 0, "cr": 0,
+        "file": {"key": "h:" + "a" * 32, "kind": "main", "session_id": None, "agent_id": None, "agent_type": None,
+                 "domain": "PERSONAL", "project": "app", "source": "claude"}}]}, bearer(mtok, ING))
+    check(st == 200 and js["accepted"] == 1, f"ingest tokens: {st} {js}")
+    st, _, js, _ = mreq("POST", "/api/ingest", {"v": 1, "kind": "designs", "rows": [{"rel": "WORK/x/.claude-proposals/a.md", "sha": "0" * 64,
+                        "mtime": time.time(), "title": "t", "status": "p", "content": "x"}]}, bearer(mtok, ING))
+    check(st == 200 and js["accepted"] == 0, f"WORK / bad-sha design refused: {js}")
+
+    # the live view shows the remote session; read-only
+    time.sleep(1.2)
+    st, _, js, _ = req("GET", "/api/state?host=Vanaheim")
+    rs = [x for x in (js or {}).get("sessions", []) if x["id"] == "rem-sess1"]
+    check(st == 200 and rs and rs[0].get("host") == "Vanaheim", f"/api/state?host= shows the remote session: {st}")
+    check(all(x["id"] != "sess-web1" for x in (js or {}).get("sessions", [])), "host filter hides hub sessions")
+    js = req("GET", "/api/state?host=testhost")[2]
+    check(all(x["id"] != "rem-sess1" for x in js["sessions"]) and any(x["id"] == "sess-web1" for x in js["sessions"]), "hub filter hides remote sessions")
+    js = req("GET", "/api/state")[2]
+    check(any(x["id"] == "rem-sess1" for x in js["sessions"]) and "Vanaheim" in (js.get("hosts") or []), "unfiltered state has both hosts")
+    check(req("GET", "/api/state?host=nope")[0] == 400 and req("GET", "/api/stream?host=nope")[0] == 400, "unknown host -> 400 on state and stream")
+    check(req("GET", "/api/usage/tokens?host=nope")[0] == 400, "unknown host -> 400 on usage tokens")
+    check(req("GET", "/api/usage/tokens?host=Vanaheim")[0] == 200 and req("GET", "/api/usage/tokens?host=testhost")[0] == 200, "usage tokens accepts known hosts")
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    c.request("GET", "/api/stream?host=Vanaheim", headers={"Host": f"127.0.0.1:{port}"})
+    r = c.getresponse()
+    line = r.fp.readline()
+    check(r.status == 200 and line.startswith(b"data: ") and b"rem-sess1" in line and b"sess-web1" not in line, "SSE with host filter")
+    c.close()
+    st, _, js, rawr = req("GET", "/api/agents?sid=rem-sess1")
+    check(st == 200 and js == {"sid": "rem-sess1", "remote": True, "host": "Vanaheim", "agents": [], "skills": [], "local_tools": []}, f"/api/agents remote branch: {js}")
+    check(mreq("POST", "/api/sessions/dismiss", {"session": "rem-sess1"}, auth)[0] == 403, "dismiss refused for a remote session (403)")
+    con = sqlite3.connect(env["NIU_EVENTS_DB"])
+    check(con.execute("SELECT COUNT(*) FROM events WHERE session_id='rem-sess1' AND event='SessionEnd'").fetchone()[0] == 0, "no dismissal row for a remote session")
+    con.close()
+    rtext = "# Remote design\nStatus: proposed\n\nFrom the satellite.\n"
+    rrel = "PERSONAL/app/.claude-proposals/r.md"
+    st, _, js, _ = mreq("POST", "/api/ingest", {"v": 1, "kind": "designs", "rows": [{"rel": rrel, "sha": hashlib.sha256(rtext.encode()).hexdigest(),
+                        "mtime": time.time(), "title": "Remote design", "status": "proposed", "content": rtext}]}, bearer(mtok, ING))
+    check(st == 200 and js["accepted"] == 1, f"ingest designs: {st} {js}")
+    st, _, js, rawd = req("GET", "/api/designs?sid=rem-sess1", headers={"Cookie": tok})
+    check(st == 200 and b"Vanaheim:" not in rawd, f"designs for a remote session do not use its project_dir as a local path: {st}")
+    rdocs = [d for d in (js or {}).get("docs", []) if d.get("host") == "Vanaheim"]
+    check(len(rdocs) == 1 and rdocs[0]["rel"] == rrel, f"remote design listed with its host: {rdocs}")
+    check(all("host" in d for d in js.get("docs", [])) and any(d.get("host") is None for d in js["docs"]), "every listed doc carries host (null = hub)")
+    st, _, js, _ = req("GET", f"/api/designs/doc?id={rdocs[0]['id']}", headers={"Cookie": tok}) if rdocs else (0, 0, {}, 0)
+    check(st == 200 and "From the satellite" in js.get("text", ""), f"remote doc readable from the DB copy: {st}")
+
+    # machine token on browser routes: every one refuses it
+    mc = {"Cookie": f"niu_session={mtok}"}
+    for pth in ("/api/designs", "/api/topics", "/api/designs/doc?id=d0123456789abcdef"):
+        check(req("GET", pth, headers=mc)[0] == 401, f"machine token as a cookie on {pth} -> 401")
+        check(req("GET", pth, headers=bearer(mtok))[0] == 401, f"machine bearer on {pth} -> 401")
+    for pth, b in (("/api/prs/merge", {"repo": "o/r", "number": 7, "confirm": "1234"}), ("/api/prs/merge-code", {"repo": "o/r", "number": 7}),
+                   ("/api/sessions/dismiss", {"session": "sess-web1"}), ("/api/topics/create", {"agent_type": "general", "name": "x", "keywords": ["k"]})):
+        check(req("POST", pth, b, {**POSTH, **mc})[0] == 401, f"machine token as a cookie on POST {pth} -> 401")
+        check(req("POST", pth, b, {**POSTH, **bearer(mtok)})[0] == 401, f"machine bearer on POST {pth} -> 401")
+    check(req("GET", "/api/me", headers=mc)[2]["paired"] is False, "machine token is not a paired browser")
+
+    # body limits
+    big = {"v": 1, "kind": "events", "rows": [], "pad": "x" * 300_000}
+    check(mreq("POST", "/api/ingest", big, bearer(mtok, ING))[0] == 413, "events body over 256 KB -> 413")
+    check(mreq("POST", "/api/ingest", {**big, "kind": "designs"}, bearer(mtok, ING))[0] == 200, "designs body of 300 KB is within its 600 KB limit")
+    check(mreq("POST", "/api/ingest", {**big, "kind": "designs", "pad": "x" * 700_000}, bearer(mtok, ING))[0] == 413, "designs body over 600 KB -> 413")
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    time.sleep(0.6)
+    c.request("POST", "/api/ingest", body=b"not json", headers={**bearer(mtok, ING), "Content-Length": "8"})
+    check(c.getresponse().status == 400, "bad JSON -> 400")
+    c.close()
+
+    # login pinning: a machine paired through the tailnet only accepts that login
+    d = json.loads(MFILE.read_text())
+    d["machines"][0]["login"] = "me@example.com"
+    MFILE.write_text(json.dumps(d))
+    time.sleep(0.6)
+    check(req("GET", "/api/ingest/cursor", headers=bearer(mtok, {"Host": "h.ts.net", "Tailscale-User-Login": "other@example.com"}))[0] == 403, "mismatching login -> 403")
+    check(mreq("GET", "/api/ingest/cursor", headers=bearer(mtok, TSH))[0] == 200, "matching login -> 200")
+    check(mreq("GET", "/api/ingest/cursor", headers=bearer(mtok, ING))[0] == 403, "pinned login: loopback without the header -> 403")
+    d["machines"][0]["login"] = ""
+    MFILE.write_text(json.dumps(d))
+
+    # rate limit: 10 burst, then 429
+    time.sleep(6)
+    codes = [req("GET", "/api/ingest/cursor", headers=bearer(mtok, ING))[0] for _ in range(16)]
+    check(codes[0] == 200 and 429 in codes and codes.count(200) <= 13, f"per-machine rate limit: {codes}")
+
+    # purge removes that machine's rows; revoke kills the token
+    con = sqlite3.connect(env["NIU_USAGE_DB"])
+    n_tok = con.execute("SELECT COUNT(*) FROM tok_files WHERE path LIKE 'remote:Vanaheim:%'").fetchone()[0]
+    con.close()
+    check(n_tok == 1, f"ingested token file stored under remote:<label>: {n_tok}")
+    r = subprocess.run([str(SH / "bin" / "niu-dash"), "machine", "purge", "Vanaheim"], env=env, capture_output=True, text=True)
+    con = sqlite3.connect(env["NIU_EVENTS_DB"])
+    left = con.execute("SELECT COUNT(*) FROM events WHERE host='Vanaheim'").fetchone()[0]
+    hub = con.execute("SELECT COUNT(*) FROM events WHERE host IS NULL").fetchone()[0]
+    con.close()
+    con = sqlite3.connect(env["NIU_USAGE_DB"])
+    left_t = con.execute("SELECT COUNT(*) FROM tok_files WHERE path LIKE 'remote:Vanaheim:%'").fetchone()[0]
+    left_m = con.execute("SELECT COUNT(*) FROM tok_msgs").fetchone()[0]
+    con.close()
+    check(r.returncode == 0 and left == 0 and hub > 0 and left_t == 0 and left_m == 0, f"purge: {r.stdout!r} {r.stderr!r} {left} {hub} {left_t} {left_m}")
+    check(json.loads(MFILE.read_text())["machines"], "purge keeps the pairing")
+    time.sleep(1.0)
+    subprocess.run([str(SH / "bin" / "niu-dash"), "machine", "revoke", "all"], env=env, capture_output=True)
+    check(req("GET", "/api/ingest/cursor", headers=bearer(mtok, ING))[0] == 404, "after revoke all: ingest is invisible again (404)")
+    check(req("GET", "/api/state?host=Vanaheim")[0] == 400, "after revoke the host is unknown again")
+
     # Revoke + rate limit
     subprocess.run([str(SH / "bin" / "niu-dash"), "revoke", "all"], env=env, capture_output=True)
     check(req("POST", "/api/prs/merge", body, auth)[0] == 401, "revoked cookie -> 401")

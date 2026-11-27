@@ -21,12 +21,22 @@ under_ws() { [[ "$1" == "$WS" || "$1" == "$WS"/* ]]; }
 
 # Web dashboard credentials, the research-dispatch token and its config are for the user, not agents.
 # The config names the URL the token is sent to, so editing it would redirect the token.
-if grep -Eq 'web-sessions\.json|research-dispatch\.t|research-dispatch\.topics\.token|niu-heimar/\*|read_token|research(\.template)?\.json' <<<"$targets"; then
+# Same for the multi-machine registry (machines.json) and the forwarder's token, state and config.
+if grep -Eq 'web-sessions\.json|research-dispatch\.t|research-dispatch\.topics\.token|niu-heimar/\*|read_token|research(\.template)?\.json|machines\.json|forward-token|forward\.db|forward(\.template)?\.json' <<<"$targets"; then
   echo "BLOCKED by workspace policy: dashboard device credentials, the research-dispatch token and the research config are off-limits to agents." >&2
   exit 2
 fi
 if [[ "$tool" == "Bash" ]] && grep -Eq '(^|[^A-Za-z0-9_-])niu-dash["'"'"']?([[:space:]]+[^;&|]*)?[[:space:]]["'"'"']?research-token' <<<"$targets"; then
   echo "BLOCKED by workspace policy: setting the research-dispatch token is reserved for the user. Ask the user." >&2
+  exit 2
+fi
+
+if [[ "$tool" == "Bash" ]] && grep -Eq '(^|[^A-Za-z0-9_-])niu-dash["'"'"']?([[:space:]]+[^;&|]*)?[[:space:]]["'"'"']?machine["'"'"']?([[:space:]]|$)' <<<"$targets"; then
+  echo "BLOCKED by workspace policy: adding, revoking or purging paired machines is reserved for the user. Ask the user." >&2
+  exit 2
+fi
+if [[ "$tool" == "Bash" ]] && grep -Eq '(^|[^A-Za-z0-9_-])niu-forward["'"'"']?([[:space:]]+[^;&|]*)?[[:space:]]["'"'"']?pair["'"'"']?([[:space:]]|$)' <<<"$targets"; then
+  echo "BLOCKED by workspace policy: pairing this machine with a dashboard is reserved for the user. Ask the user." >&2
   exit 2
 fi
 

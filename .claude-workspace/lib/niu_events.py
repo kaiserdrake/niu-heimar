@@ -33,7 +33,12 @@ CREATE TABLE IF NOT EXISTS design_snapshots (
   id INTEGER PRIMARY KEY, ts REAL NOT NULL, rel TEXT NOT NULL, sha TEXT NOT NULL,
   session_id TEXT, agent_type TEXT, tool TEXT, content TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS design_snapshots_rel ON design_snapshots(rel, ts);
+CREATE TABLE IF NOT EXISTS remote_designs (
+  host TEXT NOT NULL, rel TEXT NOT NULL, sha TEXT NOT NULL, mtime REAL, title TEXT, status TEXT,
+  content TEXT NOT NULL, seen REAL, PRIMARY KEY(host, rel));
 """
+
+SCHEMA_VERSION = 1  # PRAGMA user_version of events.db; < 1 -> add the multi-machine columns (additive only)
 
 PROPOSALS_DIR = ".claude-proposals"  # <project>/.claude-proposals/*.md; web/app.js and hooks/agent-events.py keep a literal
 DESIGN_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.md")
@@ -48,8 +53,38 @@ def host_label() -> str:
     return name[:1].upper() + name[1:] if name else "(workspace)"
 
 
-def show_domain(d: str) -> str:
-    return host_label() if d == "(workspace)" else (d or "?")
+def show_domain(d: str, host=None) -> str:
+    """Display name of a domain; the (workspace) domain is named after the machine it lives on."""
+    return (host or host_label()) if d == "(workspace)" else (d or "?")
+
+
+def is_remote(x) -> bool:
+    """True when a row, dict or session carries a non-empty host (it came from a paired machine, not this one)."""
+    try:
+        h = x["host"]
+    except (KeyError, IndexError, TypeError):
+        h = getattr(x, "host", None)
+    return isinstance(h, str) and bool(h)
+
+
+def _migrate(con):
+    """Additive multi-machine migration; the hook path pays one PRAGMA read once the DB is migrated."""
+    if con.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
+        return
+    for table, col, typ in (("events", "host", "TEXT"), ("events", "src_id", "INTEGER"),
+                            ("design_snapshots", "host", "TEXT"), ("design_snapshots", "src_id", "INTEGER")):
+        if col not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
+            try:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+            except sqlite3.OperationalError:  # another process added it first
+                if col not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
+                    raise
+    con.executescript(
+        "CREATE UNIQUE INDEX IF NOT EXISTS events_host_src ON events(host, src_id) WHERE host IS NOT NULL;"
+        "CREATE INDEX IF NOT EXISTS events_host ON events(host, ts);"
+        "CREATE UNIQUE INDEX IF NOT EXISTS design_snapshots_host_src ON design_snapshots(host, src_id) WHERE host IS NOT NULL;"
+        "CREATE INDEX IF NOT EXISTS design_snapshots_host_rel ON design_snapshots(host, rel, ts);"
+        f"PRAGMA user_version={SCHEMA_VERSION}")
 
 
 def db_path() -> Path:
@@ -73,6 +108,7 @@ def connect(readonly: bool = False) -> sqlite3.Connection:
             os.chmod(p, 0o600)
         con.execute("PRAGMA journal_mode=WAL")
         con.executescript(SCHEMA)
+        _migrate(con)
     con.row_factory = sqlite3.Row
     return con
 
@@ -380,13 +416,14 @@ def snapshot_design(con, file_path, project_dir, sid, agent_type, tool):
     rel = p.relative_to(WS).as_posix()
     sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
     with con:
-        last = con.execute("SELECT sha FROM design_snapshots WHERE rel=? ORDER BY ts DESC, id DESC LIMIT 1", (rel,)).fetchone()
+        last = con.execute("SELECT sha FROM design_snapshots WHERE host IS NULL AND rel=? ORDER BY ts DESC, id DESC LIMIT 1", (rel,)).fetchone()
         if last and last[0] == sha:
             return False
         now = time.time()
         con.execute("INSERT INTO design_snapshots(ts,rel,sha,session_id,agent_type,tool,content) VALUES(?,?,?,?,?,?,?)",
                     (now, rel, sha, sid, agent_type or "", tool or "", text))
-        con.execute("DELETE FROM design_snapshots WHERE rel=? AND id NOT IN "
-                    "(SELECT id FROM design_snapshots WHERE rel=? ORDER BY ts DESC, id DESC LIMIT ?)", (rel, rel, SNAPSHOT_KEEP))
-        con.execute("DELETE FROM design_snapshots WHERE ts < ?", (now - days * 86400,))
+        con.execute("DELETE FROM design_snapshots WHERE host IS NULL AND rel=? AND id NOT IN "
+                    "(SELECT id FROM design_snapshots WHERE host IS NULL AND rel=? ORDER BY ts DESC, id DESC LIMIT ?)",
+                    (rel, rel, SNAPSHOT_KEEP))
+        con.execute("DELETE FROM design_snapshots WHERE host IS NULL AND ts < ?", (now - days * 86400,))
     return True

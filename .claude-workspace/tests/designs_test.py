@@ -390,5 +390,69 @@ lp = nd.linked_projects(WS)
 check(all(len(x) == 3 for x in lp) and any(x[0] == "PERSONAL" and x[1] == "app" for x in lp)
       and not any("node_modules" in str(x[2]) for x in lp) and not any(x[1] == "other" for x in lp), f"linked_projects: {lp}")
 
+# ---------- multi-machine: remote docs from remote_designs ----------
+con = ne.connect()
+RREL = "PERSONAL/app/.claude-proposals/t.md"  # same rel as the local doc t.md
+RTXT = "# Remote doc\nStatus: proposed\n\nRemote body.\n"
+now_ = time.time()
+for h in ("Vanaheim", "Asgard"):
+    con.execute("INSERT INTO remote_designs(host, rel, sha, mtime, title, status, content, seen) VALUES(?,?,?,?,?,?,?,?)",
+                (h, RREL, "0" * 64, now_, f"Remote doc {h}", "proposed", RTXT + h + "\n", now_))
+con.execute("INSERT INTO remote_designs(host, rel, sha, mtime, title, status, content, seen) VALUES(?,?,?,?,?,?,?,?)",
+            ("Vanaheim", ".claude-proposals/w.md", "0" * 64, now_, "WS doc", "approved", "# WS doc\n", now_))
+con.execute("INSERT INTO remote_designs(host, rel, sha, mtime, title, status, content, seen) VALUES(?,?,?,?,?,?,?,?)",
+            ("Vanaheim", "PERSONAL/../x/.claude-proposals/bad.md", "0" * 64, now_, "bad", "", "x", now_))
+# snapshots: a hub one and a Vanaheim one for the same rel
+con.execute("INSERT INTO design_snapshots(ts, rel, sha, content) VALUES(?,?,?,?)", (now_ - 5, RREL, "a" * 64, "# hub snap\n"))
+con.execute("INSERT INTO design_snapshots(ts, rel, sha, content, host, src_id) VALUES(?,?,?,?,?,?)", (now_ - 3, RREL, "b" * 64, "# van snap\n", "Vanaheim", 7))
+con.commit()
+idx = nd.index(force=True)
+rv = [e for e in idx.values() if e.get("host") == "Vanaheim" and e["rel"] == RREL]
+ra = [e for e in idx.values() if e.get("host") == "Asgard" and e["rel"] == RREL]
+check(len(rv) == 1 and len(ra) == 1 and rv[0]["id"] != ra[0]["id"], "distinct ids for the same rel on two hosts")
+check(rv[0]["id"] == nd.doc_id("Vanaheim:" + RREL) and rv[0]["id"] != e_t["id"], "remote id = doc_id(host:rel), not the local id")
+check(rv[0]["domain"] == "PERSONAL" and rv[0]["project"] == "app" and rv[0]["title"] == "Remote doc Vanaheim" and "project_dir" not in rv[0], f"remote entry: {rv[0]}")
+check(any(e.get("host") == "Vanaheim" and e["domain"] == "(workspace)" and e["name"] == "w.md" for e in idx.values()), "remote workspace doc")
+check(not any(e["name"] == "bad.md" for e in idx.values()), "remote rel with .. is not indexed")
+check(idx[e_t["id"]].get("host") is None and nd.lookup(rv[0]["id"]) is not None, "local entry unchanged; lookup finds remote")
+rvr = nd.revisions(rv[0], con)
+check(sorted(r["kind"] for r in rvr) == ["snap", "work"] and not any(r["kind"] == "git" for r in rvr), f"remote revisions = work + snap only: {rvr}")
+check(nd.revision_text(rv[0], "work", con).startswith("# Remote doc") and nd.revision_text(rv[0], "work", con).rstrip().endswith("Vanaheim"), "remote work text from the DB")
+sn = next(r for r in rvr if r["kind"] == "snap")
+check(nd.revision_text(rv[0], sn["rev"], con) == "# van snap\n", "remote snapshot text; hub snapshot of the same rel excluded")
+check(nd.revision_text(rv[0], "git:" + "0" * 40, con) is None, "no git revisions for remote docs")
+check(nd.read_doc(rv[0]).startswith("# Remote doc"), "read_doc reads remote docs from the DB")
+lrv = nd.revisions(e_t, con)
+check(not any("van snap" in (nd.revision_text(e_t, r["rev"], con) or "") for r in lrv), "local revisions ignore remote snapshots (host IS NULL)")
+check(any(nd.revision_text(e_t, r["rev"], con) == "# hub snap\n" for r in lrv), "local revisions still include hub snapshots")
+# a remote entry works without any filesystem lookups
+_pd = nd._proposal_dir
+nd._proposal_dir = lambda *a, **k: (_ for _ in ()).throw(AssertionError("filesystem lookup for a remote doc"))
+try:
+    check(len(nd.revisions(rv[0], con)) == 2 and nd.read_doc(rv[0]) is not None, "remote doc needs no local dir")
+finally:
+    nd._proposal_dir = _pd
+# link_resolver stays within the host
+con.execute("INSERT INTO remote_designs(host, rel, sha, mtime, title, status, content, seen) VALUES(?,?,?,?,?,?,?,?)",
+            ("Vanaheim", "PERSONAL/app/.claude-proposals/sib.md", "0" * 64, now_, "Sib", "", "# Sib\n", now_))
+con.commit()
+idx = nd.index(force=True)
+lr = nd.link_resolver(rv[0], idx)
+check(lr("sib.md") == nd.doc_id("Vanaheim:PERSONAL/app/.claude-proposals/sib.md") and lr("alias.md") is None, "remote link_resolver matches the same host only")
+# session docs for a remote session: matched by (host, rel), project_dir is an opaque key
+for sid_, h in (("vs1", "Vanaheim"), ("as1", "Asgard")):
+    con.execute("INSERT INTO events(ts,event,session_id,tool,summary,project_dir,host,src_id) VALUES(?,?,?,?,?,?,?,?)",
+                (now_, "PostToolUse", sid_, "Write", ".claude-proposals/t.md", f"{h}:PERSONAL/app", h, 1))
+con.commit()
+sd = nd.session_docs(con, "vs1", "Vanaheim:PERSONAL/app", idx, host="Vanaheim")
+check(sd == [rv[0]["id"]], f"remote session docs by (host, rel): {sd}")
+check(nd.session_docs(con, "as1", "Asgard:PERSONAL/app", idx, host="Asgard") == [ra[0]["id"]], "same rel, other host -> other doc")
+check(nd.session_docs(con, "vs1", "Vanaheim:PERSONAL/app", idx) == [], "without host a remote key never matches a local doc")
+# an unmigrated DB (no host columns) still reads local snapshots
+old = sqlite3.connect(":memory:")
+old.execute("CREATE TABLE design_snapshots (id INTEGER PRIMARY KEY, ts REAL, rel TEXT, sha TEXT, session_id TEXT, agent_type TEXT, tool TEXT, content TEXT)")
+old.execute("INSERT INTO design_snapshots(ts, rel, sha, content) VALUES(1, ?, 'x', 'old snap')", (e_t["rel"],))
+check([r[3] for r in nd._snap_rows(e_t, old)] == ["old snap"] and nd._snap_rows(rv[0], old) == [], "unmigrated DB: local snapshots only")
+
 print(f"designs: {passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

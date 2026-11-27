@@ -817,3 +817,5 @@ tr.dsins, tr.dsdel { border-left: 0; }
   .dsleft { border-right: 0; border-bottom: 1px solid var(--border); }
   .dsoutline { display: none; }
 }
+.hostbadge { display: inline-block; margin: 0 6px 0 0; font-size: 10px; font-weight: 600; letter-spacing: .04em; padding: 1px 7px; border-radius: 999px; background: var(--bg2); color: var(--muted); border: 1px solid var(--border); vertical-align: 1px; }
+.controls select[hidden] { display: none; }

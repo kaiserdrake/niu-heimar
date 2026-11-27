@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 # Install/refresh the niu-heimar workspace: render templates, merge user settings,
 # add bin/ to PATH, and re-link existing projects. Safe to run repeatedly.
-# Usage: install [--no-user-settings] [--no-shell] [--web] [--notify]
+# Usage: install [--no-user-settings] [--no-shell] [--web] [--notify] [--satellite]
+#   --satellite: this machine reports to a hub niu-dash (niu-forward.service); notifications stay on the hub.
 set -euo pipefail
 
 WS="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd -P)"
 SHARED="$WS/.claude-workspace"
-user_settings=true shell=true web=false notify=false
+user_settings=true shell=true web=false notify=false satellite=false
 for a in "$@"; do
   case "$a" in
     --no-user-settings) user_settings=false ;;
     --no-shell) shell=false ;;
     --web) web=true ;;
     --notify) notify=true ;;
+    --satellite) satellite=true ;;
     *) echo "unknown option $a" >&2; exit 1 ;;
   esac
 done
@@ -165,5 +167,40 @@ if $notify; then
   fi
   echo "niu-notify running (systemctl --user status niu-notify; journalctl --user -u niu-notify)"
   echo "check the webhooks with: niu-notify check   (Discord setup steps: README, 'Discord notifications')"
+fi
+if $satellite; then
+  # Satellite: forward events/usage/designs to the hub's niu-dash. No niu-notify here (notifications run on the hub only).
+  cfg="$SHARED/forward.json"
+  [[ -f "$cfg" ]] || { cp "$SHARED/forward.template.json" "$cfg"; echo "created $cfg"; }
+  chmod 600 "$cfg"
+  unit="$HOME/.config/systemd/user/niu-forward.service"
+  mkdir -p "$(dirname "$unit")"
+  cat >"$unit" <<UNIT
+[Unit]
+Description=niu-heimar forwarder (pushes agent events, token usage and designs to the hub dashboard)
+After=network-online.target
+
+[Service]
+ExecStart=$SHARED/bin/niu-forward run
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
+UNIT
+  systemctl --user daemon-reload
+  systemctl --user enable --now niu-forward.service
+  if [[ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != "yes" ]]; then
+    loginctl enable-linger "$USER" 2>/dev/null && echo "enabled linger: niu-forward keeps running after logout and starts at boot" \
+      || echo "note: run 'sudo loginctl enable-linger $USER' so niu-forward runs without an active login"
+  fi
+  echo "niu-forward enabled (systemctl --user status niu-forward; journalctl --user -u niu-forward). It waits until this machine is paired:"
+  cat <<'PAIR'
+  1. On the hub (interactive terminal):  niu-dash machine add <Label>     -> prints an 8-digit code (valid 5 minutes)
+  2. Here (interactive terminal):        niu-forward pair --url https://<hub>.<tailnet>.ts.net:8443
+  3. Then:                               systemctl --user restart niu-forward ; niu-forward status
+Notifications stay on the hub: do not run install --notify here.
+PAIR
 fi
 echo "niu-heimar installed at $WS"

@@ -34,8 +34,28 @@ if [[ "$rel" != "$cwd" && "$rel" == */* && "$rel" != .* ]]; then
   fi
 fi
 
-((${#msgs[@]} == 0)) && { $hook || echo "niu-heimar: all good"; exit 0; }
+# multi-machine: forwarder state on satellites, paired machines on the hub (a count only, never hashes)
+info=()
+if [[ -f "$WS/.claude-workspace/forward.json" ]]; then
+  fl="$(timeout 5 python3 "$WS/.claude-workspace/bin/niu-forward" status --line 2>/dev/null | head -1)"
+  [[ -n "$fl" ]] || fl="problem: status unavailable"
+  info+=("forwarder: $fl")
+  [[ "$fl" == problem* ]] && msgs+=("forwarder ${fl#problem: }")
+fi
+mj="${XDG_STATE_HOME:-$HOME/.local/state}/niu-heimar/machines.json"
+if [[ -f "$mj" ]]; then
+  pm="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("machines", [])))' "$mj" 2>/dev/null)" || pm=""
+  [[ "$pm" =~ ^[0-9]+$ ]] && info+=("paired machines: $pm")
+fi
+
+if ((${#msgs[@]} == 0)); then
+  if ! $hook; then
+    echo "niu-heimar: all good"
+    for i in "${info[@]}"; do echo "niu-heimar: $i"; done
+  fi
+  exit 0
+fi
 text="niu-heimar: ${msgs[0]}"
 for m in "${msgs[@]:1}"; do text+="; $m"; done
-if $hook; then jq -nc --arg m "$text" '{systemMessage: $m}'; else echo "$text"; fi
+if $hook; then jq -nc --arg m "$text" '{systemMessage: $m}'; else echo "$text"; for i in "${info[@]}"; do echo "niu-heimar: $i"; done; fi
 exit 0

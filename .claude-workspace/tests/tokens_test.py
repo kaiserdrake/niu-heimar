@@ -153,13 +153,13 @@ c.close()
 os.chmod(state / "usage.db", 0o600)
 check(U.tokens(now=T0)["state"] == "empty", "a version 1 file reads as empty, not an error")
 con = U.connect()
-check(con.execute("PRAGMA user_version").fetchone()[0] == 3, "user_version migrated 1 -> 3")
+check(con.execute("PRAGMA user_version").fetchone()[0] == 4, "user_version migrated 1 -> 4")
 check(con.execute("SELECT used FROM limit_samples WHERE key='seven_day'").fetchone()[0] == 41.5, "existing samples untouched")
 names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 check({"tok_files", "tok_msgs", "tok_models", "meta", "limit_samples"} <= names, "token tables created")
 con.close()
 U.connect().close()
-check(sqlite3.connect(state / "usage.db").execute("PRAGMA user_version").fetchone()[0] == 3, "migration is idempotent")
+check(sqlite3.connect(state / "usage.db").execute("PRAGMA user_version").fetchone()[0] == 4, "migration is idempotent")
 reset_db()
 
 # ---------- 2. scanner on the fixture tree ----------
@@ -622,7 +622,7 @@ check(pv["state"] == "ok" and tot_(pv) == 30 and pv["source"] == "all", f"v2 fil
 check(tot_(U.tokens("7d", "", now=NOW, source="claude")) == 30 and tot_(U.tokens("7d", "", now=NOW, source="local")) == 0, "v2 file: every row is a Claude row")
 check(pv["kpis"]["7d"]["local"] == 0 and pv["by_source"]["claude"]["total"] == 30, "v2 file: by_source and kpis.local")
 con = U.connect()
-check(con.execute("PRAGMA user_version").fetchone()[0] == 3, "v2 migrated to 3")
+check(con.execute("PRAGMA user_version").fetchone()[0] == 4, "v2 migrated to 4")
 check(con.execute("SELECT source FROM tok_files WHERE id=1").fetchone()[0] == "claude", "migrated rows are Claude rows")
 check(any(r_[1] == "source" for r_ in con.execute("PRAGMA table_info(tok_files)")), "source column added")
 con.close()
@@ -782,7 +782,7 @@ check(set(pa) == {"state", "range", "since", "now", "tz", "domain", "source", "k
 U._tok_memo.clear()
 m1 = U.tokens_cached("30d", "", NOW, "local")
 m2 = U.tokens_cached("30d", "", NOW, "claude")
-check(m1["source"] == "local" and m2["source"] == "claude" and ("30d", "", "local") in U._tok_memo and ("30d", "", "claude") in U._tok_memo, "memo key includes source")
+check(m1["source"] == "local" and m2["source"] == "claude" and ("30d", "", "local", None) in U._tok_memo and ("30d", "", "claude", None) in U._tok_memo, "memo key includes source")
 check(U.tokens_cached("30d", "", NOW, "<x>")["source"] == "all" and U.tokens_cached("30d", "", NOW)["source"] == "all", "memo: junk and default source -> all")
 # disabled switches also stop the ledger collector and the scanner
 os.environ["NIU_USAGE_TOKENS"] = "0"
@@ -884,6 +884,127 @@ try:
 finally:
     srv.terminate()
     srv.wait(5)
+
+# ---------- multi-machine: host filter, ingest_rows, export_rows, v3 migration ----------
+def hrow(n, ts, key="h:" + "a" * 32, **kw):
+    f = {"key": key, "kind": "main", "session_id": UU[1], "agent_id": None, "agent_type": "session", "domain": "PERSONAL", "project": "demo", "source": "claude"}
+    f.update(kw.pop("file", {}))
+    r = {"mkey": n, "ts": ts, "model": "claude-opus-5-5-20261101", "inp": 10, "outp": 20, "cw": 0, "cr": 0, "file": f}
+    r.update(kw)
+    return r
+
+
+# v3 file (no host column) keeps its data, gains the column, reads before and after migration
+reset_db()
+v3 = U.SCHEMA.replace(",\n  host TEXT", "")
+check(v3 != U.SCHEMA, "v3 schema text derived")
+c = sqlite3.connect(state / "usage.db")
+c.executescript(v3 + "PRAGMA user_version=3;")
+c.execute("INSERT INTO tok_files(id, path, kind, session_id, agent_type, domain, last_seen) VALUES (1, 'h:" + "e" * 32 + "', 'main', ?, 'session', 'PERSONAL', ?)", (UU[1], T0))
+c.execute("INSERT INTO tok_models(id, name, family) VALUES (1, 'opus-5-5', 'opus')")
+c.execute("INSERT INTO tok_msgs VALUES (1, ?, 1, 1, 10, 20, 0, 0)", (T0,))
+c.commit()
+c.close()
+os.chmod(state / "usage.db", 0o600)
+check(tot_(U.tokens("7d", "", now=NOW)) == 30 and tot_(U.tokens("7d", "", now=NOW, host="")) == 30
+      and tot_(U.tokens("7d", "", now=NOW, host="vana")) == 0, "v3 file reads (host filters) before migration")
+check(len(U.export_rows(0, 10)) == 1, "export_rows works on an unmigrated v3 file")
+con = U.connect()
+check(con.execute("PRAGMA user_version").fetchone()[0] == 4, "v3 migrated to 4")
+check(any(r_[1] == "host" for r_ in con.execute("PRAGMA table_info(tok_files)")), "host column added")
+check(con.execute("SELECT host FROM tok_files WHERE id=1").fetchone()[0] is None and con.execute("SELECT COUNT(*) FROM tok_msgs").fetchone()[0] == 1, "v3 data kept, host NULL")
+con.close()
+reset_db()
+
+# ingest_rows accept / reject
+check(U.ingest_rows("vana", [])  == {"accepted": 0, "skipped": 0}, "empty batch")
+good = hrow(1001, T0)
+bad = [hrow(1002, T0, inp=-1), hrow(1003, T0, inp=10 ** 9), hrow(1004, T0, inp=True), hrow(1005, T0, inp="5"), hrow(1006, T0, model="bad model!"),
+       hrow(1007, "x"), hrow(1008, 0), hrow(1009, T0, file={"key": "/home/u/secret-project/x.jsonl"}), hrow(1010, T0, file={"source": "evil"}),
+       hrow(1011, T0, file={"kind": "other"}), hrow(1012, T0, file={"agent_type": "a b"}), hrow(1013, T0, file={"domain": "x/y"}),
+       hrow(1014, T0, file={"project": "../x"}), hrow(1015, T0, file={"project": "/abs"}), hrow(1016, T0, file={"session_id": "nope"}),
+       hrow("x", T0), hrow(2 ** 63, T0), "str", {"mkey": 1}, dict(hrow(1017, T0), file="notadict"), hrow(1018, T0, model=None)]
+r_ = U.ingest_rows("vana", [good] + bad)
+check(r_ == {"accepted": 1, "skipped": len(bad)}, f"one good row accepted, bad ones skipped not fatal: {r_}")
+rows = db_rows("SELECT path, host, source, last_seen FROM tok_files")
+check(len(rows) == 1 and rows[0]["path"] == "remote:vana:h:" + "a" * 32 and rows[0]["host"] == "vana" and rows[0]["last_seen"] > time.time() - 60, "file stored as remote:<label>:<key> with host, last_seen=now")
+check(U.ingest_rows("vana", [good]) == {"accepted": 0, "skipped": 1} and len(db_rows("SELECT 1 FROM tok_msgs")) == 1, "re-send is idempotent (INSERT OR IGNORE by mkey)")
+check(U.ingest_rows("bad label", [hrow(1050, T0)])["accepted"] == 0 and U.ingest_rows("", [hrow(1051, T0)])["accepted"] == 0 and U.ingest_rows("a/b", [hrow(1052, T0)])["accepted"] == 0, "invalid label accepts nothing")
+check(U.ingest_rows("vana", [hrow(2000 + i, T0) for i in range(U.INGEST_MAX_ROWS + 1)]) == {"accepted": 0, "skipped": U.INGEST_MAX_ROWS + 1}, "more than 2000 rows: nothing accepted")
+check(U.ingest_rows("vana", [hrow(5000 + i, T0) for i in range(U.INGEST_MAX_ROWS)])["accepted"] == U.INGEST_MAX_ROWS, "exactly 2000 rows accepted")
+check(U.ingest_rows("vana", "nope") == {"accepted": 0, "skipped": 0}, "non-list payload")
+loc = hrow(7001, T0, model="qwen3:14b", file={"key": "l:" + "b" * 32, "source": "local_agent", "agent_type": "local:ask"})
+check(U.ingest_rows("vana", [loc])["accepted"] == 1 and db_rows("SELECT family FROM tok_models WHERE name='qwen3:14b'")[0][0] == "local", "local-source row keeps its family")
+
+# host filter
+reset_db()
+c = U.connect()
+c.execute("INSERT INTO tok_files(id, path, kind, session_id, agent_type, domain, last_seen, source) VALUES (1, 'h:hub', 'main', ?, 'session', 'PERSONAL', ?, 'claude')", (UU[2], T0))
+c.execute("INSERT INTO tok_models(id, name, family) VALUES (1, 'opus-5-5', 'opus')")
+c.execute("INSERT INTO tok_msgs VALUES (1, ?, 1, 1, 100, 0, 0, 0)", (T0,))
+c.commit()
+c.close()
+U.ingest_rows("vana", [hrow(11, T0, outp=0, inp=5), hrow(12, T0, key="h:" + "c" * 32, inp=7, outp=0)])
+U.ingest_rows("odin", [hrow(13, T0, inp=1000, outp=0, key="h:" + "d" * 32)])
+U._tok_memo.clear()
+check(tot_(U.tokens("7d", "", now=NOW)) == 1112, "host=None: all hosts")
+check(tot_(U.tokens("7d", "", now=NOW, host="")) == 100, "host='': this machine only")
+check(tot_(U.tokens("7d", "", now=NOW, host="vana")) == 12 and tot_(U.tokens("7d", "", now=NOW, host="odin")) == 1000, "host=<label> filters to that machine")
+check(tot_(U.tokens("7d", "", now=NOW, host="nobody")) == 0, "unknown host: no rows")
+check(tot_(U.tokens("7d", "", now=NOW, host="a b/../")) == 1112, "invalid host label counts as all hosts")
+check(tot_(U.tokens("7d", "PERSONAL", now=NOW, host="vana")) == 12 and U.tokens("7d", "", now=NOW, host="vana")["totals"]["messages"] == 2, "host combines with domain")
+check(tot_(U.tokens_cached("7d", "", NOW, "all", "vana")) == 12 and tot_(U.tokens_cached("7d", "", NOW, "all", "odin")) == 1000 and tot_(U.tokens_cached("7d", "", NOW)) == 1112, "tokens_cached keyed by host")
+check(("7d", "", "all", "vana") in U._tok_memo, "memo key includes host")
+
+# scanner leaves remote: rows alone; prune is by last_seen only
+reset_db()
+build()
+U.ingest_rows("vana", [hrow(21, T0)])
+full_scan()
+check(len(db_rows("SELECT 1 FROM tok_files WHERE path LIKE 'remote:%'")) == 1 and len(db_rows("SELECT 1 FROM tok_msgs WHERE mkey=21")) == 1, "scan leaves remote rows alone")
+before = db_rows("SELECT id, offset, size, last_seen FROM tok_files WHERE path LIKE 'remote:%'")[0]
+full_scan(full=True)
+after = db_rows("SELECT id, offset, size, last_seen FROM tok_files WHERE path LIKE 'remote:%'")[0]
+check(tuple(before) == tuple(after), "a --full rescan does not reset remote rows")
+check(len(db_rows("SELECT 1 FROM tok_files WHERE path NOT LIKE 'remote:%'")) > 0 and len(db_rows("SELECT 1 FROM tok_msgs WHERE mkey=21")) == 1, "local rows still scanned, remote messages kept")
+c = U.connect()
+c.execute("UPDATE tok_files SET last_seen=? WHERE path LIKE 'remote:%'", (time.time() - (U.TOK_RETENTION_DAYS + 1) * D,))
+c.execute("UPDATE tok_msgs SET ts=? WHERE mkey=21", (time.time(),))
+c.commit()
+U.prune(c)
+check(c.execute("SELECT COUNT(*) FROM tok_files WHERE path LIKE 'remote:%'").fetchone()[0] == 0 and c.execute("SELECT COUNT(*) FROM tok_msgs WHERE mkey=21").fetchone()[0] == 0, "stale remote file pruned by last_seen (and its messages)")
+c.close()
+U.ingest_rows("vana", [hrow(22, T0)])
+c = U.connect()
+U.prune(c)
+check(c.execute("SELECT COUNT(*) FROM tok_files WHERE path LIKE 'remote:%'").fetchone()[0] == 1, "active remote file survives prune")
+c.close()
+
+# export_rows
+reset_db()
+build()
+full_scan()
+U.ingest_rows("vana", [hrow(31, T0)])
+ex = U.export_rows(0, 1000)
+check(len(ex) > 0 and all(r["file"]["key"].startswith(("h:", "l:")) for r in ex), "export_rows: hashed file keys")
+check(not any("vana" in json.dumps(r) for r in ex) and 31 not in {r["mkey"] for r in ex}, "export_rows: local files only (no remote rows echoed back)")
+blob = json.dumps(ex)
+check(all("/" not in r["file"]["key"] for r in ex), "no slash in file keys")
+check(str(tmp) not in blob and "secret-project" not in blob and "/home/" not in blob and "CANARY" not in blob, "export_rows contains no absolute paths or transcript text")
+check(all(U._valid_row(r) is not None for r in ex), "every exported row passes the ingest validator")
+check(len(U.export_rows(0, 2)) == 2 and len(U.export_rows(0, 0)) == 0, "limit honoured")
+first = U.export_rows(0, 3)
+rest = U.export_rows(0, 1000, after_mkeys={r["mkey"] for r in first})
+check(not ({r["mkey"] for r in first} & {r["mkey"] for r in rest}) and len(first) + len(rest) == len(ex), "after_mkeys skips already-sent rows")
+check(U.export_rows(0, 1000, after_mkeys=lambda k: True) == [], "after_mkeys callable")
+check(all(r["ts"] >= T0 + 10 ** 6 for r in U.export_rows(T0 + 10 ** 6, 10)), "since_ts honoured")
+# round trip: exported rows are accepted by ingest_rows under another label, once
+reset_db()
+rt = U.ingest_rows("vana", ex)
+check(rt["accepted"] == len(ex) and rt["skipped"] == 0, f"export -> ingest round trip (fresh hub DB): {rt}")
+reset_db()
+check(U.export_rows(0, 10) == [], "no usage.db: empty export")
+
 reset_db()
 check(U.tokens(now=NOW)["state"] == "empty", "no usage.db: empty")
 p_ = state / "usage.db"

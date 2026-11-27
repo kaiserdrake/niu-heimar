@@ -23,7 +23,10 @@ const TOOL_CLASS = (t) => String(t || "").startsWith("mcp__niu-local") ? "local"
   : ["WebFetch", "WebSearch"].includes(t) ? "web" : "other";
 const reducedMotion = () => $("calm").checked || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const HOST = () => STATE?.host || "workspace";
-const dl = (d) => d === "(workspace)" ? HOST() : (d || "?");
+const dl = (d, host) => d === "(workspace)" ? (host || HOST()) : (d || "?");
+// Several machines (this hub plus paired ones): show which host a session, event or doc belongs to. host null = this hub.
+const multiHost = () => (STATE?.hosts?.length || 0) > 1;
+const hostName = (host) => host || HOST();
 
 function dur(secs) {
   secs = Math.max(0, Math.round(secs));
@@ -49,7 +52,7 @@ function sessName(s) {
 // Details line: where it runs and on which model.
 function sessSub(s) {
   if (s.local) return `${s.local} · ${STATE_LABEL[s.state] || s.state}`;
-  const bits = [s.title ? projLabel(s) : `${projLabel(s)}`, dl(s.domain)];
+  const bits = [s.title ? projLabel(s) : `${projLabel(s)}`, dl(s.domain, s.host)];
   if (s.domain === "(workspace)") bits.splice(1, 1);
   if (s.model) bits.push(shortModel(s.model));
   bits.push(`${STATE_LABEL[s.state] || s.state}${s.current ? ` · ${s.current[0]}` : ""}`);
@@ -67,6 +70,7 @@ function connect() {
   if (ES) ES.close();
   const q = new URLSearchParams({ since: $("since").value });
   if ($("domain").value) q.set("domain", $("domain").value);
+  if ($("host").value) q.set("host", $("host").value);
   if (VIEW === "events") q.set("feed", "250");
   ES = new EventSource(`/api/stream?${q}`);
   ES.onopen = () => { $("conn").className = "dot on"; };
@@ -152,7 +156,7 @@ function render() {
   document.title = `${HOST()} · niu-heimar agents`;
   document.body.classList.toggle("calm", reducedMotion());
   indexActions();
-  renderDomains(); renderCounters(); renderActions(); renderSessions(); renderPRs(); renderToday(); renderFeed();
+  renderDomains(); renderHosts(); renderCounters(); renderActions(); renderSessions(); renderPRs(); renderToday(); renderFeed();
   if (VIEW === "agents") { renderGraph(); renderTimeline(); }
   if (SELECTED) showDetails(SELECTED, true);
   dsLive();
@@ -164,6 +168,18 @@ function renderDomains() {
   for (const d of STATE.domains) if (!have.has(d)) sel.add(new Option(dl(d), d));
   for (const o of sel.options) if (o.value) o.text = dl(o.value);
   sel.value = cur;
+}
+
+// Host filter: only shown when more than one machine reports in. The choice is remembered; a stale one is dropped.
+function renderHosts() {
+  const sel = $("host"), hosts = STATE.hosts || [], want = sel.value || store.get("niu.host", "");
+  const have = new Set([...sel.options].map((o) => o.value));
+  for (const o of [...sel.options]) if (o.value && !hosts.includes(o.value)) o.remove();
+  for (const x of hosts) if (!have.has(x)) sel.add(new Option(x, x));
+  sel.hidden = hosts.length < 2;
+  const keep = hosts.includes(want) ? want : "";
+  sel.value = keep;
+  if (hosts.length >= 2 && want && !keep) { store.set("niu.host", ""); G.first = true; connect(); TOK.data = null; loadTokens(); }
 }
 
 function renderCounters() {
@@ -193,7 +209,7 @@ function renderSessions() {
       const need = ACT_BY.session.get(s.id);
       const needTag = need ? `<span class="needtag ${need.priority >= 3 ? "" : "mid"}" title="${esc(need.title)}">needs you</span>` : "";
       html += `<div class="sess st-${esc(s.state)} ${s.flagged ? "flag" : ""} ${need ? `needs-you ${need.priority >= 3 ? "high" : ""}` : ""}" data-sid="${esc(s.id)}">
-        <div class="top"><span class="proj" title="${esc(sessName(s))}"><span class="wspill">${esc(dl(s.domain))}</span>${esc(sessName(s))} ${s.local ? `<span class="localtag" title="Agent running on a local Ollama model">local · ${esc(s.local)}</span>` : ""} ${needTag}</span>
+        <div class="top"><span class="proj" title="${esc(sessName(s))}"><span class="wspill">${esc(dl(s.domain, s.host))}</span>${multiHost() ? `<span class="hostbadge" title="Machine">${esc(hostName(s.host))}</span>` : ""}${esc(sessName(s))} ${s.local ? `<span class="localtag" title="Agent running on a local Ollama model">local · ${esc(s.local)}</span>` : ""} ${needTag}</span>
         <span class="pill st-${esc(s.state)}">${esc(STATE_LABEL[s.state] || s.state)} · ${dur(STATE.now - s.since)}</span></div>
         <div class="muted small">${esc(projLabel(s))}${s.model ? ` · ${esc(shortModel(s.model))}` : ""}${s.local && s.query ? ` · “${esc(trunc(s.query, 50))}”` : ""} · ${esc(s.id.slice(0, 8))}${s.chain?.review_rounds ? ` · <b title="Rounds in which a mandatory reviewer ran">${s.chain.review_rounds} review round${s.chain.review_rounds === 1 ? "" : "s"}</b>` : ""}${s.release ? ` · <span class="reltag" title="This session performed a release (gh release, git tag, release-please or /dual-review)">release${["security-reviewer", "test-reviewer"].every((m) => s.ran.includes(m)) ? " ✓ reviewed" : ""}</span>` : ""}</div>
         ${s.pipeline ? `<div class="pipe" aria-label="/develop progress">${s.pipeline.map((p) =>
@@ -201,7 +217,7 @@ function renderSessions() {
         <div class="cur" title="${esc(cur)}">${esc(cur) || "&nbsp;"}</div>
         <div class="chips">${chips}</div>
         ${s.flagged ? `<div class="flagmsg">⚠ release without both reviewers</div>` : ""}
-        ${canDismiss(s) ? `<div class="sessacts"><span class="small muted">quiet ${dur(STATE.now - s.last)} · closed or archived?</span>
+        ${canDismiss(s) && !s.host ? `<div class="sessacts"><span class="small muted">quiet ${dur(STATE.now - s.last)} · closed or archived?</span>
           <button class="ghost tiny" data-dismiss="${esc(s.id)}" ${ME.paired ? "" : `disabled title="Pair this browser (menu) to dismiss"`}>${ARMED.sid === s.id && Date.now() < ARMED.until ? "Confirm dismiss" : "Dismiss"}</button></div>` : ""}</div>`;
     }
   }
@@ -685,8 +701,10 @@ function renderActions() {
     const isPR = !!a.target.pr, pr = isPR && PRS ? PRS.repos.flatMap((r) => r.prs).find((p) => p.ref === a.target.pr) : null;
     const merge = a.kind === "pr-ready" && pr && pr.green ? `<button class="danger" data-amerge="${esc(a.target.pr)}" ${ME.paired ? "" : `disabled title="Pair this browser (menu) to merge"`}>Merge</button>` : "";
     const open = isPR ? `<button class="ghost" data-aopen="${esc(a.target.url || "")}">${a.kind === "pr-blocked" ? "Merge on GitHub" : "Open"}</button>` : "";
+    const asess = a.target.session && multiHost() ? STATE.sessions.find((x) => x.id === a.target.session) : null;
+    const hb = asess ? `<span class="hostbadge" title="Machine">${esc(hostName(asess.host))}</span>` : "";
     return `<div class="act p${a.priority} ${fresh.some((f) => f.id === a.id) ? "new" : ""}" data-aid="${esc(a.id)}">
-      <span class="ico"></span><span class="t">${esc(a.title)}</span>
+      <span class="ico"></span><span class="t">${hb}${esc(a.title)}</span>
       <span class="b"><button class="ghost" data-ago="${esc(a.id)}">Show</button>${open}${merge}</span>
       <span class="d" title="${esc(a.detail)}">${esc(a.detail)}</span></div>`;
   }).join("") : `<div class="none">Nothing needs you right now.</div>`;
@@ -861,10 +879,10 @@ function renderFeed() {
     const detail = [e.tool, feedSummary(e)].filter(Boolean).join(" ");
     const cls = LAST_FEED_TS && e.ts > LAST_FEED_TS ? "new" : "";
     if (wide) {
-      return `<div class="${cls}" title="${esc(detail)}"><span class="muted">${hhmmss(e.ts)}</span><span class="d">${esc(dl(e.domain))}</span>` +
+      return `<div class="${cls}" title="${esc(detail)}"><span class="muted">${hhmmss(e.ts)}</span><span class="d">${esc(dl(e.domain, e.host))}${multiHost() ? ` <span class="hostbadge">${esc(hostName(e.host))}</span>` : ""}</span>` +
         `<span>${esc(sname)}</span><span>${esc(who)}</span><span class="muted">${esc(e.event)}</span><span>${esc(detail)}</span></div>`;
     }
-    return `<div class="${cls}" title="${esc(detail)}"><span class="muted">${hhmmss(e.ts)}</span> <span class="d">${esc(dl(e.domain))}</span> ${esc(e.agent_id ? e.agent_type : sname)} <span class="muted">${esc(e.event)}</span> ${esc(detail)}</div>`;
+    return `<div class="${cls}" title="${esc(detail)}"><span class="muted">${hhmmss(e.ts)}</span> <span class="d">${esc(dl(e.domain, e.host))}</span>${multiHost() ? ` <span class="hostbadge">${esc(hostName(e.host))}</span>` : ""} ${esc(e.agent_id ? e.agent_type : sname)} <span class="muted">${esc(e.event)}</span> ${esc(detail)}</div>`;
   }).join("") || `<div class="empty">No events yet.</div>`;
   LAST_FEED_TS = newest;
 }
@@ -1302,8 +1320,9 @@ function showDetails(sel, refresh) {
   const close = h("button", "ghost x", "Close", { id: "dclose" });
   close.onclick = () => { SELECTED = null; AM.sid = null; $("details").hidden = true; };
   const title = h("h2", "", a ? `${a.type} ` : projLabel(s));
+  if (multiHost()) title.prepend(h("span", "hostbadge", hostName(s.host), { title: "Machine" }));
   if (a) title.append(h("span", `src src-${a.source}`, a.source));
-  $("amhead").replaceChildren(close, title, h("div", "small muted", `session ${s.id} · ${dl(s.domain)}${a && a.task ? ` · task: ${a.task}` : ""}`));
+  $("amhead").replaceChildren(close, title, h("div", "small muted", `session ${s.id} · ${dl(s.domain, s.host)}${multiHost() ? ` · host ${hostName(s.host)}` : ""}${a && a.task ? ` · task: ${a.task}` : ""}`));
   $("details").classList.add("wide");
   $("details").hidden = false;
   amRender(s);
@@ -1361,6 +1380,8 @@ $("paircode").addEventListener("input", () => { $("pairmsg").textContent = ""; }
 $("unpair").addEventListener("click", async () => { await POST("/api/unpair"); loadMe(); });
 $("prrefresh").onclick = () => POST("/api/prs/refresh");
 $("domain").onchange = () => { G.first = true; connect(); TOK.data = null; loadTokens(); };
+$("host").onchange = () => { store.set("niu.host", $("host").value); G.first = true; connect(); TOK.data = null; loadTokens(); };
+$("host").value = store.get("niu.host", "");
 $("since").onchange = connect;
 $("ended").checked = store.get("niu.ended", false);
 $("calm").checked = store.get("niu.calm", false);
@@ -1944,7 +1965,7 @@ function tokMatrix(m) {
 function tokCounted() {
   const det = h("details", "tokcounted");
   det.append(h("summary", "", "What is counted"),
-    h("p", "small", "Claude Code transcripts on this host (~/.claude/projects), for terminal and desktop sessions and their subagents. With All domains this includes projects outside the workspace."),
+    h("p", "small", `Claude Code transcripts on ${multiHost() ? "this host and paired machines" : "this host"} (~/.claude/projects), for terminal and desktop sessions and their subagents. With All domains this includes projects outside the workspace.`),
     h("p", "small", "niu-agent agent-mode transcripts (state folder ollama-claude/projects)."),
     h("p", "small", "Lite-mode calls of niu-agent and the local_* tools (state folder local-usage.jsonl, counts only)."),
     h("p", "small", "Cache reads dominate the totals: every call re-reads the whole conversation from the cache, so a long session adds many millions of cache-read tokens. Switch the metric to Output to see what the models wrote."),
@@ -1955,7 +1976,7 @@ function tokCounted() {
 }
 function tokSummary(t, k) {
   const tot = tokNum(t.totals.total) || 0;
-  const bits = [`Token usage, ${TOK_RANGES[TOK.range].toLowerCase()}: ${tokFmt(tot)} tokens`];
+  const bits = [`Token usage${multiHost() ? ` (${$("host").value || "all hosts"})` : ""}, ${TOK_RANGES[TOK.range].toLowerCase()}: ${tokFmt(tot)} tokens`];
   if (tot > 0) bits[0] += ` (cache reads ${tokPct((tokNum(t.totals.cache_read) / tot) * 100)}, output ${tokPct((tokNum(t.totals.output) / tot) * 100)})`;
   const a = k.agents[0], m = k.models[0];
   if (a && m && tot > 0) bits.push(`Most by ${a.name} (${tokPct(a.share)}) and model ${m.name} (${tokPct(m.share)}) by ${TOK_METRICS[TOK.metric][0].toLowerCase()}.`);
@@ -2008,9 +2029,9 @@ function renderTokens(t) {
 function redrawTokens() { if (TOK.open && TOK.data) renderTokens(TOK.data); }
 async function loadTokens() {
   if (VIEW !== "events" || document.hidden || !TOK.open) return;
-  const mine = ++TOK.seq, range = TOK.range, src = TOK.source, dom = $("domain").value;
+  const mine = ++TOK.seq, range = TOK.range, src = TOK.source, dom = $("domain").value, host = $("host").value;
   if (!TOK.data) renderTokens({ state: "loading" });
-  const url = `/api/usage/tokens?range=${range}${dom ? `&domain=${encodeURIComponent(dom)}` : ""}${src !== "all" ? `&source=${src}` : ""}`;
+  const url = `/api/usage/tokens?range=${range}${dom ? `&domain=${encodeURIComponent(dom)}` : ""}${host ? `&host=${encodeURIComponent(host)}` : ""}${src !== "all" ? `&source=${src}` : ""}`;
   const d = await fetch(url, { credentials: "same-origin" }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
   if (VIEW !== "events" || mine !== TOK.seq) return;
   if (d && typeof d.state === "string") { TOK.stale = false; TOK.asof = Date.now() / 1000; renderTokens(d); return; }
@@ -3548,7 +3569,7 @@ function dsRenderList() {
   const docs = DS.docs.filter((d) => !f || `${d.title || ""} ${d.name || ""}`.toLowerCase().includes(f)).sort((x, y) => (y.mtime || 0) - (x.mtime || 0));
   if (!docs.length) { box.replaceChildren(h("div", "empty", DS.docs.length ? "No proposals match." : "No proposals found.")); return; }
   const groups = new Map();
-  for (const d of docs) { const k = `${dl(d.domain)} / ${d.project || ""}`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(d); }
+  for (const d of docs) { const k = `${dl(d.domain, d.host)} / ${d.project || ""}`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(d); }
   const out = [];
   for (const [k, ds] of groups) {
     out.push(h("div", "dsgroup", k));
@@ -3557,6 +3578,7 @@ function dsRenderList() {
       const it = h("button", `dsitem${d.id === DS.id ? " on" : ""}`, "", { "data-id": d.id, "aria-pressed": String(d.id === DS.id) });
       const top = h("span", "dsit", d.title || d.name);
       const meta = h("span", "dsim small muted", `${d.name || ""} · ${d.mtime ? dur(Date.now() / 1000 - d.mtime) + " ago" : "–"}${d.revisions ? ` · ${d.revisions} rev` : ""}`);
+      if (d.host && multiHost()) top.append(" ", h("span", "hostbadge", d.host));
       if (st) top.append(" ", h("span", `badge ${/^(approved|implemented)$/.test(st) ? "b-ok" : st === "proposed" ? "b-warn" : ""}`, st));
       it.append(top, meta);
       it.onclick = () => dsOpen(d.id, "work");

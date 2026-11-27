@@ -5,7 +5,7 @@ import threading
 import time
 from datetime import datetime
 
-from niu_events import EDIT_TOOLS, MANDATORY, agent_model, agent_source, connect, project_agents
+from niu_events import EDIT_TOOLS, MANDATORY, agent_model, agent_source, connect, host_label, project_agents
 
 MAX_TICKS = 400
 
@@ -129,7 +129,7 @@ def build(events, now):
         if s is None:
             s = sessions[sid] = {
                 "id": sid, "domain": e["domain"] or "?", "project": e["project"] or "",
-                "project_dir": e["project_dir"] or "", "first": e["ts"], "last": e["ts"],
+                "project_dir": e["project_dir"] or "", "host": e.get("host") or None, "first": e["ts"], "last": e["ts"],
                 "state": "idle", "since": e["ts"], "current": None, "edited": False,
                 "subagents": {}, "ran": set(), "ended": False, "release": False,
                 "tools": [], "waits": [], "pending_spawns": {}, "messages": [],
@@ -364,15 +364,23 @@ def agent_model_for(s, sb):
         return {"model": sb["model"], "model_src": "actual"}
     if sb.get("model_req"):
         return {"model": sb["model_req"], "model_src": "requested"}
-    m = agent_model(s["project_dir"], sb["type"])
+    m = None if s.get("host") else agent_model(s["project_dir"], sb["type"])  # remote: no local agent files
     if m and m != "inherit":
         return {"model": m, "model_src": "definition"}
     m = sb.get("model_ctx") or s.get("model")
     return {"model": m, "model_src": "inherited"} if m else {"model": None, "model_src": None}
 
 
-def to_json(sessions, events, now, domain=None, show_ended=True, feed_n=60):
-    """JSON-ready state for the web dashboard."""
+def _host_ok(host_of, host):
+    """host filter: None = all hosts; the hub's own label = rows with no host; else that machine."""
+    if not host:
+        return True
+    h = host_of or None
+    return h is None if host == host_label() else h == host
+
+
+def to_json(sessions, events, now, domain=None, show_ended=True, feed_n=60, host=None):
+    """JSON-ready state for the web dashboard. Remote sessions (host set) never touch local files."""
     out = []
     kids_of = {}
     for s in sessions.values():
@@ -381,12 +389,15 @@ def to_json(sessions, events, now, domain=None, show_ended=True, feed_n=60):
     for s in sorted(sessions.values(), key=lambda s: -s["last"]):
         if domain and s["domain"] != domain:
             continue
+        if not _host_ok(s.get("host"), host):
+            continue
+        remote = bool(s.get("host"))
         if s["ended"] and not show_ended:
             continue
         subs = []
         for aid, sb in sorted(s["subagents"].items(), key=lambda kv: kv[1]["start"]):
             subs.append({
-                "id": aid, "type": sb["type"], "source": agent_source(s["project_dir"], sb["type"]),
+                "id": aid, "type": sb["type"], "source": "remote" if remote else agent_source(s["project_dir"], sb["type"]),
                 "start": sb["start"], "stop": sb["stop"], "task": sb.get("task", ""),
                 "parent": sb.get("parent") or s["id"],
                 "current": list(sb["current"][:3]) if sb["current"] else None,
@@ -394,11 +405,11 @@ def to_json(sessions, events, now, domain=None, show_ended=True, feed_n=60):
                 **agent_model_for(s, sb),
             })
         ran_or_running = s["ran"] | {sb["type"] for sb in s["subagents"].values()}
-        pending = [] if s["ended"] else [
+        pending = [] if s["ended"] or remote else [
             {"type": n, "source": agent_source(s["project_dir"], n)}
             for n in project_agents(s["project_dir"]) if n not in ran_or_running]
         out.append({
-            "id": s["id"], "domain": s["domain"], "project": s["project"], "state": s["state"],
+            "id": s["id"], "host": s.get("host"), "domain": s["domain"], "project": s["project"], "state": s["state"],
             "since": s["since"], "first": s["first"], "last": s["last"], "ended": s["ended"],
             "current": list(s["current"][:3]) if s["current"] else None, "note": s.get("note"),
             "edited": s["edited"], "release": s["release"], "flagged": s["flagged"], "ran": sorted(s["ran"]),
@@ -412,11 +423,15 @@ def to_json(sessions, events, now, domain=None, show_ended=True, feed_n=60):
     for e in reversed(events):
         if domain and e["domain"] != domain:
             continue
-        feed.append({k: e[k] for k in ("ts", "event", "session_id", "domain", "project", "agent_id", "agent_type", "tool", "summary")})
+        if not _host_ok(e.get("host"), host):
+            continue
+        feed.append({**{k: e[k] for k in ("ts", "event", "session_id", "domain", "project", "agent_id", "agent_type", "tool", "summary")},
+                     "host": e.get("host") or None})
         if len(feed) >= feed_n:
             break
     return {"now": now, "sessions": out, "today": today_stats(sessions, now), "feed": feed,
-            "domains": sorted({s["domain"] for s in sessions.values()})}
+            "domains": sorted({s["domain"] for s in sessions.values()}),
+            "hosts": sorted({host_label()} | {s["host"] for s in sessions.values() if s.get("host")})}
 
 
 # ---------- shared, incremental live state ----------
@@ -487,12 +502,12 @@ class LiveState:
                 self._json = {}
             return self.version
 
-    def json_for(self, domain=None, feed_n=60):
-        """to_json() of the current build, memoized per (domain, feed length) until the next rebuild."""
+    def json_for(self, domain=None, feed_n=60, host=None):
+        """to_json() of the current build, memoized per (domain, feed length, host) until the next rebuild."""
         with self.lock:
-            key = (domain or "", feed_n)
+            key = (domain or "", feed_n, host or "")
             if key not in self._json:
-                self._json[key] = to_json(self.sessions, self.events, self.built_at, domain, feed_n=feed_n)
+                self._json[key] = to_json(self.sessions, self.events, self.built_at, domain, feed_n=feed_n, host=host)
             return self._json[key]
 
 
