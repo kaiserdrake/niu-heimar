@@ -19,6 +19,8 @@ from pathlib import Path
 
 SH = Path(__file__).resolve().parents[1]
 tmp = Path(tempfile.mkdtemp()).resolve()
+(tmp / "home").mkdir()
+os.environ["HOME"] = str(tmp / "home")  # inherited by the hub subprocess too: the real home is never touched
 A, B = tmp / "hub", tmp / "sat"
 for d in (A, B):
     (d / "state").mkdir(parents=True)
